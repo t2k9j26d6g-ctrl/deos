@@ -1,0 +1,7 @@
+[
+  {"name":"Dashboard GA","progress":70,"status":"orange","next":"Sécuriser version mensuelle"},
+  {"name":"Projet Productivité","progress":55,"status":"orange","next":"Concertation OS"},
+  {"name":"Prime Productivité","progress":45,"status":"orange","next":"Simulation financière"},
+  {"name":"Polyvalence","progress":35,"status":"red","next":"Clarifier critères"},
+  {"name":"Température Chocolat","progress":25,"status":"red","next":"Note nationale thermosensible"}
+]
