@@ -246,7 +246,7 @@ function managerMiniCard(manager) {
 
 function managerFullCard(manager, index) {
   return `
-    <div class="card">
+   <div class="card clickable" onclick="openManager(${index})">
       <h2>${manager.name}</h2>
       <p>${manager.role}</p>
       ${badge(manager.status)}
@@ -341,5 +341,51 @@ function deleteManager(index) {
   state.managers.splice(index, 1);
   saveLocal();
   render_managers();
+}
+function openManager(index) {
+  const manager = state.managers[index];
+
+  document.getElementById("viewTitle").textContent = manager.name;
+
+  document.getElementById("app").innerHTML = `
+    <div class="card hero">
+      <h2>${manager.name}</h2>
+      <p>${manager.role}</p>
+      ${badge(manager.status)}
+      <p class="muted">${manager.note || ""}</p>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>Priorité</h2>
+        <p>${manager.priority || "À compléter"}</p>
+      </div>
+
+      <div class="card">
+        <h2>Prochain entretien</h2>
+        <p>${manager.nextMeeting || "À planifier"}</p>
+      </div>
+
+      <div class="card">
+        <h2>Forces</h2>
+        ${(manager.strengths || []).map(item => `<div class="item">${item}</div>`).join("") || "<p>À compléter</p>"}
+      </div>
+
+      <div class="card">
+        <h2>Points de vigilance</h2>
+        ${(manager.watchPoints || []).map(item => `<div class="item">${item}</div>`).join("") || "<p>À compléter</p>"}
+      </div>
+
+      <div class="card">
+        <h2>Actions</h2>
+        ${(manager.actions || []).map(item => `<div class="item">⬜ ${item}</div>`).join("") || "<p>Aucune action</p>"}
+      </div>
+
+      <div class="card">
+        <h2>Historique</h2>
+        <div class="item">Fiche créée dans DEOS</div>
+      </div>
+    </div>
+  `;
 }
 init();
