@@ -14,6 +14,7 @@ const labels = {
 async function load(path) {
   try {
     const response = await fetch(path);
+    if (!response.ok) return [];
     return await response.json();
   } catch {
     return [];
@@ -30,7 +31,7 @@ async function init() {
   state.decisions = await load("data/decisions.json");
   state.actions = await load("data/actions.json");
 
-  today.textContent = new Intl.DateTimeFormat("fr-FR", {
+  document.getElementById("today").textContent = new Intl.DateTimeFormat("fr-FR", {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -41,7 +42,7 @@ async function init() {
     button.onclick = () => setView(button.dataset.view);
   });
 
-  searchInput.oninput = (event) => runSearch(event.target.value);
+  document.getElementById("searchInput").oninput = (event) => runSearch(event.target.value);
 
   setView("cockpit");
 }
@@ -51,26 +52,29 @@ function setView(view) {
     button.classList.toggle("active", button.dataset.view === view);
   });
 
-  cconst titles = {
-  cockpit: "Cockpit décisionnel",
-  actions: "Actions",
-  managers: "Managers",
-  projects: "Projets",
-  decisions: "Mémoire décisionnelle",
-  journal: "Journal du Directeur",
-  documents: "Documents"
-};
+  const titles = {
+    cockpit: "Cockpit décisionnel",
+    actions: "Actions",
+    managers: "Managers",
+    projects: "Projets",
+    decisions: "Mémoire décisionnelle",
+    journal: "Journal du Directeur",
+    documents: "Documents"
+  };
 
-  viewTitle.textContent = titles[view];
-  window[`render_${view}`]();
+  document.getElementById("viewTitle").textContent = titles[view] || "DEOS";
+
+  const renderer = window[`render_${view}`];
+  if (typeof renderer === "function") renderer();
 }
+
 function render_cockpit() {
   const lastDecision = state.decisions[0];
-  const openActions = state.actions.filter((action) => !action.done);
-  const redProjects = state.projects.filter((project) => project.status === "red");
-  const managersToFollow = state.managers.filter((manager) => manager.status !== "green");
+  const openActions = state.actions.filter((a) => !a.done);
+  const redProjects = state.projects.filter((p) => p.status === "red");
+  const managersToFollow = state.managers.filter((m) => m.status !== "green");
 
-  app.innerHTML = `
+  document.getElementById("app").innerHTML = `
     <div class="card hero">
       <h2>Décision à sécuriser</h2>
       <h3>${lastDecision?.title || "Aucune décision enregistrée"}</h3>
@@ -93,7 +97,7 @@ function render_cockpit() {
     <div class="grid three">
       <div class="card">
         <h2>Managers à suivre</h2>
-        ${managersToFollow.map(managerMiniCard).join("") || "<p>Aucun manager critique.</p>"}
+        ${managersToFollow.map(managerMiniCard).join("") || "<p>Aucun manager à suivre.</p>"}
       </div>
 
       <div class="card">
@@ -112,11 +116,12 @@ function render_cockpit() {
 }
 
 function render_actions() {
-  app.innerHTML = state.actions.map(actionCard).join("") || "<div class='card'>Aucune action.</div>";
+  document.getElementById("app").innerHTML =
+    state.actions.map(actionCard).join("") || "<div class='card'>Aucune action.</div>";
 }
 
 function render_managers() {
-  app.innerHTML = `
+  document.getElementById("app").innerHTML = `
     <div class="grid two">
       ${state.managers.map(managerFullCard).join("")}
     </div>
@@ -124,7 +129,7 @@ function render_managers() {
 }
 
 function render_projects() {
-  app.innerHTML = `
+  document.getElementById("app").innerHTML = `
     <div class="grid two">
       ${state.projects.map(projectFullCard).join("")}
     </div>
@@ -132,7 +137,68 @@ function render_projects() {
 }
 
 function render_decisions() {
-  app.innerHTML = state.decisions.map(decisionCard).join("") || "<div class='card'>Aucune décision.</div>";
+  document.getElementById("app").innerHTML =
+    state.decisions.map(decisionCard).join("") || "<div class='card'>Aucune décision.</div>";
+}
+
+function render_journal() {
+  document.getElementById("app").innerHTML = `
+    <div class="card hero">
+      <h2>Journal du Directeur</h2>
+      <p class="muted">Trace les faits marquants, décisions, échanges et points de vigilance.</p>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>Entrée du jour</h2>
+        <div class="item"><strong>Faits marquants</strong><span class="muted">À compléter</span></div>
+        <div class="item"><strong>Décisions prises</strong><span class="muted">À compléter</span></div>
+        <div class="item"><strong>Personnes rencontrées</strong><span class="muted">À compléter</span></div>
+        <div class="item"><strong>Actions à suivre</strong><span class="muted">À compléter</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Dernières traces</h2>
+        <div class="item"><strong>Lancement DEOS</strong><span class="muted">Création du cockpit décisionnel.</span></div>
+        <div class="item"><strong>Organisation GitHub</strong><span class="muted">Mise en place du dépôt et de GitHub Pages.</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function render_documents() {
+  document.getElementById("app").innerHTML = `
+    <div class="card hero">
+      <h2>Documents & modèles</h2>
+      <p class="muted">Modèles prêts à utiliser pour les mails, courriers, CODIR, CSE et notes internes.</p>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>Management</h2>
+        <div class="item"><strong>Compte rendu CODIR</strong><span class="muted">Faits marquants · décisions · actions · alertes</span></div>
+        <div class="item"><strong>Entretien manager</strong><span class="muted">Contexte · objectifs · points forts · vigilance</span></div>
+      </div>
+
+      <div class="card">
+        <h2>RH / Social</h2>
+        <div class="item"><strong>Courrier disciplinaire</strong><span class="muted">Faits · règlement · analyse · sanction</span></div>
+        <div class="item"><strong>CSE</strong><span class="muted">Questions · réponses · décisions · points à sécuriser</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Exploitation</h2>
+        <div class="item"><strong>Note incident</strong><span class="muted">Contexte · causes · actions · REX</span></div>
+        <div class="item"><strong>Gemba DE</strong><span class="muted">Observation terrain · décision · suivi</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Communication</h2>
+        <div class="item"><strong>Mail professionnel</strong><span class="muted">Objet clair · contexte · demande · échéance</span></div>
+        <div class="item"><strong>Note direction</strong><span class="muted">Message court, cadré et diffusable</span></div>
+      </div>
+    </div>
+  `;
 }
 
 function actionCard(action) {
@@ -211,31 +277,15 @@ function runSearch(query) {
   }
 
   const results = [
-    ...state.managers.map((item) => ({
-      type: "Manager",
-      title: item.name,
-      text: item.role
-    })),
-    ...state.projects.map((item) => ({
-      type: "Projet",
-      title: item.name,
-      text: item.next
-    })),
-    ...state.decisions.map((item) => ({
-      type: "Décision",
-      title: item.title,
-      text: item.context
-    })),
-    ...state.actions.map((item) => ({
-      type: "Action",
-      title: item.title,
-      text: item.link
-    }))
+    ...state.managers.map((item) => ({ type: "Manager", title: item.name, text: item.role })),
+    ...state.projects.map((item) => ({ type: "Projet", title: item.name, text: item.next })),
+    ...state.decisions.map((item) => ({ type: "Décision", title: item.title, text: item.context })),
+    ...state.actions.map((item) => ({ type: "Action", title: item.title, text: item.link }))
   ].filter((item) => `${item.title} ${item.text}`.toLowerCase().includes(q));
 
-  viewTitle.textContent = "Recherche";
+  document.getElementById("viewTitle").textContent = "Recherche";
 
-  app.innerHTML = `
+  document.getElementById("app").innerHTML = `
     <div class="card">
       <h2>${results.length} résultat(s)</h2>
       ${results.map((result) => `
@@ -247,85 +297,5 @@ function runSearch(query) {
     </div>
   `;
 }
-function render_journal() {
-  app.innerHTML = `
-    <div class="card hero">
-      <h2>Journal du Directeur</h2>
-      <p class="muted">Trace les faits marquants, décisions, échanges et points de vigilance.</p>
-    </div>
 
-    <div class="grid two">
-      <div class="card">
-        <h2>Entrée du jour</h2>
-        <div class="item">
-          <strong>Faits marquants</strong>
-          <span class="muted">À compléter</span>
-        </div>
-        <div class="item">
-          <strong>Décisions prises</strong>
-          <span class="muted">À compléter</span>
-        </div>
-        <div class="item">
-          <strong>Personnes rencontrées</strong>
-          <span class="muted">À compléter</span>
-        </div>
-        <div class="item">
-          <strong>Actions à suivre</strong>
-          <span class="muted">À compléter</span>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Dernières traces</h2>
-        <div class="item">
-          <strong>Lancement DEOS</strong>
-          <span class="muted">Création du cockpit décisionnel et de la mémoire des décisions.</span>
-        </div>
-        <div class="item">
-          <strong>Organisation GitHub</strong>
-          <span class="muted">Mise en place du dépôt, GitHub Pages et github.dev.</span>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function render_documents() {
-  app.innerHTML = `
-    <div class="card hero">
-      <h2>Documents & modèles</h2>
-      <p class="muted">Modèles prêts à utiliser pour les mails, courriers, CODIR, CSE et notes internes.</p>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>Management</h2>
-        <div class="item"><strong>Compte rendu CODIR</strong><span class="muted">Faits marquants · décisions · actions · alertes</span></div>
-        <div class="item"><strong>Entretien manager</strong><span class="muted">Contexte · objectifs · points forts · vigilance</span></div>
-        <div class="item"><strong>Journal managérial</strong><span class="muted">Suivi des échanges et décisions</span></div>
-      </div>
-
-      <div class="card">
-        <h2>RH / Social</h2>
-        <div class="item"><strong>Courrier disciplinaire</strong><span class="muted">Faits · règlement · analyse · sanction</span></div>
-        <div class="item"><strong>Réponse OS</strong><span class="muted">Factuel · ferme · ouvert</span></div>
-        <div class="item"><strong>CSE</strong><span class="muted">Questions · réponses · décisions · points à sécuriser</span></div>
-      </div>
-
-      <div class="card">
-        <h2>Exploitation</h2>
-        <div class="item"><strong>Note incident</strong><span class="muted">Contexte · causes · actions · REX</span></div>
-        <div class="item"><strong>Gemba DE</strong><span class="muted">Observation terrain · décision · suivi</span></div>
-        <div class="item"><strong>Litiges</strong><span class="muted">Analyse · montant · cause · action corrective</span></div>
-      </div>
-
-      <div class="card">
-        <h2>Communication</h2>
-        <div class="item"><strong>Mail professionnel</strong><span class="muted">Objet clair · contexte · demande · échéance</span></div>
-        <div class="item"><strong>Note direction</strong><span class="muted">Message court, cadré et diffusable</span></div>
-        <div class="item"><strong>Compte rendu visite</strong><span class="muted">Synthèse · décisions · suites</span></div>
-      </div>
-    </div>
-  `;
-}
 init();
