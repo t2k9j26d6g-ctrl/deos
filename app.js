@@ -20,6 +20,14 @@ async function load(path) {
     return [];
   }
 }
+function saveLocal() {
+  localStorage.setItem("deos_managers", JSON.stringify(state.managers));
+}
+
+function loadLocalManagers() {
+  const saved = localStorage.getItem("deos_managers");
+  if (saved) state.managers = JSON.parse(saved);
+}
 
 function badge(status) {
   return `<span class="badge ${status}">${labels[status] || "À suivre"}</span>`;
@@ -27,6 +35,7 @@ function badge(status) {
 
 async function init() {
   state.managers = await load("data/managers.json");
+  loadLocalManagers();
   state.projects = await load("data/projects.json");
   state.decisions = await load("data/decisions.json");
   state.actions = await load("data/actions.json");
@@ -122,8 +131,20 @@ function render_actions() {
 
 function render_managers() {
   document.getElementById("app").innerHTML = `
+    <div class="card">
+      <h2>Ajouter un manager</h2>
+      <input id="managerName" placeholder="Nom">
+      <input id="managerRole" placeholder="Poste">
+      <select id="managerStatus">
+        <option value="green">Maîtrisé</option>
+        <option value="orange">À suivre</option>
+        <option value="red">Critique</option>
+      </select>
+      <button class="action" onclick="addManager()">Ajouter</button>
+    </div>
+
     <div class="grid two">
-      ${state.managers.map(managerFullCard).join("")}
+      ${state.managers.map((manager, index) => managerFullCard(manager, index)).join("")}
     </div>
   `;
 }
@@ -223,13 +244,14 @@ function managerMiniCard(manager) {
   `;
 }
 
-function managerFullCard(manager) {
+function managerFullCard(manager, index) {
   return `
     <div class="card">
       <h2>${manager.name}</h2>
       <p>${manager.role}</p>
       ${badge(manager.status)}
       <p class="muted">${manager.note || ""}</p>
+      <button class="danger" onclick="deleteManager(${index})">Supprimer</button>
     </div>
   `;
 }
@@ -297,5 +319,27 @@ function runSearch(query) {
     </div>
   `;
 }
+function addManager() {
+  const name = document.getElementById("managerName").value.trim();
+  const role = document.getElementById("managerRole").value.trim();
+  const status = document.getElementById("managerStatus").value;
 
+  if (!name || !role) return;
+
+  state.managers.push({
+    name,
+    role,
+    status,
+    note: ""
+  });
+
+  saveLocal();
+  render_managers();
+}
+
+function deleteManager(index) {
+  state.managers.splice(index, 1);
+  saveLocal();
+  render_managers();
+}
 init();
