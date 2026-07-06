@@ -144,7 +144,7 @@ function render_managers() {
     </div>
 
     <div class="grid two">
-     state.managers.map((manager, index) => managerFullCard(manager, index))
+      ${state.managers.map((manager, index) => managerFullCard(manager, index)).join("")}
     </div>
   `;
 }
@@ -387,5 +387,4 @@ function openManager(index) {
     </div>
   `;
 }
-openManager
 init();
