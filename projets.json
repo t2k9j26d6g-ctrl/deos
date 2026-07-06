@@ -1,8 +1,0 @@
-[
-  {"name":"Bérangère Perez","role":"REX Préparation","status":"orange","note":"Actions ouvertes sur productivité."},
-  {"name":"Gérard Diogon","role":"REX Réception / Expédition","status":"green","note":"Flux réception / expédition."},
-  {"name":"Hadrien Haza","role":"RH","status":"orange","note":"Dialogue social, RH."},
-  {"name":"Emilie Chautard","role":"Méthodes / Process","status":"green","note":"Process, volumes."},
-  {"name":"Nathalie Makota","role":"RAMSES / Maintenance","status":"red","note":"Maintenance, RAMSES."},
-  {"name":"Stéphane Romeu","role":"RMP","status":"green","note":"Préparation terrain."}
-]
