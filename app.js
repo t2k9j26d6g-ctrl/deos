@@ -152,7 +152,7 @@ function render_managers() {
 function render_projects() {
   document.getElementById("app").innerHTML = `
     <div class="grid two">
-      ${state.projects.map(projectFullCard).join("")}
+      ${state.projects.map((project, index) => projectFullCard(project, index)).join("")}
     </div>
   `;
 }
@@ -265,9 +265,9 @@ function projectMiniCard(project) {
   `;
 }
 
-function projectFullCard(project) {
+function projectFullCard(project, index) {
   return `
-    <div class="card">
+    <div class="card clickable" onclick="openProject(${index})">
       <h2>${project.name}</h2>
       ${badge(project.status)}
       <p>${project.next || ""}</p>
@@ -436,5 +436,43 @@ function saveManager(index) {
 
   saveLocal();
   openManager(index);
+}
+function openProject(index) {
+  const project = state.projects[index];
+
+  document.getElementById("viewTitle").textContent = project.name;
+
+  document.getElementById("app").innerHTML = `
+    <div class="card hero">
+      <h2>${project.name}</h2>
+      ${badge(project.status)}
+      <p>${project.next || ""}</p>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>Avancement</h2>
+        <div class="progress">
+          <span style="width:${project.progress || 0}%"></span>
+        </div>
+        <p>${project.progress || 0}%</p>
+      </div>
+
+      <div class="card">
+        <h2>Prochaine étape</h2>
+        <p>${project.next || "À compléter"}</p>
+      </div>
+
+      <div class="card">
+        <h2>Décisions liées</h2>
+        <p>À connecter</p>
+      </div>
+
+      <div class="card">
+        <h2>Actions liées</h2>
+        <p>À connecter</p>
+      </div>
+    </div>
+  `;
 }
 init();
