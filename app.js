@@ -144,7 +144,7 @@ function render_managers() {
     </div>
 
     <div class="grid two">
-      ${state.managers.map((manager, index) => managerFullCard(manager, index)).join("")}
+     state.managers.map((manager, index) => managerFullCard(manager, index))
     </div>
   `;
 }
@@ -246,12 +246,11 @@ function managerMiniCard(manager) {
 
 function managerFullCard(manager, index) {
   return `
-   <div class="card clickable" onclick="openManager(${index})">
+    <div class="card clickable" onclick="openManager(${index})">
       <h2>${manager.name}</h2>
       <p>${manager.role}</p>
       ${badge(manager.status)}
       <p class="muted">${manager.note || ""}</p>
-      <button class="danger" onclick="deleteManager(${index})">Supprimer</button>
     </div>
   `;
 }
@@ -388,4 +387,5 @@ function openManager(index) {
     </div>
   `;
 }
+openManager
 init();
