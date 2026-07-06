@@ -352,6 +352,7 @@ function openManager(index) {
       <p>${manager.role}</p>
       ${badge(manager.status)}
       <p class="muted">${manager.note || ""}</p>
+      <button class="action" onclick="editManager(${index})">✏️ Modifier la fiche</button>
     </div>
 
     <div class="grid two">
@@ -386,5 +387,54 @@ function openManager(index) {
       </div>
     </div>
   `;
+}
+
+function editManager(index) {
+  const manager = state.managers[index];
+
+  document.getElementById("viewTitle").textContent = "Modifier " + manager.name;
+
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <h2>Modifier la fiche manager</h2>
+
+      <input id="editName" value="${manager.name || ""}" placeholder="Nom">
+      <input id="editRole" value="${manager.role || ""}" placeholder="Poste">
+      <input id="editPriority" value="${manager.priority || ""}" placeholder="Priorité">
+      <input id="editNextMeeting" value="${manager.nextMeeting || ""}" placeholder="Prochain entretien">
+
+      <select id="editStatus">
+        <option value="green" ${manager.status === "green" ? "selected" : ""}>Maîtrisé</option>
+        <option value="orange" ${manager.status === "orange" ? "selected" : ""}>À suivre</option>
+        <option value="red" ${manager.status === "red" ? "selected" : ""}>Critique</option>
+      </select>
+
+      <textarea id="editNote" placeholder="Note">${manager.note || ""}</textarea>
+      <textarea id="editStrengths" placeholder="Forces, une par ligne">${(manager.strengths || []).join("\n")}</textarea>
+      <textarea id="editWatchPoints" placeholder="Points de vigilance, un par ligne">${(manager.watchPoints || []).join("\n")}</textarea>
+      <textarea id="editActions" placeholder="Actions, une par ligne">${(manager.actions || []).join("\n")}</textarea>
+
+      <button class="action" onclick="saveManager(${index})">Enregistrer</button>
+      <button class="danger" onclick="openManager(${index})">Annuler</button>
+    </div>
+  `;
+}
+
+function saveManager(index) {
+  state.managers[index] = {
+    ...state.managers[index],
+    name: document.getElementById("editName").value.trim(),
+    role: document.getElementById("editRole").value.trim(),
+    priority: document.getElementById("editPriority").value.trim(),
+    nextMeeting: document.getElementById("editNextMeeting").value.trim(),
+    status: document.getElementById("editStatus").value,
+    note: document.getElementById("editNote").value.trim(),
+    strengths: document.getElementById("editStrengths").value.split("\n").map(x => x.trim()).filter(Boolean),
+    watchPoints: document.getElementById("editWatchPoints").value.split("\n").map(x => x.trim()).filter(Boolean),
+    actions: document.getElementById("editActions").value.split("\n").map(x => x.trim()).filter(Boolean)
+  };
+
+  saveLocal();
+  openManager(index);
 }
 init();
