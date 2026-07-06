@@ -37,6 +37,8 @@ async function init() {
   state.managers = await load("data/managers.json");
   loadLocalManagers();
   state.projects = await load("data/projects.json");
+  const savedProjects = localStorage.getItem("deos_projects");
+if (savedProjects) state.projects = JSON.parse(savedProjects);
   state.decisions = await load("data/decisions.json");
   state.actions = await load("data/actions.json");
 
@@ -447,6 +449,7 @@ function openProject(index) {
       <h2>${project.name}</h2>
       ${badge(project.status)}
       <p>${project.next || ""}</p>
+      <button class="action" onclick="editProject(${index})">✏️ Modifier le projet</button>
     </div>
 
     <div class="grid two">
@@ -465,14 +468,56 @@ function openProject(index) {
 
       <div class="card">
         <h2>Décisions liées</h2>
-        <p>À connecter</p>
+        <p>${project.decisions || "À connecter"}</p>
       </div>
 
       <div class="card">
         <h2>Actions liées</h2>
-        <p>À connecter</p>
+        <p>${project.actions || "À connecter"}</p>
       </div>
     </div>
   `;
+}
+function editProject(index) {
+  const project = state.projects[index];
+
+  document.getElementById("viewTitle").textContent = "Modifier " + project.name;
+
+  document.getElementById("app").innerHTML = `
+    <div class="card">
+      <h2>Modifier le projet</h2>
+
+      <input id="editProjectName" value="${project.name || ""}" placeholder="Nom du projet">
+      <input id="editProjectNext" value="${project.next || ""}" placeholder="Prochaine étape">
+      <input id="editProjectProgress" type="number" min="0" max="100" value="${project.progress || 0}" placeholder="Avancement">
+
+      <select id="editProjectStatus">
+        <option value="green" ${project.status === "green" ? "selected" : ""}>Maîtrisé</option>
+        <option value="orange" ${project.status === "orange" ? "selected" : ""}>À suivre</option>
+        <option value="red" ${project.status === "red" ? "selected" : ""}>Critique</option>
+      </select>
+
+      <textarea id="editProjectDecisions" placeholder="Décisions liées">${project.decisions || ""}</textarea>
+      <textarea id="editProjectActions" placeholder="Actions liées">${project.actions || ""}</textarea>
+
+      <button class="action" onclick="saveProject(${index})">Enregistrer</button>
+      <button class="danger" onclick="openProject(${index})">Annuler</button>
+    </div>
+  `;
+}
+
+function saveProject(index) {
+  state.projects[index] = {
+    ...state.projects[index],
+    name: document.getElementById("editProjectName").value.trim(),
+    next: document.getElementById("editProjectNext").value.trim(),
+    progress: Number(document.getElementById("editProjectProgress").value),
+    status: document.getElementById("editProjectStatus").value,
+    decisions: document.getElementById("editProjectDecisions").value.trim(),
+    actions: document.getElementById("editProjectActions").value.trim()
+  };
+
+  localStorage.setItem("deos_projects", JSON.stringify(state.projects));
+  openProject(index);
 }
 init();
