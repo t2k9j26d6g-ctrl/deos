@@ -1,8 +1,100 @@
 [
-  {"name":"Bérangère Perez","role":"REX Préparation","status":"orange","note":"Actions ouvertes sur productivité."},
-  {"name":"Gérard Diogon","role":"REX Réception / Expédition","status":"green","note":"Flux réception / expédition."},
-  {"name":"Hadrien Haza","role":"RH","status":"orange","note":"Dialogue social, RH."},
-  {"name":"Émilie Chautard","role":"RAMSES","status":"green","note":"Maintenance, MG."},
-  {"name":"Nathalie Makota","role":"Assistante de direction","status":"green","note":"NdF, Suivi Prod."},
-  {"name":"Stéphane Romeu","role":"RMP","status":"green","note":"Process, volumes."}
+  {
+    "id": 1,
+    "name": "Bérangère Perez",
+    "role": "REX Préparation",
+    "status": "orange",
+    "priority": "Productivité été",
+    "strengths": [
+      "Très bonne maîtrise de l'exploitation",
+      "Disponible pour les équipes"
+    ],
+    "watchPoints": [
+      "Suivi des engagements",
+      "Communication"
+    ],
+    "nextMeeting": "2026-07-15",
+    "actions": [
+      "Préparer le plan été",
+      "Suivre l'absentéisme"
+    ]
+  },
+  {
+    "id": 2,
+    "name": "Gérard Diogon",
+    "role": "REX Réception / Expédition",
+    "status": "green",
+    "priority": "",
+    "strengths": [
+      "Organisation",
+      "Pilotage terrain"
+    ],
+    "watchPoints": [],
+    "nextMeeting": "",
+    "actions": []
+  },
+  {
+    "id": 3,
+    "name": "Hadrien Haza",
+    "role": "Responsable RH",
+    "status": "green",
+    "priority": "",
+    "strengths": [
+      "Dialogue social"
+    ],
+    "watchPoints": [],
+    "nextMeeting": "",
+    "actions": []
+  },
+  {
+    "id": 4,
+    "name": "Émilie Chautard",
+    "role": "RAMSES",
+    "status": "green",
+    "priority": "",
+    "strengths": [
+      "Analyse",
+      "Méthodes"
+    ],
+    "watchPoints": [],
+    "nextMeeting": "",
+    "actions": ["Plan maintenance",
+      "Suivi des interventions",
+      "Préventif",
+      "Disponibilité matériel"]
+  },
+  {
+    "id": 5,
+    "name": "Nathalie Makota",
+    "role": "Assistante de direction",
+    "status": "orange",
+    "priority": "Maintenance été",
+    "strengths": [
+      "Organisation",
+      "contact"
+    ],
+    "watchPoints": [
+      "Préventif",
+      "Disponibilité matériel"
+    ],
+    "nextMeeting": "2026-07-10",
+    "actions": [
+      "NdF",
+      "Suivi primes de prod"
+    ]
+  },
+  {
+    "id": 6,
+    "name": "Stéphane Romeu",
+    "role": "Responsable RMP",
+    "status": "green",
+    "priority": "",
+    "strengths": [
+      "Analyse",
+      "Méthodes"
+    ],
+    "watchPoints": [],
+    "nextMeeting": "",
+    "actions": []
+  }
 ]
