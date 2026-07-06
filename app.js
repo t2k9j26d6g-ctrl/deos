@@ -153,15 +153,25 @@ function render_managers() {
 
 function render_projects() {
   document.getElementById("app").innerHTML = `
+    <div class="card">
+      <h2>Ajouter un projet</h2>
+      <input id="projectName" placeholder="Nom du projet">
+      <input id="projectNext" placeholder="Prochaine étape">
+      <input id="projectProgress" type="number" min="0" max="100" value="0" placeholder="Avancement">
+
+      <select id="projectStatus">
+        <option value="green">Maîtrisé</option>
+        <option value="orange">À suivre</option>
+        <option value="red">Critique</option>
+      </select>
+
+      <button class="action" onclick="addProject()">Ajouter</button>
+    </div>
+
     <div class="grid two">
       ${state.projects.map((project, index) => projectFullCard(project, index)).join("")}
     </div>
   `;
-}
-
-function render_decisions() {
-  document.getElementById("app").innerHTML =
-    state.decisions.map(decisionCard).join("") || "<div class='card'>Aucune décision.</div>";
 }
 
 function render_journal() {
@@ -450,6 +460,7 @@ function openProject(index) {
       ${badge(project.status)}
       <p>${project.next || ""}</p>
       <button class="action" onclick="editProject(${index})">✏️ Modifier le projet</button>
+      <button class="danger" onclick="deleteProject(${index})">Supprimer le projet</button>
     </div>
 
     <div class="grid two">
@@ -519,5 +530,37 @@ function saveProject(index) {
 
   localStorage.setItem("deos_projects", JSON.stringify(state.projects));
   openProject(index);
+}
+function saveProjectsLocal() {
+  localStorage.setItem("deos_projects", JSON.stringify(state.projects));
+}
+
+function addProject() {
+  const name = document.getElementById("projectName").value.trim();
+  const next = document.getElementById("projectNext").value.trim();
+  const progress = Number(document.getElementById("projectProgress").value);
+  const status = document.getElementById("projectStatus").value;
+
+  if (!name) return;
+
+  state.projects.push({
+    name,
+    next,
+    progress,
+    status,
+    decisions: "",
+    actions: ""
+  });
+
+  saveProjectsLocal();
+  render_projects();
+}
+
+function deleteProject(index) {
+  if (!confirm("Supprimer ce projet ?")) return;
+
+  state.projects.splice(index, 1);
+  saveProjectsLocal();
+  render_projects();
 }
 init();
