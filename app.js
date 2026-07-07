@@ -115,51 +115,57 @@ function setView(view) {
 }
 
 function renderCockpit() {
-  const lastDecision = state.decisions[0];
   const openActions = state.actions.filter(a => !a.done);
   const redProjects = state.projects.filter(p => p.status === "red");
   const managersToFollow = state.managers.filter(m => m.status !== "green");
+  const recentDecisions = state.decisions.slice(0, 3);
 
   appHtml(`
     <div class="card hero">
-      <h2>DEOS ${DEOS_VERSION}</h2>
-      <h3>${lastDecision?.title || "Aucune décision à sécuriser"}</h3>
-      <p>${lastDecision?.context || "Le cockpit est prêt."}</p>
-      <span class="muted">${lastDecision?.date || ""}</span>
+      <h2>Bonjour Ludovic</h2>
+      <p class="muted">Brief du jour · DEOS ${DEOS_VERSION}</p>
+
+      <div class="grid three">
+        <div class="kpi"><span>🔴 Urgences</span><b>${redProjects.length}</b></div>
+        <div class="kpi"><span>🟠 Actions ouvertes</span><b>${openActions.length}</b></div>
+        <div class="kpi"><span>👥 Managers à voir</span><b>${managersToFollow.length}</b></div>
+      </div>
     </div>
 
     <div class="grid two">
       <div class="card">
-        <h2>Actions ouvertes</h2>
-        ${openActions.map(actionCard).join("") || "<p>Aucune action ouverte.</p>"}
+        <h2>Mes priorités</h2>
+        <div class="item">□ CODIR / exploitation</div>
+        <div class="item">□ Productivité</div>
+        <div class="item">□ Température chocolat</div>
+        <div class="item">□ Entretien Hadrien</div>
       </div>
 
-      <div class="card">
-        <h2>Projets rouges</h2>
-        ${redProjects.map(projectMiniCard).join("") || "<p>Aucun projet rouge.</p>"}
-      </div>
-    </div>
-
-    <div class="grid three">
       <div class="card">
         <h2>Managers à suivre</h2>
         ${managersToFollow.map(managerMiniCard).join("") || "<p>Aucun manager à suivre.</p>"}
       </div>
+    </div>
 
+    <div class="grid two">
       <div class="card">
-        <h2>KPI</h2>
-        <div class="kpi"><span>Productivité</span><b>À alimenter</b></div>
-        <div class="kpi"><span>Litiges</span><b>À alimenter</b></div>
-        <div class="kpi"><span>GA</span><b>À alimenter</b></div>
+        <h2>Projets critiques</h2>
+        ${redProjects.map(projectMiniCard).join("") || "<p>Aucun projet critique.</p>"}
       </div>
 
       <div class="card">
-        <h2>Mémoire</h2>
-        <p>Recherche globale active sur managers, projets, décisions, actions, journal et documents.</p>
+        <h2>Actions ouvertes</h2>
+        ${openActions.slice(0, 6).map(actionCard).join("") || "<p>Aucune action ouverte.</p>"}
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Décisions récentes</h2>
+      ${recentDecisions.map(decisionCard).join("") || "<p>Aucune décision récente.</p>"}
     </div>
   `);
 }
+
 /* ACTIONS */
 function renderActions() {
   appHtml(`
