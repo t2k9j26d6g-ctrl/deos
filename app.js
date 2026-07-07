@@ -1,8 +1,12 @@
+const DEOS_VERSION = "V1.0";
+
 const state = {
   managers: [],
   projects: [],
   decisions: [],
-  actions: []
+  actions: [],
+  journal: [],
+  documents: []
 };
 
 const labels = {
@@ -20,46 +24,68 @@ async function load(path) {
     return [];
   }
 }
-function saveLocal() {
-  localStorage.setItem("deos_managers", JSON.stringify(state.managers));
+
+function save(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
 }
 
-function loadLocalManagers() {
-  const saved = localStorage.getItem("deos_managers");
-  if (saved) state.managers = JSON.parse(saved);
+function loadSaved(key, fallback) {
+  const saved = localStorage.getItem(key);
+  return saved ? JSON.parse(saved) : fallback;
 }
 
 function badge(status) {
   return `<span class="badge ${status}">${labels[status] || "À suivre"}</span>`;
 }
 
+function appHtml(html) {
+  document.getElementById("app").innerHTML = html;
+}
+
+function lines(id) {
+  return document.getElementById(id).value
+    .split("\n")
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+
+function escapeAttr(value = "") {
+  return String(value).replace(/"/g, "&quot;");
+}
+
+function listOrEmpty(items, prefix = "") {
+  return (items || [])
+    .map(item => `<div class="item">${prefix}${item}</div>`)
+    .join("") || "<p>À compléter</p>";
+}
+
 async function init() {
-  state.managers = await load("data/managers.json");
-  loadLocalManagers();
-  state.projects = await load("data/projects.json");
-  const savedProjects = localStorage.getItem("deos_projects");
-if (savedProjects) state.projects = JSON.parse(savedProjects);
-  state.decisions = await load("data/decisions.json");
-  state.actions = await load("data/actions.json");
+  state.managers = loadSaved("deos_managers", await load("data/managers.json"));
+  state.projects = loadSaved("deos_projects", await load("data/projects.json"));
+  state.decisions = loadSaved("deos_decisions", await load("data/decisions.json"));
+  state.actions = loadSaved("deos_actions", await load("data/actions.json"));
+  state.journal = loadSaved("deos_journal", []);
+  state.documents = loadSaved("deos_documents", defaultDocuments());
 
-  document.getElementById("today").textContent = new Intl.DateTimeFormat("fr-FR", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric"
-  }).format(new Date());
+  document.getElementById("today").textContent =
+    new Intl.DateTimeFormat("fr-FR", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric"
+    }).format(new Date());
 
-  document.querySelectorAll(".nav").forEach((button) => {
+  document.querySelectorAll(".nav").forEach(button => {
     button.onclick = () => setView(button.dataset.view);
   });
 
-  document.getElementById("searchInput").oninput = (event) => runSearch(event.target.value);
+  document.getElementById("searchInput").oninput = event => runSearch(event.target.value);
 
   setView("cockpit");
 }
 
 function setView(view) {
-  document.querySelectorAll(".nav").forEach((button) => {
+  document.querySelectorAll(".nav").forEach(button => {
     button.classList.toggle("active", button.dataset.view === view);
   });
 
@@ -75,21 +101,30 @@ function setView(view) {
 
   document.getElementById("viewTitle").textContent = titles[view] || "DEOS";
 
-  const renderer = window[`render_${view}`];
-  if (typeof renderer === "function") renderer();
+  const views = {
+    cockpit: renderCockpit,
+    actions: renderActions,
+    managers: renderManagers,
+    projects: renderProjects,
+    decisions: renderDecisions,
+    journal: renderJournal,
+    documents: renderDocuments
+  };
+
+  if (views[view]) views[view]();
 }
 
-function render_cockpit() {
+function renderCockpit() {
   const lastDecision = state.decisions[0];
-  const openActions = state.actions.filter((a) => !a.done);
-  const redProjects = state.projects.filter((p) => p.status === "red");
-  const managersToFollow = state.managers.filter((m) => m.status !== "green");
+  const openActions = state.actions.filter(a => !a.done);
+  const redProjects = state.projects.filter(p => p.status === "red");
+  const managersToFollow = state.managers.filter(m => m.status !== "green");
 
-  document.getElementById("app").innerHTML = `
+  appHtml(`
     <div class="card hero">
-      <h2>Décision à sécuriser</h2>
-      <h3>${lastDecision?.title || "Aucune décision enregistrée"}</h3>
-      <p>${lastDecision?.context || ""}</p>
+      <h2>DEOS ${DEOS_VERSION}</h2>
+      <h3>${lastDecision?.title || "Aucune décision à sécuriser"}</h3>
+      <p>${lastDecision?.context || "Le cockpit est prêt."}</p>
       <span class="muted">${lastDecision?.date || ""}</span>
     </div>
 
@@ -120,118 +155,23 @@ function render_cockpit() {
 
       <div class="card">
         <h2>Mémoire</h2>
-        <p>Recherche globale active sur managers, projets, décisions et actions.</p>
+        <p>Recherche globale active sur managers, projets, décisions, actions, journal et documents.</p>
       </div>
     </div>
-  `;
+  `);
 }
-
-function render_actions() {
-  document.getElementById("app").innerHTML =
-    state.actions.map(actionCard).join("") || "<div class='card'>Aucune action.</div>";
-}
-
-function render_managers() {
-  document.getElementById("app").innerHTML = `
+/* ACTIONS */
+function renderActions() {
+  appHtml(`
     <div class="card">
-      <h2>Ajouter un manager</h2>
-      <input id="managerName" placeholder="Nom">
-      <input id="managerRole" placeholder="Poste">
-      <select id="managerStatus">
-        <option value="green">Maîtrisé</option>
-        <option value="orange">À suivre</option>
-        <option value="red">Critique</option>
-      </select>
-      <button class="action" onclick="addManager()">Ajouter</button>
+      <h2>Ajouter une action</h2>
+      <input id="actionTitle" placeholder="Action">
+      <input id="actionLink" placeholder="Lien : projet, manager, décision...">
+      <button class="action" onclick="addAction()">Ajouter</button>
     </div>
 
-    <div class="grid two">
-      ${state.managers.map((manager, index) => managerFullCard(manager, index)).join("")}
-    </div>
-  `;
-}
-
-function render_projects() {
-  document.getElementById("app").innerHTML = `
-    <div class="card">
-      <h2>Ajouter un projet</h2>
-      <input id="projectName" placeholder="Nom du projet">
-      <input id="projectNext" placeholder="Prochaine étape">
-      <input id="projectProgress" type="number" min="0" max="100" value="0" placeholder="Avancement">
-
-      <select id="projectStatus">
-        <option value="green">Maîtrisé</option>
-        <option value="orange">À suivre</option>
-        <option value="red">Critique</option>
-      </select>
-
-      <button class="action" onclick="addProject()">Ajouter</button>
-    </div>
-
-    <div class="grid two">
-      ${state.projects.map((project, index) => projectFullCard(project, index)).join("")}
-    </div>
-  `;
-}
-
-function render_journal() {
-  document.getElementById("app").innerHTML = `
-    <div class="card hero">
-      <h2>Journal du Directeur</h2>
-      <p class="muted">Trace les faits marquants, décisions, échanges et points de vigilance.</p>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>Entrée du jour</h2>
-        <div class="item"><strong>Faits marquants</strong><span class="muted">À compléter</span></div>
-        <div class="item"><strong>Décisions prises</strong><span class="muted">À compléter</span></div>
-        <div class="item"><strong>Personnes rencontrées</strong><span class="muted">À compléter</span></div>
-        <div class="item"><strong>Actions à suivre</strong><span class="muted">À compléter</span></div>
-      </div>
-
-      <div class="card">
-        <h2>Dernières traces</h2>
-        <div class="item"><strong>Lancement DEOS</strong><span class="muted">Création du cockpit décisionnel.</span></div>
-        <div class="item"><strong>Organisation GitHub</strong><span class="muted">Mise en place du dépôt et de GitHub Pages.</span></div>
-      </div>
-    </div>
-  `;
-}
-
-function render_documents() {
-  document.getElementById("app").innerHTML = `
-    <div class="card hero">
-      <h2>Documents & modèles</h2>
-      <p class="muted">Modèles prêts à utiliser pour les mails, courriers, CODIR, CSE et notes internes.</p>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>Management</h2>
-        <div class="item"><strong>Compte rendu CODIR</strong><span class="muted">Faits marquants · décisions · actions · alertes</span></div>
-        <div class="item"><strong>Entretien manager</strong><span class="muted">Contexte · objectifs · points forts · vigilance</span></div>
-      </div>
-
-      <div class="card">
-        <h2>RH / Social</h2>
-        <div class="item"><strong>Courrier disciplinaire</strong><span class="muted">Faits · règlement · analyse · sanction</span></div>
-        <div class="item"><strong>CSE</strong><span class="muted">Questions · réponses · décisions · points à sécuriser</span></div>
-      </div>
-
-      <div class="card">
-        <h2>Exploitation</h2>
-        <div class="item"><strong>Note incident</strong><span class="muted">Contexte · causes · actions · REX</span></div>
-        <div class="item"><strong>Gemba DE</strong><span class="muted">Observation terrain · décision · suivi</span></div>
-      </div>
-
-      <div class="card">
-        <h2>Communication</h2>
-        <div class="item"><strong>Mail professionnel</strong><span class="muted">Objet clair · contexte · demande · échéance</span></div>
-        <div class="item"><strong>Note direction</strong><span class="muted">Message court, cadré et diffusable</span></div>
-      </div>
-    </div>
-  `;
+    ${state.actions.map(actionCard).join("") || "<div class='card'>Aucune action.</div>"}
+  `);
 }
 
 function actionCard(action) {
@@ -246,9 +186,48 @@ function actionCard(action) {
   `;
 }
 
+function addAction() {
+  const title = document.getElementById("actionTitle").value.trim();
+  const link = document.getElementById("actionLink").value.trim();
+
+  if (!title) return;
+
+  state.actions.unshift({
+    title,
+    link,
+    done: false
+  });
+
+  save("deos_actions", state.actions);
+  renderActions();
+}
+
+/* MANAGERS */
+function renderManagers() {
+  appHtml(`
+    <div class="card">
+      <h2>Ajouter un manager</h2>
+      <input id="managerName" placeholder="Nom">
+      <input id="managerRole" placeholder="Poste">
+
+      <select id="managerStatus">
+        <option value="green">Maîtrisé</option>
+        <option value="orange">À suivre</option>
+        <option value="red">Critique</option>
+      </select>
+
+      <button class="action" onclick="addManager()">Ajouter</button>
+    </div>
+
+    <div class="grid two">
+      ${state.managers.map(managerFullCard).join("")}
+    </div>
+  `);
+}
+
 function managerMiniCard(manager) {
   return `
-    <div class="item">
+    <div class="item clickable" onclick="openManager(${state.managers.indexOf(manager)})">
       <strong>${manager.name}</strong>
       <span class="muted">${manager.role}</span>
       ${badge(manager.status)}
@@ -267,9 +246,160 @@ function managerFullCard(manager, index) {
   `;
 }
 
+function addManager() {
+  const name = document.getElementById("managerName").value.trim();
+  const role = document.getElementById("managerRole").value.trim();
+  const status = document.getElementById("managerStatus").value;
+
+  if (!name || !role) return;
+
+  state.managers.push({
+    name,
+    role,
+    status,
+    note: "",
+    strengths: [],
+    watchPoints: [],
+    actions: []
+  });
+
+  save("deos_managers", state.managers);
+  renderManagers();
+}
+
+function openManager(index) {
+  const manager = state.managers[index];
+
+  document.getElementById("viewTitle").textContent = manager.name;
+
+  appHtml(`
+    <div class="card hero">
+      <h2>${manager.name}</h2>
+      <p>${manager.role}</p>
+      ${badge(manager.status)}
+      <p class="muted">${manager.note || ""}</p>
+
+      <button class="action" onclick="editManager(${index})">✏️ Modifier la fiche</button>
+      <button class="danger" onclick="deleteManager(${index})">Supprimer</button>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>Priorité</h2>
+        <p>${manager.priority || "À compléter"}</p>
+      </div>
+
+      <div class="card">
+        <h2>Prochain entretien</h2>
+        <p>${manager.nextMeeting || "À planifier"}</p>
+      </div>
+
+      <div class="card">
+        <h2>Forces</h2>
+        ${listOrEmpty(manager.strengths)}
+      </div>
+
+      <div class="card">
+        <h2>Points de vigilance</h2>
+        ${listOrEmpty(manager.watchPoints)}
+      </div>
+
+      <div class="card">
+        <h2>Actions</h2>
+        ${listOrEmpty(manager.actions, "⬜ ")}
+      </div>
+
+      <div class="card">
+        <h2>Historique</h2>
+        <div class="item">Fiche créée dans DEOS</div>
+      </div>
+    </div>
+  `);
+}
+
+function editManager(index) {
+  const manager = state.managers[index];
+
+  document.getElementById("viewTitle").textContent = "Modifier " + manager.name;
+
+  appHtml(`
+    <div class="card">
+      <h2>Modifier la fiche manager</h2>
+
+      <input id="editName" value="${escapeAttr(manager.name)}" placeholder="Nom">
+      <input id="editRole" value="${escapeAttr(manager.role)}" placeholder="Poste">
+      <input id="editPriority" value="${escapeAttr(manager.priority || "")}" placeholder="Priorité">
+      <input id="editNextMeeting" value="${escapeAttr(manager.nextMeeting || "")}" placeholder="Prochain entretien">
+
+      <select id="editStatus">
+        <option value="green" ${manager.status === "green" ? "selected" : ""}>Maîtrisé</option>
+        <option value="orange" ${manager.status === "orange" ? "selected" : ""}>À suivre</option>
+        <option value="red" ${manager.status === "red" ? "selected" : ""}>Critique</option>
+      </select>
+
+      <textarea id="editNote" placeholder="Note">${manager.note || ""}</textarea>
+      <textarea id="editStrengths" placeholder="Forces, une par ligne">${(manager.strengths || []).join("\n")}</textarea>
+      <textarea id="editWatchPoints" placeholder="Points de vigilance, un par ligne">${(manager.watchPoints || []).join("\n")}</textarea>
+      <textarea id="editActions" placeholder="Actions, une par ligne">${(manager.actions || []).join("\n")}</textarea>
+
+      <button class="action" onclick="saveManager(${index})">Enregistrer</button>
+      <button class="danger" onclick="openManager(${index})">Annuler</button>
+    </div>
+  `);
+}
+
+function saveManager(index) {
+  state.managers[index] = {
+    ...state.managers[index],
+    name: document.getElementById("editName").value.trim(),
+    role: document.getElementById("editRole").value.trim(),
+    priority: document.getElementById("editPriority").value.trim(),
+    nextMeeting: document.getElementById("editNextMeeting").value.trim(),
+    status: document.getElementById("editStatus").value,
+    note: document.getElementById("editNote").value.trim(),
+    strengths: lines("editStrengths"),
+    watchPoints: lines("editWatchPoints"),
+    actions: lines("editActions")
+  };
+
+  save("deos_managers", state.managers);
+  openManager(index);
+}
+
+function deleteManager(index) {
+  if (!confirm("Supprimer ce manager ?")) return;
+
+  state.managers.splice(index, 1);
+  save("deos_managers", state.managers);
+  renderManagers();
+}
+/* PROJECTS */
+function renderProjects() {
+  appHtml(`
+    <div class="card">
+      <h2>Ajouter un projet</h2>
+      <input id="projectName" placeholder="Nom du projet">
+      <input id="projectNext" placeholder="Prochaine étape">
+      <input id="projectProgress" type="number" min="0" max="100" value="0" placeholder="Avancement">
+
+      <select id="projectStatus">
+        <option value="green">Maîtrisé</option>
+        <option value="orange">À suivre</option>
+        <option value="red">Critique</option>
+      </select>
+
+      <button class="action" onclick="addProject()">Ajouter</button>
+    </div>
+
+    <div class="grid two">
+      ${state.projects.map(projectFullCard).join("")}
+    </div>
+  `);
+}
+
 function projectMiniCard(project) {
   return `
-    <div class="item">
+    <div class="item clickable" onclick="openProject(${state.projects.indexOf(project)})">
       <strong>${project.name}</strong>
       <span class="muted">${project.next || ""}</span>
       ${badge(project.status)}
@@ -291,176 +421,40 @@ function projectFullCard(project, index) {
   `;
 }
 
-function decisionCard(decision) {
-  return `
-    <div class="card">
-      <h2>${decision.title}</h2>
-      <p>${decision.context || ""}</p>
-      <span class="muted">${decision.date || ""} · ${(decision.tags || []).join(", ")}</span>
-    </div>
-  `;
-}
+function addProject() {
+  const name = document.getElementById("projectName").value.trim();
+  const next = document.getElementById("projectNext").value.trim();
+  const progress = Number(document.getElementById("projectProgress").value);
+  const status = document.getElementById("projectStatus").value;
 
-function runSearch(query) {
-  const q = query.toLowerCase().trim();
+  if (!name) return;
 
-  if (!q) {
-    setView("cockpit");
-    return;
-  }
-
-  const results = [
-    ...state.managers.map((item) => ({ type: "Manager", title: item.name, text: item.role })),
-    ...state.projects.map((item) => ({ type: "Projet", title: item.name, text: item.next })),
-    ...state.decisions.map((item) => ({ type: "Décision", title: item.title, text: item.context })),
-    ...state.actions.map((item) => ({ type: "Action", title: item.title, text: item.link }))
-  ].filter((item) => `${item.title} ${item.text}`.toLowerCase().includes(q));
-
-  document.getElementById("viewTitle").textContent = "Recherche";
-
-  document.getElementById("app").innerHTML = `
-    <div class="card">
-      <h2>${results.length} résultat(s)</h2>
-      ${results.map((result) => `
-        <div class="item">
-          <strong>${result.title}</strong>
-          <span class="muted">${result.type} · ${result.text || ""}</span>
-        </div>
-      `).join("")}
-    </div>
-  `;
-}
-function addManager() {
-  const name = document.getElementById("managerName").value.trim();
-  const role = document.getElementById("managerRole").value.trim();
-  const status = document.getElementById("managerStatus").value;
-
-  if (!name || !role) return;
-
-  state.managers.push({
+  state.projects.push({
     name,
-    role,
+    next,
+    progress,
     status,
-    note: ""
+    decisions: "",
+    actions: ""
   });
 
-  saveLocal();
-  render_managers();
+  save("deos_projects", state.projects);
+  renderProjects();
 }
 
-function deleteManager(index) {
-  state.managers.splice(index, 1);
-  saveLocal();
-  render_managers();
-}
-function openManager(index) {
-  const manager = state.managers[index];
-
-  document.getElementById("viewTitle").textContent = manager.name;
-
-  document.getElementById("app").innerHTML = `
-    <div class="card hero">
-      <h2>${manager.name}</h2>
-      <p>${manager.role}</p>
-      ${badge(manager.status)}
-      <p class="muted">${manager.note || ""}</p>
-      <button class="action" onclick="editManager(${index})">✏️ Modifier la fiche</button>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>Priorité</h2>
-        <p>${manager.priority || "À compléter"}</p>
-      </div>
-
-      <div class="card">
-        <h2>Prochain entretien</h2>
-        <p>${manager.nextMeeting || "À planifier"}</p>
-      </div>
-
-      <div class="card">
-        <h2>Forces</h2>
-        ${(manager.strengths || []).map(item => `<div class="item">${item}</div>`).join("") || "<p>À compléter</p>"}
-      </div>
-
-      <div class="card">
-        <h2>Points de vigilance</h2>
-        ${(manager.watchPoints || []).map(item => `<div class="item">${item}</div>`).join("") || "<p>À compléter</p>"}
-      </div>
-
-      <div class="card">
-        <h2>Actions</h2>
-        ${(manager.actions || []).map(item => `<div class="item">⬜ ${item}</div>`).join("") || "<p>Aucune action</p>"}
-      </div>
-
-      <div class="card">
-        <h2>Historique</h2>
-        <div class="item">Fiche créée dans DEOS</div>
-      </div>
-    </div>
-  `;
-}
-
-function editManager(index) {
-  const manager = state.managers[index];
-
-  document.getElementById("viewTitle").textContent = "Modifier " + manager.name;
-
-  document.getElementById("app").innerHTML = `
-    <div class="card">
-      <h2>Modifier la fiche manager</h2>
-
-      <input id="editName" value="${manager.name || ""}" placeholder="Nom">
-      <input id="editRole" value="${manager.role || ""}" placeholder="Poste">
-      <input id="editPriority" value="${manager.priority || ""}" placeholder="Priorité">
-      <input id="editNextMeeting" value="${manager.nextMeeting || ""}" placeholder="Prochain entretien">
-
-      <select id="editStatus">
-        <option value="green" ${manager.status === "green" ? "selected" : ""}>Maîtrisé</option>
-        <option value="orange" ${manager.status === "orange" ? "selected" : ""}>À suivre</option>
-        <option value="red" ${manager.status === "red" ? "selected" : ""}>Critique</option>
-      </select>
-
-      <textarea id="editNote" placeholder="Note">${manager.note || ""}</textarea>
-      <textarea id="editStrengths" placeholder="Forces, une par ligne">${(manager.strengths || []).join("\n")}</textarea>
-      <textarea id="editWatchPoints" placeholder="Points de vigilance, un par ligne">${(manager.watchPoints || []).join("\n")}</textarea>
-      <textarea id="editActions" placeholder="Actions, une par ligne">${(manager.actions || []).join("\n")}</textarea>
-
-      <button class="action" onclick="saveManager(${index})">Enregistrer</button>
-      <button class="danger" onclick="openManager(${index})">Annuler</button>
-    </div>
-  `;
-}
-
-function saveManager(index) {
-  state.managers[index] = {
-    ...state.managers[index],
-    name: document.getElementById("editName").value.trim(),
-    role: document.getElementById("editRole").value.trim(),
-    priority: document.getElementById("editPriority").value.trim(),
-    nextMeeting: document.getElementById("editNextMeeting").value.trim(),
-    status: document.getElementById("editStatus").value,
-    note: document.getElementById("editNote").value.trim(),
-    strengths: document.getElementById("editStrengths").value.split("\n").map(x => x.trim()).filter(Boolean),
-    watchPoints: document.getElementById("editWatchPoints").value.split("\n").map(x => x.trim()).filter(Boolean),
-    actions: document.getElementById("editActions").value.split("\n").map(x => x.trim()).filter(Boolean)
-  };
-
-  saveLocal();
-  openManager(index);
-}
 function openProject(index) {
   const project = state.projects[index];
 
   document.getElementById("viewTitle").textContent = project.name;
 
-  document.getElementById("app").innerHTML = `
+  appHtml(`
     <div class="card hero">
       <h2>${project.name}</h2>
       ${badge(project.status)}
       <p>${project.next || ""}</p>
+
       <button class="action" onclick="editProject(${index})">✏️ Modifier le projet</button>
-      <button class="danger" onclick="deleteProject(${index})">Supprimer le projet</button>
+      <button class="danger" onclick="deleteProject(${index})">Supprimer</button>
     </div>
 
     <div class="grid two">
@@ -487,19 +481,20 @@ function openProject(index) {
         <p>${project.actions || "À connecter"}</p>
       </div>
     </div>
-  `;
+  `);
 }
+
 function editProject(index) {
   const project = state.projects[index];
 
   document.getElementById("viewTitle").textContent = "Modifier " + project.name;
 
-  document.getElementById("app").innerHTML = `
+  appHtml(`
     <div class="card">
       <h2>Modifier le projet</h2>
 
-      <input id="editProjectName" value="${project.name || ""}" placeholder="Nom du projet">
-      <input id="editProjectNext" value="${project.next || ""}" placeholder="Prochaine étape">
+      <input id="editProjectName" value="${escapeAttr(project.name)}" placeholder="Nom du projet">
+      <input id="editProjectNext" value="${escapeAttr(project.next || "")}" placeholder="Prochaine étape">
       <input id="editProjectProgress" type="number" min="0" max="100" value="${project.progress || 0}" placeholder="Avancement">
 
       <select id="editProjectStatus">
@@ -514,7 +509,7 @@ function editProject(index) {
       <button class="action" onclick="saveProject(${index})">Enregistrer</button>
       <button class="danger" onclick="openProject(${index})">Annuler</button>
     </div>
-  `;
+  `);
 }
 
 function saveProject(index) {
@@ -528,39 +523,312 @@ function saveProject(index) {
     actions: document.getElementById("editProjectActions").value.trim()
   };
 
-  localStorage.setItem("deos_projects", JSON.stringify(state.projects));
+  save("deos_projects", state.projects);
   openProject(index);
-}
-function saveProjectsLocal() {
-  localStorage.setItem("deos_projects", JSON.stringify(state.projects));
-}
-
-function addProject() {
-  const name = document.getElementById("projectName").value.trim();
-  const next = document.getElementById("projectNext").value.trim();
-  const progress = Number(document.getElementById("projectProgress").value);
-  const status = document.getElementById("projectStatus").value;
-
-  if (!name) return;
-
-  state.projects.push({
-    name,
-    next,
-    progress,
-    status,
-    decisions: "",
-    actions: ""
-  });
-
-  saveProjectsLocal();
-  render_projects();
 }
 
 function deleteProject(index) {
   if (!confirm("Supprimer ce projet ?")) return;
 
   state.projects.splice(index, 1);
-  saveProjectsLocal();
-  render_projects();
+  save("deos_projects", state.projects);
+  renderProjects();
 }
+
+/* DECISIONS */
+function renderDecisions() {
+  appHtml(`
+    <div class="card">
+      <h2>Ajouter une décision</h2>
+      <input id="decisionTitle" placeholder="Titre de la décision">
+      <textarea id="decisionContext" placeholder="Contexte / justification"></textarea>
+      <input id="decisionTags" placeholder="Tags : Projet, manager, CSE...">
+      <button class="action" onclick="addDecision()">Ajouter</button>
+    </div>
+
+    ${state.decisions.map(decisionCard).join("") || "<div class='card'>Aucune décision.</div>"}
+  `);
+}
+
+function decisionCard(decision, index) {
+  return `
+    <div class="card clickable" onclick="openDecision(${index})">
+      <h2>${decision.title}</h2>
+      <p>${decision.context || ""}</p>
+      <span class="muted">${decision.date || ""} · ${(decision.tags || []).join(", ")}</span>
+    </div>
+  `;
+}
+
+function addDecision() {
+  const title = document.getElementById("decisionTitle").value.trim();
+  const context = document.getElementById("decisionContext").value.trim();
+  const tags = document.getElementById("decisionTags").value
+    .split(",")
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  if (!title) return;
+
+  state.decisions.unshift({
+    title,
+    context,
+    tags,
+    date: new Date().toLocaleDateString("fr-FR")
+  });
+
+  save("deos_decisions", state.decisions);
+  renderDecisions();
+}
+
+function openDecision(index) {
+  const decision = state.decisions[index];
+
+  document.getElementById("viewTitle").textContent = decision.title;
+
+  appHtml(`
+    <div class="card hero">
+      <h2>${decision.title}</h2>
+      <p>${decision.context || ""}</p>
+      <span class="muted">${decision.date || ""} · ${(decision.tags || []).join(", ")}</span>
+      <br><br>
+      <button class="action" onclick="editDecision(${index})">✏️ Modifier la décision</button>
+      <button class="danger" onclick="deleteDecision(${index})">Supprimer</button>
+    </div>
+  `);
+}
+
+function editDecision(index) {
+  const decision = state.decisions[index];
+
+  document.getElementById("viewTitle").textContent = "Modifier décision";
+
+  appHtml(`
+    <div class="card">
+      <h2>Modifier la décision</h2>
+      <input id="editDecisionTitle" value="${escapeAttr(decision.title)}" placeholder="Titre">
+      <textarea id="editDecisionContext" placeholder="Contexte">${decision.context || ""}</textarea>
+      <input id="editDecisionTags" value="${(decision.tags || []).join(", ")}" placeholder="Tags">
+
+      <button class="action" onclick="saveDecision(${index})">Enregistrer</button>
+      <button class="danger" onclick="openDecision(${index})">Annuler</button>
+    </div>
+  `);
+}
+
+function saveDecision(index) {
+  state.decisions[index] = {
+    ...state.decisions[index],
+    title: document.getElementById("editDecisionTitle").value.trim(),
+    context: document.getElementById("editDecisionContext").value.trim(),
+    tags: document.getElementById("editDecisionTags").value
+      .split(",")
+      .map(x => x.trim())
+      .filter(Boolean)
+  };
+
+  save("deos_decisions", state.decisions);
+  openDecision(index);
+}
+
+function deleteDecision(index) {
+  if (!confirm("Supprimer cette décision ?")) return;
+
+  state.decisions.splice(index, 1);
+  save("deos_decisions", state.decisions);
+  renderDecisions();
+}
+
+/* JOURNAL */
+function renderJournal() {
+  appHtml(`
+    <div class="card hero">
+      <h2>Journal du Directeur</h2>
+      <p class="muted">Trace les faits marquants, décisions, échanges et points de vigilance.</p>
+    </div>
+
+    <div class="card">
+      <h2>Ajouter une entrée</h2>
+      <input id="journalTitle" placeholder="Titre : CODIR, point RH, incident...">
+      <textarea id="journalContent" placeholder="Compte-rendu / faits marquants"></textarea>
+      <input id="journalTags" placeholder="Tags : manager, projet, décision...">
+      <button class="action" onclick="addJournal()">Ajouter</button>
+    </div>
+
+    ${state.journal.map(journalCard).join("") || "<div class='card'>Aucune entrée.</div>"}
+  `);
+}
+
+function journalCard(entry, index) {
+  return `
+    <div class="card clickable" onclick="openJournal(${index})">
+      <h2>${entry.title}</h2>
+      <p>${entry.content || ""}</p>
+      <span class="muted">${entry.date || ""} · ${(entry.tags || []).join(", ")}</span>
+    </div>
+  `;
+}
+
+function addJournal() {
+  const title = document.getElementById("journalTitle").value.trim();
+  const content = document.getElementById("journalContent").value.trim();
+  const tags = document.getElementById("journalTags").value
+    .split(",")
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  if (!title && !content) return;
+
+  state.journal.unshift({
+    title: title || "Entrée journal",
+    content,
+    tags,
+    date: new Date().toLocaleDateString("fr-FR")
+  });
+
+  save("deos_journal", state.journal);
+  renderJournal();
+}
+
+function openJournal(index) {
+  const entry = state.journal[index];
+
+  document.getElementById("viewTitle").textContent = entry.title;
+
+  appHtml(`
+    <div class="card hero">
+      <h2>${entry.title}</h2>
+      <p>${entry.content || ""}</p>
+      <span class="muted">${entry.date || ""} · ${(entry.tags || []).join(", ")}</span>
+      <br><br>
+      <button class="danger" onclick="deleteJournal(${index})">Supprimer</button>
+    </div>
+  `);
+}
+
+function deleteJournal(index) {
+  if (!confirm("Supprimer cette entrée ?")) return;
+
+  state.journal.splice(index, 1);
+  save("deos_journal", state.journal);
+  renderJournal();
+}
+
+/* DOCUMENTS */
+function renderDocuments() {
+  appHtml(`
+    <div class="card hero">
+      <h2>Documents & modèles</h2>
+      <p class="muted">Modèles prêts à utiliser pour mails, courriers, CODIR, CSE et notes internes.</p>
+    </div>
+
+    <div class="card">
+      <h2>Créer un document</h2>
+      <input id="documentTitle" placeholder="Titre du document">
+      <select id="documentType">
+        <option>Mail professionnel</option>
+        <option>Compte rendu CODIR</option>
+        <option>Courrier disciplinaire</option>
+        <option>CSE</option>
+        <option>Note incident</option>
+        <option>Gemba DE</option>
+      </select>
+      <textarea id="documentContent" placeholder="Contenu / modèle"></textarea>
+      <button class="action" onclick="addDocument()">Ajouter</button>
+    </div>
+
+    <div class="grid two">
+      ${state.documents.map(documentCard).join("") || "<div class='card'>Aucun document.</div>"}
+    </div>
+  `);
+}
+
+function defaultDocuments() {
+  return [
+    { title: "Compte rendu CODIR", type: "Management", content: "Faits marquants · décisions · actions · alertes" },
+    { title: "Courrier disciplinaire", type: "RH / Social", content: "Faits · règlement · analyse · sanction" },
+    { title: "CSE", type: "Dialogue social", content: "Questions · réponses · décisions · points à sécuriser" },
+    { title: "Mail professionnel", type: "Communication", content: "Objet clair · contexte · demande · échéance" }
+  ];
+}
+
+function documentCard(doc, index) {
+  return `
+    <div class="card clickable" onclick="openDocument(${index})">
+      <h2>${doc.title}</h2>
+      <span class="muted">${doc.type || ""}</span>
+      <p>${doc.content || ""}</p>
+    </div>
+  `;
+}
+
+function addDocument() {
+  const title = document.getElementById("documentTitle").value.trim();
+  const type = document.getElementById("documentType").value;
+  const content = document.getElementById("documentContent").value.trim();
+
+  if (!title) return;
+
+  state.documents.unshift({ title, type, content });
+
+  save("deos_documents", state.documents);
+  renderDocuments();
+}
+
+function openDocument(index) {
+  const doc = state.documents[index];
+
+  document.getElementById("viewTitle").textContent = doc.title;
+
+  appHtml(`
+    <div class="card hero">
+      <h2>${doc.title}</h2>
+      <span class="muted">${doc.type || ""}</span>
+      <p>${doc.content || ""}</p>
+      <button class="danger" onclick="deleteDocument(${index})">Supprimer</button>
+    </div>
+  `);
+}
+
+function deleteDocument(index) {
+  if (!confirm("Supprimer ce document ?")) return;
+
+  state.documents.splice(index, 1);
+  save("deos_documents", state.documents);
+  renderDocuments();
+}
+
+/* SEARCH */
+function runSearch(query) {
+  const q = query.toLowerCase().trim();
+
+  if (!q) {
+    setView("cockpit");
+    return;
+  }
+
+  const results = [
+    ...state.managers.map(item => ({ type: "Manager", title: item.name, text: item.role })),
+    ...state.projects.map(item => ({ type: "Projet", title: item.name, text: item.next })),
+    ...state.decisions.map(item => ({ type: "Décision", title: item.title, text: item.context })),
+    ...state.actions.map(item => ({ type: "Action", title: item.title, text: item.link })),
+    ...state.journal.map(item => ({ type: "Journal", title: item.title, text: item.content })),
+    ...state.documents.map(item => ({ type: "Document", title: item.title, text: item.content }))
+  ].filter(item => `${item.title} ${item.text}`.toLowerCase().includes(q));
+
+  document.getElementById("viewTitle").textContent = "Recherche";
+
+  appHtml(`
+    <div class="card">
+      <h2>${results.length} résultat(s)</h2>
+      ${results.map(result => `
+        <div class="item">
+          <strong>${result.title}</strong>
+          <span class="muted">${result.type} · ${result.text || ""}</span>
+        </div>
+      `).join("")}
+    </div>
+  `);
+}
+
 init();
