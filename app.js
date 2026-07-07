@@ -168,101 +168,56 @@ function renderCockpit() {
   const openActions = state.actions.filter(a => !a.done);
   const redProjects = state.projects.filter(p => p.status === "red");
   const managersToFollow = state.managers.filter(m => m.status !== "green");
-  const recentDecisions = state.decisions.slice(0, 3);
 
   appHtml(`
-    <div class="v2-hero">
-      <div>
-        <p class="muted">DEOS ${DEOS_VERSION} · Saint-Gilles</p>
+    <div class="cockpit-top">
+      <div class="card hero compact-hero">
         <h2>Bonjour Ludovic</h2>
-        <p>Voici ton point d'entrée direction pour la journée.</p>
+        <p class="muted">Brief du jour · DEOS ${DEOS_VERSION}</p>
+
+        <div class="quick-kpis">
+          <div><strong>${redProjects.length}</strong><span>🔴 Urgences</span></div>
+          <div><strong>${openActions.length}</strong><span>🟠 Actions</span></div>
+          <div><strong>${managersToFollow.length}</strong><span>👥 Managers</span></div>
+          <div><strong>${state.projects.length}</strong><span>📦 Dossiers</span></div>
+        </div>
       </div>
 
-      <div class="v2-time">
-        <strong>${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</strong>
-        <span>Directeur d'entrepôt</span>
+      <div class="card agenda-card">
+        <h2>📅 Aujourd'hui</h2>
+        <div class="agenda-line"><strong>09:00</strong><span>Exploitation / REX</span></div>
+        <div class="agenda-line"><strong>11:00</strong><span>Point RH</span></div>
+        <div class="agenda-line"><strong>14:00</strong><span>Productivité</span></div>
+        <div class="agenda-line"><strong>16:30</strong><span>Journal décision</span></div>
       </div>
-    </div>
-
-    <div class="v2-grid-main">
-      <section class="card v2-agenda">
-        <div class="v2-card-title">
-          <h2>📅 Aujourd'hui</h2>
-          <button class="small-btn">Connecter Google Calendar</button>
-        </div>
-
-        <div class="agenda-line">
-          <strong>09:00</strong>
-          <span>Point exploitation / REX</span>
-        </div>
-        <div class="agenda-line">
-          <strong>11:00</strong>
-          <span>Point RH</span>
-        </div>
-        <div class="agenda-line">
-          <strong>14:00</strong>
-          <span>Projet productivité</span>
-        </div>
-        <div class="agenda-line">
-          <strong>16:30</strong>
-          <span>Journal de décision</span>
-        </div>
-      </section>
-
-      <section class="card v2-attention">
-        <h2>🔥 Ce qui nécessite ton attention</h2>
-
-        <div class="attention-item red">
-          <span>Projets critiques</span>
-          <strong>${redProjects.length}</strong>
-        </div>
-
-        <div class="attention-item orange">
-          <span>Actions ouvertes</span>
-          <strong>${openActions.length}</strong>
-        </div>
-
-        <div class="attention-item blue">
-          <span>Managers à suivre</span>
-          <strong>${managersToFollow.length}</strong>
-        </div>
-
-        <div class="attention-item">
-          <span>Décisions récentes</span>
-          <strong>${recentDecisions.length}</strong>
-        </div>
-      </section>
-    </div>
-
-    <div class="v2-kpi-grid">
-      <div class="kpi v2-kpi"><span>Productivité</span><b>À connecter</b></div>
-      <div class="kpi v2-kpi"><span>Absentéisme</span><b>À connecter</b></div>
-      <div class="kpi v2-kpi"><span>Sécurité</span><b>À connecter</b></div>
-      <div class="kpi v2-kpi"><span>Litiges</span><b>À connecter</b></div>
-      <div class="kpi v2-kpi"><span>Volumes</span><b>À connecter</b></div>
     </div>
 
     <div class="grid two">
+      <div class="card">
+        <h2>🎯 Mes priorités</h2>
+        <div class="item">□ CODIR / exploitation</div>
+        <div class="item">□ Productivité</div>
+        <div class="item">□ Température chocolat</div>
+        <div class="item">□ Entretien Hadrien</div>
+      </div>
+
+      <div class="card">
+        <h2>🕘 Activité récente</h2>
+        <div class="item"><strong>Aujourd'hui</strong><span class="muted">Cockpit réorganisé</span></div>
+        <div class="item"><strong>Dernière action</strong><span class="muted">${openActions[0]?.title || "Aucune action ouverte"}</span></div>
+        <div class="item"><strong>Dernier dossier</strong><span class="muted">${state.projects[0]?.name || "Aucun projet"}</span></div>
+      </div>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>📦 Dossiers sensibles</h2>
+        ${redProjects.map(projectMiniCard).join("") || "<p>Aucun dossier critique.</p>"}
+      </div>
+
       <div class="card">
         <h2>👥 Managers à suivre</h2>
         ${managersToFollow.map(managerMiniCard).join("") || "<p>Aucun manager à suivre.</p>"}
-      </div>
-
-      <div class="card">
-        <h2>📁 Projets critiques</h2>
-        ${redProjects.map(projectMiniCard).join("") || "<p>Aucun projet critique.</p>"}
-      </div>
-    </div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>✅ Actions ouvertes</h2>
-        ${openActions.slice(0, 6).map(actionCard).join("") || "<p>Aucune action ouverte.</p>"}
-      </div>
-
-      <div class="card">
-        <h2>📌 Décisions récentes</h2>
-        ${recentDecisions.map(decisionCard).join("") || "<p>Aucune décision récente.</p>"}
       </div>
     </div>
   `);
