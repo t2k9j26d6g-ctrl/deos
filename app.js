@@ -132,6 +132,13 @@ function renderCockpit() {
       </div>
     </div>
 
+    <div class="card">
+  <h2>Agenda du jour</h2>
+  <div class="item"><strong>09:00</strong><span class="muted">Point exploitation / REX</span></div>
+  <div class="item"><strong>11:00</strong><span class="muted">Point RH</span></div>
+  <div class="item"><strong>14:00</strong><span class="muted">Projet productivité</span></div>
+  <div class="item"><strong>16:30</strong><span class="muted">Journal de décision</span></div>
+</div>
     <div class="grid two">
       <div class="card">
         <h2>Mes priorités</h2>
