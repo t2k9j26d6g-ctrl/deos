@@ -176,13 +176,15 @@ function renderActions() {
       <button class="action" onclick="addAction()">Ajouter</button>
     </div>
 
-    ${state.actions.map(actionCard).join("") || "<div class='card'>Aucune action.</div>"}
+    ${state.actions.map((action, index) => actionCard(action, index)).join("") || "<div class='card'>Aucune action.</div>"}
   `);
 }
 
-function actionCard(action) {
+function actionCard(action, index) {
+  const realIndex = index ?? state.actions.indexOf(action);
+
   return `
-    <div class="item row">
+    <div class="item row clickable" onclick="toggleAction(${realIndex})">
       <div>
         <strong>${action.title}</strong>
         <span class="muted">${action.link || ""}</span>
@@ -190,6 +192,12 @@ function actionCard(action) {
       <span>${action.done ? "✅" : "⬜"}</span>
     </div>
   `;
+}
+
+function toggleAction(index) {
+  state.actions[index].done = !state.actions[index].done;
+  save("deos_actions", state.actions);
+  setView("actions");
 }
 
 function addAction() {
