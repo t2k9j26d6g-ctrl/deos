@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V1.0";
+const DEOS_VERSION = "V2.0";
 
 const state = {
   managers: [],
@@ -58,7 +58,55 @@ function listOrEmpty(items, prefix = "") {
     .map(item => `<div class="item">${prefix}${item}</div>`)
     .join("") || "<p>À compléter</p>";
 }
+function renderFolders() {
+  const favoriteProjects = state.projects.slice(0, 6);
+  const favoriteManagers = state.managers.slice(0, 6);
 
+  appHtml(`
+    <div class="card hero">
+      <h2>Mes dossiers</h2>
+      <p class="muted">Accès rapide aux sujets, personnes et dossiers que tu pilotes au quotidien.</p>
+    </div>
+
+    <div class="grid two">
+      <div class="card">
+        <h2>📦 Dossiers exploitation</h2>
+        ${favoriteProjects.map((project) => `
+          <div class="item clickable" onclick="openProject(${state.projects.indexOf(project)})">
+            <strong>${project.name}</strong>
+            <span class="muted">${project.next || "Aucune prochaine étape"}</span>
+            ${badge(project.status)}
+          </div>
+        `).join("") || "<p>Aucun projet.</p>"}
+      </div>
+
+      <div class="card">
+        <h2>👥 Dossiers managers</h2>
+        ${favoriteManagers.map((manager) => `
+          <div class="item clickable" onclick="openManager(${state.managers.indexOf(manager)})">
+            <strong>${manager.name}</strong>
+            <span class="muted">${manager.role}</span>
+            ${badge(manager.status)}
+          </div>
+        `).join("") || "<p>Aucun manager.</p>"}
+      </div>
+
+      <div class="card">
+        <h2>⚖️ Dialogue social</h2>
+        <div class="item"><strong>CSE</strong><span class="muted">Questions, réponses, décisions, échéances</span></div>
+        <div class="item"><strong>Courriers OS</strong><span class="muted">Réponses, historique, points sensibles</span></div>
+        <div class="item"><strong>Inspection / CNIL</strong><span class="muted">Documents et décisions à sécuriser</span></div>
+      </div>
+
+      <div class="card">
+        <h2>📖 Mémoire</h2>
+        <div class="item clickable" onclick="setView('journal')"><strong>Journal</strong><span class="muted">Faits marquants et traces quotidiennes</span></div>
+        <div class="item clickable" onclick="setView('decisions')"><strong>Décisions</strong><span class="muted">Pourquoi, quand, avec qui</span></div>
+        <div class="item clickable" onclick="setView('documents')"><strong>Documents</strong><span class="muted">Modèles, courriers, comptes rendus</span></div>
+      </div>
+    </div>
+  `);
+}
 async function init() {
   state.managers = loadSaved("deos_managers", await load("data/managers.json"));
   state.projects = loadSaved("deos_projects", await load("data/projects.json"));
@@ -91,6 +139,7 @@ function setView(view) {
 
   const titles = {
     cockpit: "Cockpit décisionnel",
+    folders: "Mes dossiers"
     actions: "Actions",
     managers: "Managers",
     projects: "Projets",
@@ -103,6 +152,7 @@ function setView(view) {
 
   const views = {
     cockpit: renderCockpit,
+    folders: renderFolders,
     actions: renderActions,
     managers: renderManagers,
     projects: renderProjects,
