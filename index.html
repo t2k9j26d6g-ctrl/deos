@@ -1,1 +1,45 @@
-<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DEOS</title><link rel="stylesheet" href="style.css"></head><body><aside class="sidebar"><div class="brand"><div class="logo">D</div><div><strong>DEOS</strong><span>Saint-Gilles</span></div></div><button class="nav active" data-view="cockpit">🏠 Cockpit</button><button class="nav" data-view="managers">👥 Managers</button><button class="nav" data-view="projets">📁 Projets</button><button class="nav" data-view="decisions">📌 Décisions</button><button class="nav" data-view="actions">✅ Actions</button></aside><main><header class="topbar"><div><p id="today" class="date"></p><h1 id="viewTitle">Cockpit décisionnel</h1></div><input id="search" placeholder="Rechercher : chocolat, Bérangère, CSE..."></header><section id="content"></section></main><script src="app.js"></script></body></html>
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DEOS V2</title>
+  <link rel="stylesheet" href="style.css?v=10" />
+</head>
+
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">D</div>
+      <div>
+        <strong>DEOS</strong>
+        <span>Saint-Gilles</span>
+      </div>
+    </div>
+
+    <button class="nav active" data-view="cockpit">🏠 Cockpit</button>
+    <button class="nav" data-view="folders">⭐ Mes dossiers</button>
+    <button class="nav" data-view="actions">✅ Actions</button>
+    <button class="nav" data-view="managers">👥 Managers</button>
+    <button class="nav" data-view="projects">📁 Projets</button>
+    <button class="nav" data-view="decisions">📌 Décisions</button>
+    <button class="nav" data-view="journal">📝 Journal</button>
+    <button class="nav" data-view="documents">📄 Documents</button>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <p id="today" class="today"></p>
+        <h1 id="viewTitle">Cockpit décisionnel</h1>
+      </div>
+
+      <input id="searchInput" type="search" placeholder="Rechercher : chocolat, Bérangère, CSE..." />
+    </header>
+
+    <section id="app"></section>
+  </main>
+
+  <script src="app.js?v=13"></script>  
+</body>
+</html>
