@@ -171,57 +171,103 @@ function renderCockpit() {
   const recentDecisions = state.decisions.slice(0, 3);
 
   appHtml(`
-    <div class="card hero">
-      <h2>Bonjour Ludovic</h2>
-      <p class="muted">Brief du jour · DEOS ${DEOS_VERSION}</p>
+    <div class="v2-hero">
+      <div>
+        <p class="muted">DEOS ${DEOS_VERSION} · Saint-Gilles</p>
+        <h2>Bonjour Ludovic</h2>
+        <p>Voici ton point d'entrée direction pour la journée.</p>
+      </div>
 
-      <div class="grid three">
-        <div class="kpi"><span>🔴 Urgences</span><b>${redProjects.length}</b></div>
-        <div class="kpi"><span>🟠 Actions ouvertes</span><b>${openActions.length}</b></div>
-        <div class="kpi"><span>👥 Managers à voir</span><b>${managersToFollow.length}</b></div>
+      <div class="v2-time">
+        <strong>${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</strong>
+        <span>Directeur d'entrepôt</span>
       </div>
     </div>
 
-    <div class="card">
-  <h2>Agenda du jour</h2>
-  <div class="item"><strong>09:00</strong><span class="muted">Point exploitation / REX</span></div>
-  <div class="item"><strong>11:00</strong><span class="muted">Point RH</span></div>
-  <div class="item"><strong>14:00</strong><span class="muted">Projet productivité</span></div>
-  <div class="item"><strong>16:30</strong><span class="muted">Journal de décision</span></div>
-</div>
+    <div class="v2-grid-main">
+      <section class="card v2-agenda">
+        <div class="v2-card-title">
+          <h2>📅 Aujourd'hui</h2>
+          <button class="small-btn">Connecter Google Calendar</button>
+        </div>
+
+        <div class="agenda-line">
+          <strong>09:00</strong>
+          <span>Point exploitation / REX</span>
+        </div>
+        <div class="agenda-line">
+          <strong>11:00</strong>
+          <span>Point RH</span>
+        </div>
+        <div class="agenda-line">
+          <strong>14:00</strong>
+          <span>Projet productivité</span>
+        </div>
+        <div class="agenda-line">
+          <strong>16:30</strong>
+          <span>Journal de décision</span>
+        </div>
+      </section>
+
+      <section class="card v2-attention">
+        <h2>🔥 Ce qui nécessite ton attention</h2>
+
+        <div class="attention-item red">
+          <span>Projets critiques</span>
+          <strong>${redProjects.length}</strong>
+        </div>
+
+        <div class="attention-item orange">
+          <span>Actions ouvertes</span>
+          <strong>${openActions.length}</strong>
+        </div>
+
+        <div class="attention-item blue">
+          <span>Managers à suivre</span>
+          <strong>${managersToFollow.length}</strong>
+        </div>
+
+        <div class="attention-item">
+          <span>Décisions récentes</span>
+          <strong>${recentDecisions.length}</strong>
+        </div>
+      </section>
+    </div>
+
+    <div class="v2-kpi-grid">
+      <div class="kpi v2-kpi"><span>Productivité</span><b>À connecter</b></div>
+      <div class="kpi v2-kpi"><span>Absentéisme</span><b>À connecter</b></div>
+      <div class="kpi v2-kpi"><span>Sécurité</span><b>À connecter</b></div>
+      <div class="kpi v2-kpi"><span>Litiges</span><b>À connecter</b></div>
+      <div class="kpi v2-kpi"><span>Volumes</span><b>À connecter</b></div>
+    </div>
+
     <div class="grid two">
       <div class="card">
-        <h2>Mes priorités</h2>
-        <div class="item">□ CODIR / exploitation</div>
-        <div class="item">□ Productivité</div>
-        <div class="item">□ Température chocolat</div>
-        <div class="item">□ Entretien Hadrien</div>
-      </div>
-
-      <div class="card">
-        <h2>Managers à suivre</h2>
+        <h2>👥 Managers à suivre</h2>
         ${managersToFollow.map(managerMiniCard).join("") || "<p>Aucun manager à suivre.</p>"}
       </div>
+
+      <div class="card">
+        <h2>📁 Projets critiques</h2>
+        ${redProjects.map(projectMiniCard).join("") || "<p>Aucun projet critique.</p>"}
+      </div>
     </div>
 
     <div class="grid two">
       <div class="card">
-        <h2>Projets critiques</h2>
-        ${redProjects.map(projectMiniCard).join("") || "<p>Aucun projet critique.</p>"}
+        <h2>✅ Actions ouvertes</h2>
+        ${openActions.slice(0, 6).map(actionCard).join("") || "<p>Aucune action ouverte.</p>"}
       </div>
 
       <div class="card">
-        <h2>Actions ouvertes</h2>
-        ${openActions.slice(0, 6).map(actionCard).join("") || "<p>Aucune action ouverte.</p>"}
+        <h2>📌 Décisions récentes</h2>
+        ${recentDecisions.map(decisionCard).join("") || "<p>Aucune décision récente.</p>"}
       </div>
-    </div>
-
-    <div class="card">
-      <h2>Décisions récentes</h2>
-      ${recentDecisions.map(decisionCard).join("") || "<p>Aucune décision récente.</p>"}
     </div>
   `);
 }
+
 
 /* ACTIONS */
 function renderActions() {
