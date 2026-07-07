@@ -137,10 +137,10 @@ function setView(view) {
     button.classList.toggle("active", button.dataset.view === view);
   });
 
-  const titles = {
-    cockpit: "Cockpit décisionnel",
-    folders: "Mes dossiers"
-    actions: "Actions",
+ const titles = {
+  cockpit: "Cockpit décisionnel",
+  folders: "Mes dossiers",
+  actions: "Actions",
     managers: "Managers",
     projects: "Projets",
     decisions: "Mémoire décisionnelle",
