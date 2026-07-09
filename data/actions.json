@@ -1,6 +1,26 @@
 [
-  {"title":"Remplacer les fichiers du dépôt par la version Cockpit V1","link":"DEOS","done":false},
-  {"title":"Tester la recherche globale","link":"DEOS","done":false},
-  {"title":"Valider l'affichage du cockpit sur PC pro","link":"DEOS","done":false},
-  {"title":"Structurer les décisions réelles du site","link":"Mémoire décisionnelle","done":false}
+  {
+    "id": "act-v5-001",
+    "title": "Remplacer les fichiers du dépôt par la version Cockpit V1",
+    "link": "DEOS",
+    "done": false
+  },
+  {
+    "id": "act-v5-002",
+    "title": "Tester la recherche globale",
+    "link": "DEOS",
+    "done": false
+  },
+  {
+    "id": "act-v5-003",
+    "title": "Valider l'affichage du cockpit sur PC pro",
+    "link": "DEOS",
+    "done": false
+  },
+  {
+    "id": "act-v5-004",
+    "title": "Structurer les décisions réelles du site",
+    "link": "Mémoire décisionnelle",
+    "done": false
+  }
 ]

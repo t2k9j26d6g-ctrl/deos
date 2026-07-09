@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DEOS V2</title>
-  <link rel="stylesheet" href="style.css?v=10" />
+  <title>DEOS V5</title>
+  <link rel="stylesheet" href="style.css?v=90" />
 </head>
 
 <body>
@@ -18,13 +18,15 @@
     </div>
 
     <button class="nav active" data-view="cockpit">🏠 Cockpit</button>
-    <button class="nav" data-view="folders">⭐ Mes dossiers</button>
+    <button class="nav" data-view="folders">⭐ Dossiers</button>
+    <button class="nav" data-view="priorities">🎯 Priorités</button>
     <button class="nav" data-view="actions">✅ Actions</button>
     <button class="nav" data-view="managers">👥 Managers</button>
     <button class="nav" data-view="projects">📁 Projets</button>
     <button class="nav" data-view="decisions">📌 Décisions</button>
     <button class="nav" data-view="journal">📝 Journal</button>
     <button class="nav" data-view="documents">📄 Documents</button>
+    <button class="nav" data-view="activity">🕘 Activité</button>
   </aside>
 
   <main class="main">
@@ -33,13 +35,12 @@
         <p id="today" class="today"></p>
         <h1 id="viewTitle">Cockpit décisionnel</h1>
       </div>
-
       <input id="searchInput" type="search" placeholder="Rechercher : chocolat, Bérangère, CSE..." />
     </header>
 
     <section id="app"></section>
   </main>
 
-  <script src="app.js?v=13"></script>  
+  <script src="app.js?v=92"></script>
 </body>
 </html>
