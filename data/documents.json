@@ -1,32 +1,17 @@
 [
   {
-    "id": "doc-v5-001",
     "title": "Compte rendu CODIR",
     "type": "Management",
-    "status": "Modèle",
-    "owner": "Ludovic",
-    "updatedAt": "2026-07-08",
-    "tags": ["CODIR"],
     "content": "Faits marquants · décisions · actions · alertes"
   },
   {
-    "id": "doc-v5-002",
     "title": "CSE",
     "type": "Dialogue social",
-    "status": "Modèle",
-    "owner": "Ludovic",
-    "updatedAt": "2026-07-08",
-    "tags": ["CSE"],
     "content": "Questions · réponses · décisions · points à sécuriser"
   },
   {
-    "id": "doc-v5-003",
     "title": "Mail professionnel",
     "type": "Communication",
-    "status": "Modèle",
-    "owner": "Ludovic",
-    "updatedAt": "2026-07-08",
-    "tags": ["Mail"],
     "content": "Objet clair · contexte · demande · échéance"
   }
 ]

@@ -1,42 +1,30 @@
 [
   {
-    "id": "pri-v5-001",
     "title": "Préparer CODIR",
     "level": "orange",
     "due": "Vendredi",
     "link": "CODIR",
-    "done": false,
-    "owner": "Ludovic",
-    "impact": ""
+    "done": false
   },
   {
-    "id": "pri-v5-002",
     "title": "Productivité",
     "level": "red",
     "due": "",
     "link": "Projet Productivité",
-    "done": false,
-    "owner": "",
-    "impact": ""
+    "done": false
   },
   {
-    "id": "pri-v5-003",
     "title": "Température chocolat",
     "level": "red",
     "due": "",
     "link": "Dossier chocolat",
-    "done": false,
-    "owner": "",
-    "impact": ""
+    "done": false
   },
   {
-    "id": "pri-v5-004",
     "title": "Entretien Hadrien",
     "level": "orange",
     "due": "",
     "link": "Hadrien Haza",
-    "done": false,
-    "owner": "",
-    "impact": ""
+    "done": false
   }
 ]
