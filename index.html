@@ -1,24 +1,25 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DEOS V4</title>
-  <link rel="stylesheet" href="style.css?v=40" />
+  <title>DEOS V5</title>
+  <link rel="stylesheet" href="style.css?v=128" />
 </head>
 
 <body>
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo">D</div>
+      <div id="brandLogo" class="logo">D</div>
       <div>
-        <strong>DEOS</strong>
-        <span>Saint-Gilles</span>
+        <strong id="brandAppName">DEOS</strong>
+        <span id="brandSiteName">Saint-Gilles</span>
       </div>
     </div>
 
     <button class="nav active" data-view="cockpit">🏠 Cockpit</button>
     <button class="nav" data-view="folders">⭐ Dossiers</button>
+    <button class="nav" data-view="performance">📊 Performance</button>
     <button class="nav" data-view="priorities">🎯 Priorités</button>
     <button class="nav" data-view="actions">✅ Actions</button>
     <button class="nav" data-view="managers">👥 Managers</button>
@@ -26,21 +27,36 @@
     <button class="nav" data-view="decisions">📌 Décisions</button>
     <button class="nav" data-view="journal">📝 Journal</button>
     <button class="nav" data-view="documents">📄 Documents</button>
+    <button class="nav" data-view="links">🔗 Liens utiles</button>
     <button class="nav" data-view="activity">🕘 Activité</button>
+    <button class="nav nav-settings" data-view="settings">⚙️ Paramètres</button>
   </aside>
 
   <main class="main">
     <header class="topbar">
-      <div>
+      <div class="topbar-date">
         <p id="today" class="today"></p>
-        <h1 id="viewTitle">Cockpit décisionnel</h1>
       </div>
-      <input id="searchInput" type="search" placeholder="Rechercher : chocolat, Bérangère, CSE..." />
+      <h1 id="viewTitle">Cockpit décisionnel</h1>
+      <input id="searchInput" type="search" placeholder="Rechercher : chocolat, Ludovic, CSE..." />
     </header>
 
     <section id="app"></section>
   </main>
 
-  <script src="app.js?v=40"></script>
+  <script src="libs/jszip.js?v=128"></script>
+  <script src="app.js?v=128"></script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+
