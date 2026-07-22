@@ -1,4 +1,6 @@
 ﻿const DEOS_VERSION = "V5.0";
+const DEOS_BACKUP_VERSION = 1;
+const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
 const identityDefaults = {
   appName: "DEOS",
@@ -41,6 +43,10 @@ let linkFavoriteFilter = false;
 let linkSearch = "";
 let performanceImportWizard = null;
 let expandedPerformanceImportId = "";
+let restoreSuccessMessage = "";
+let backupPreviewPayload = null;
+let backupPreviewSummary = null;
+let backupPreviewOpen = false;
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -208,8 +214,258 @@ function esc(v = "") {
   return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function lines(id) {
-  return document.getElementById(id).value.split("\n").map(x => x.trim()).filter(Boolean);
+function isTechnicalBackupKey(key) {
+  return DEOS_TECHNICAL_BACKUP_KEYS.includes(key);
+}
+
+function deosKeys() {
+  return Object.keys(localStorage).filter(key => typeof key === "string" && key.startsWith("deos_"));
+}
+
+function deosBackupKeys(payload) {
+  if (!payload || typeof payload !== "object" || payload === null) return [];
+  const keys = payload.localStorage && typeof payload.localStorage === "object" && !Array.isArray(payload.localStorage)
+    ? Object.keys(payload.localStorage).filter(key => typeof key === "string" && key.startsWith("deos_"))
+    : [];
+  return keys;
+}
+
+function localStorageBackupPayload() {
+  const data = {};
+  for (const key of deosKeys()) {
+    const value = localStorage.getItem(key);
+    if (typeof value === "string") {
+      data[key] = value;
+    }
+  }
+  return data;
+}
+
+function backupFileName(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `DEOS_sauvegarde_${y}-${m}-${d}_${hh}-${mm}.json`;
+}
+
+function buildBackupPayload() {
+  return {
+    date: new Date().toISOString(),
+    adresse: window.location.origin + window.location.pathname,
+    version: DEOS_BACKUP_VERSION,
+    localStorage: localStorageBackupPayload(),
+    sessionStorage: {}
+  };
+}
+
+function saveBackupMetadata(type, date, categoryCount) {
+  if (type === "export") {
+    localStorage.setItem("deos_backup_last_export", date);
+  } else if (type === "restore") {
+    localStorage.setItem("deos_backup_last_restore", date);
+  }
+  if (typeof categoryCount === "number") {
+    localStorage.setItem("deos_backup_category_count", String(categoryCount));
+  }
+}
+
+function renderBackupMessage(message, type = "green") {
+  restoreSuccessMessage = message;
+  if (type === "green") {
+    return `<p class="settings-confirm" role="status">${esc(message)}</p>`;
+  }
+  return `<p class="settings-confirm" style="background:#fee2e2;color:#991b1b;">${esc(message)}</p>`;
+}
+
+function getBackupMetadata() {
+  return {
+    lastExport: localStorage.getItem("deos_backup_last_export") || "Aucune exportation enregistrée",
+    lastRestore: localStorage.getItem("deos_backup_last_restore") || "Aucune restauration enregistrée",
+    categoryCount: Number(localStorage.getItem("deos_backup_category_count") || "0")
+  };
+}
+
+function downloadBackupFile(payload) {
+  const text = JSON.stringify(payload, null, 2);
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = backupFileName(new Date());
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function safeParseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function validateBackupContent(content) {
+  if (!content || typeof content !== "object" || Array.isArray(content)) return { valid: false, error: "Le fichier doit contenir un objet JSON valide." };
+  if (!content.localStorage || typeof content.localStorage !== "object" || Array.isArray(content.localStorage)) {
+    return { valid: false, error: "Le fichier doit contenir une propriété localStorage valide." };
+  }
+  const keys = Object.keys(content.localStorage);
+  if (keys.length === 0) {
+    return { valid: false, error: "La sauvegarde ne contient aucune clé localStorage." };
+  }
+  const deos = keys.filter(key => typeof key === "string" && key.startsWith("deos_"));
+  if (deos.length === 0) {
+    return { valid: false, error: "La sauvegarde ne contient aucune clé commençant par deos_." };
+  }
+  for (const key of keys) {
+    if (typeof key !== "string") return { valid: false, error: "Toutes les clés de localStorage doivent être des chaînes." };
+    if (typeof content.localStorage[key] !== "string") return { valid: false, error: `La valeur de ${key} doit être une chaîne.` };
+  }
+  const normalized = { ...content };
+  normalized.localStorage = {};
+  for (const key of deos) normalized.localStorage[key] = content.localStorage[key];
+  return { valid: true, payload: normalized };
+}
+
+function backupCategoryCount(payload) {
+  const keys = deosBackupKeys(payload).filter(key => !isTechnicalBackupKey(key));
+  return keys.length;
+}
+
+function currentLocalStorageCategoryCount() {
+  return deosKeys().filter(key => !isTechnicalBackupKey(key)).length;
+}
+
+function backupStats(payload) {
+  const keys = deosBackupKeys(payload).filter(key => !isTechnicalBackupKey(key));
+  const categories = new Set();
+  const counts = {
+    managers: 0,
+    projects: 0,
+    actions: 0,
+    priorities: 0,
+    decisions: 0,
+    folders: 0,
+    documents: 0,
+    journal: 0
+  };
+  for (const key of keys) {
+    const value = payload.localStorage[key];
+    if (typeof value !== "string") continue;
+    let data = null;
+    try {
+      data = JSON.parse(value);
+    } catch {
+      continue;
+    }
+    if (Array.isArray(data) && data.length > 0) {
+      categories.add(key);
+    }
+    if (key === "deos_managers") counts.managers = Array.isArray(data) ? data.length : 0;
+    if (key === "deos_projects") counts.projects = Array.isArray(data) ? data.length : 0;
+    if (key === "deos_actions") counts.actions = Array.isArray(data) ? data.length : 0;
+    if (key === "deos_priorities") counts.priorities = Array.isArray(data) ? data.length : 0;
+    if (key === "deos_decisions") counts.decisions = Array.isArray(data) ? data.length : 0;
+    if (key === "deos_folders") counts.folders = Array.isArray(data) ? data.length : 0;
+    if (key === "deos_documents") counts.documents = Array.isArray(data) ? data.length : 0;
+    if (key === "deos_journal") counts.journal = Array.isArray(data) ? data.length : 0;
+  }
+  return { categoryCount: categories.size, counts };
+}
+
+function renderBackupPreviewModal(payload, summary, message = "") {
+  backupPreviewPayload = payload;
+  backupPreviewSummary = summary;
+  backupPreviewOpen = true;
+  renderSettings(message);
+}
+
+function closeBackupPreview() {
+  backupPreviewOpen = false;
+  backupPreviewPayload = null;
+  backupPreviewSummary = null;
+  renderSettings();
+}
+
+function applyBackupPayload(payload) {
+  const currentSnapshot = localStorageBackupPayload();
+  const backupKeys = deosBackupKeys(payload);
+  const keysToRemove = deosKeys().filter(key => !backupKeys.includes(key) && !isTechnicalBackupKey(key));
+  try {
+    for (const key of backupKeys) {
+      localStorage.setItem(key, payload.localStorage[key]);
+    }
+    for (const key of keysToRemove) {
+      localStorage.removeItem(key);
+    }
+    return { success: true };
+  } catch (error) {
+    for (const [key, value] of Object.entries(currentSnapshot)) {
+      localStorage.setItem(key, value);
+    }
+    return { success: false, error: `La restauration a échoué : ${error.message || String(error)}` };
+  }
+}
+
+function prepareRestoreBackup(payload) {
+  const currentBackup = buildBackupPayload();
+  downloadBackupFile(currentBackup);
+  renderBackupPreviewModal(payload, backupStats(payload), "Sauvegarde actuelle téléchargée. Confirmez la restauration pour remplacer les données DEOS existantes.");
+}
+
+function confirmRestoreBackup() {
+  if (!backupPreviewPayload) return;
+  const result = applyBackupPayload(backupPreviewPayload);
+  if (!result.success) {
+    renderSettings(result.error);
+    return;
+  }
+  saveBackupMetadata("restore", new Date().toISOString(), backupCategoryCount(backupPreviewPayload));
+  localStorage.setItem("deos_restore_success", "Restauration réussie.");
+  location.reload();
+}
+
+function exportBackup() {
+  const payload = buildBackupPayload();
+  downloadBackupFile(payload);
+  saveBackupMetadata("export", new Date().toISOString(), backupCategoryCount(payload));
+  renderSettings("Exportation réussie.");
+}
+
+function handleImportBackupFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const content = safeParseJson(reader.result);
+    const validated = validateBackupContent(content);
+    if (!validated.valid) {
+      renderSettings(validated.error);
+      return;
+    }
+    prepareRestoreBackup(validated.payload);
+  };
+  reader.onerror = () => renderSettings("Impossible de lire le fichier sélectionné.");
+  reader.readAsText(file, "UTF-8");
+}
+
+function triggerBackupImport() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    if (file) handleImportBackupFile(file);
+  };
+  input.click();
+}
+
+function renderBackupPreviewCard(summary) {
+  if (!summary) return "";
+  const counts = summary.counts || {};
+  return `<div class="card settings-card"><h2>Aperçu de la sauvegarde</h2><div class="grid two"><div class="item"><strong>Date de la sauvegarde</strong><span class="muted">${esc(summary.date || "Inconnue")}</span></div><div class="item"><strong>Catégories métier</strong><span class="muted">${esc(String(summary.categoryCount || 0))}</span></div><div class="item"><strong>Managers</strong><span class="muted">${esc(String(counts.managers || 0))}</span></div><div class="item"><strong>Projets</strong><span class="muted">${esc(String(counts.projects || 0))}</span></div><div class="item"><strong>Actions</strong><span class="muted">${esc(String(counts.actions || 0))}</span></div><div class="item"><strong>Priorités</strong><span class="muted">${esc(String(counts.priorities || 0))}</span></div><div class="item"><strong>Décisions</strong><span class="muted">${esc(String(counts.decisions || 0))}</span></div><div class="item"><strong>Dossiers</strong><span class="muted">${esc(String(counts.folders || 0))}</span></div><div class="item"><strong>Documents</strong><span class="muted">${esc(String(counts.documents || 0))}</span></div><div class="item"><strong>Journal</strong><span class="muted">${esc(String(counts.journal || 0))}</span></div></div></div>`;
 }
 
 function splitTags(value) {
@@ -425,10 +681,19 @@ async function init() {
     state[name] = normalizeCollection(name, saved(name, await loadJson(name)));
     persist(name);
   }
+  const restoreMessage = localStorage.getItem("deos_restore_success");
+  if (restoreMessage) {
+    restoreSuccessMessage = restoreMessage;
+    localStorage.removeItem("deos_restore_success");
+  }
   document.getElementById("today").textContent = cockpitDateLabel(new Date());
   document.querySelectorAll(".nav").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
   document.getElementById("searchInput").oninput = e => runSearch(e.target.value);
-  setView("cockpit");
+  if (restoreSuccessMessage) {
+    setView("settings");
+  } else {
+    setView("cockpit");
+  }
 }
 
 function setView(view) {
@@ -4796,7 +5061,9 @@ function settingsPreviewHtml(data = identity) {
 function renderSettings(message = "") {
   document.getElementById("viewTitle").textContent = "Paramètres";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
-  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${message ? `<p class="settings-confirm">${esc(message)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
+  const statusMessage = message || restoreSuccessMessage;
+  restoreSuccessMessage = "";
+  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div><div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
 
 function readSettingsForm() {
