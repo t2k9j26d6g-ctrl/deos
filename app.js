@@ -3677,7 +3677,6 @@ function buildPerformanceImportPreview() {
     file.detectedIndicators = rows;
     const selected = ensureArray(file.selectedPeriods || file.periods).filter(Boolean);
     const filtered = selected.length ? rows.filter(row => !row.period || row.period === IMPORT_PERIOD_PENDING || selected.includes(row.period)) : rows;
-    logImportDiagnostics(file, rawRows, rows, filtered);
     return filtered.map(row => decoratePerformancePreviewRow(row, file));
   });
 }
@@ -3738,17 +3737,6 @@ function normalizePerformanceImportIndicators(rows, file) {
   }).filter(row => row && row.indicator && row.value !== null && row.value !== undefined && String(row.value).trim() !== "");
 }
 
-function logImportDiagnostics(file, rawRows, rows, filtered) {
-  if (!/gpo/i.test(file.source || file.sourceType || "")) return;
-  const sample = rawRows[0] || null;
-  const mapped = rows.filter(row => row.destinationPath).length;
-  console.info("[GPO PDF] KPI bruts extraits :", rawRows.length);
-  console.info("[GPO PDF] Exemple KPI brut :", sample);
-  console.info("[GPO PDF] KPI normalisés :", rows.length);
-  console.info("[GPO PDF] KPI mappés :", mapped);
-  console.info("[GPO PDF] KPI après filtrage :", filtered.length);
-  console.info("[GPO PDF] KPI transmis à l'aperçu :", filtered.length);
-}
 
 function performanceImportPeriodSelector() {
   const needsPeriod = performanceImportWizard.preview.some(row => row.period === IMPORT_PERIOD_PENDING || !row.period);
@@ -3805,7 +3793,6 @@ function validatePerformanceImport() {
   const selectedRows = performanceImportWizard.preview.filter(row => row.selected && row.destinationPath && row.action !== "keep" && row.action !== "ignore");
   const importDate = new Date().toLocaleString("fr-FR");
   const imported = applyPerformanceImportRows(selectedRows, first, importDate);
-  if (/gpo/i.test(first.source || first.sourceType || "")) console.info("[GPO PDF] KPI importés :", imported.importedCount);
   const payload = normalizeEntity("performance_imports", {
     id: performanceImportWizard.id,
     importDate,
@@ -3878,8 +3865,6 @@ async function analyzeGpoPdfFile(file, detected) {
   const saintGillesStart = pages.findIndex(p => /Entrepôt\s+SAINT\s+GILLES|Entrepot\s+SAINT\s+GILLES/i.test(p.text));
   const scopedPages = saintGillesStart >= 0 ? pages.slice(saintGillesStart) : pages.filter(p => /ST\s+GILLES|SAINT\s+GILLES/i.test(p.text));
   const indicators = extractGpoIndicators(scopedPages.length ? scopedPages : pages, period);
-  console.info("[GPO PDF] KPI bruts extraits :", indicators.length);
-  console.info("[GPO PDF] Exemple KPI brut :", indicators[0] || null);
   return {
     ...detected,
     source: "GPO PDF",
