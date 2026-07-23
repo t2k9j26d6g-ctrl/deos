@@ -47,6 +47,7 @@ let restoreSuccessMessage = "";
 let backupPreviewPayload = null;
 let backupPreviewSummary = null;
 let backupPreviewOpen = false;
+let agendaFormError = "";
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -631,10 +632,36 @@ function normalizeEntity(name, item) {
   }
   if (name === "activity") return { detail: "", date: new Date().toLocaleString("fr-FR"), entityId: "", ...base };
   if (name === "agenda") {
-    const merged = { date: isoToday(), startTime: base.time || "09:00", endTime: "", title: "Rendez-vous", type: "Autre", location: "", notes: base.detail || "", linkedManagers: [], linkedProjects: [], linkedFolders: [], linkedView: "", linkedId: "", ...base };
-    if (!merged.startTime && merged.time) merged.startTime = merged.time;
-    if (!merged.notes && merged.detail) merged.notes = merged.detail;
-    return { ...merged, linkedManagers: ensureArray(merged.linkedManagers), linkedProjects: ensureArray(merged.linkedProjects), linkedFolders: ensureArray(merged.linkedFolders) };
+    const raw = { ...base };
+    const hasStartTime = Object.prototype.hasOwnProperty.call(raw, "startTime") && String(raw.startTime || "").trim() !== "";
+    const hasTime = Object.prototype.hasOwnProperty.call(raw, "time") && String(raw.time || "").trim() !== "";
+    const allDay = raw.allDay === true || (!hasStartTime && !hasTime && raw.allDay !== false);
+    const description = String(raw.description || raw.notes || raw.detail || "").trim();
+    const merged = {
+      ...raw,
+      date: raw.date || localIsoDate(),
+      startTime: hasStartTime ? String(raw.startTime || "").trim() : hasTime ? String(raw.time || "").trim() : "",
+      endTime: String(raw.endTime || "").trim(),
+      title: raw.title || "Rendez-vous",
+      type: raw.type || "Autre",
+      location: raw.location || "",
+      description,
+      notes: raw.notes || description,
+      detail: raw.detail || description,
+      allDay,
+      status: raw.status || "confirmed",
+      source: raw.source || "manual",
+      externalId: raw.externalId || "",
+      calendarId: raw.calendarId || "",
+      syncStatus: raw.syncStatus || "local",
+      lastSyncedAt: raw.lastSyncedAt || "",
+      createdAt: raw.createdAt || localIsoDate(),
+      updatedAt: raw.updatedAt || localIsoDate(),
+      linkedManagers: ensureArray(raw.linkedManagers),
+      linkedProjects: ensureArray(raw.linkedProjects),
+      linkedFolders: ensureArray(raw.linkedFolders)
+    };
+    return merged;
   }
   if (name === "actions") return { link: "", owner: "", due: "", level: "orange", done: false, linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
   if (name === "performance") return normalizePerformance(base);
@@ -713,6 +740,68 @@ function parseDateValue(value) {
   if (fr) return new Date(Number(fr[3]), Number(fr[2]) - 1, Number(fr[1]));
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function localIsoDate(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function localIsoAddDays(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(days));
+  return localIsoDate(d);
+}
+
+// Agenda helpers V5.3
+function agendaStartTime(a) {
+  return String((a && (a.startTime || a.time)) || "").trim();
+}
+
+function agendaDescription(a) {
+  return String((a && (a.description || a.notes || a.detail)) || "").trim();
+}
+
+function agendaIsAllDay(a) {
+  return Boolean(a && (a.allDay === true || String(a.allDay) === "true"));
+}
+
+function compareAgendaEvents(a, b) {
+  const dr = dateRank(a?.date) - dateRank(b?.date);
+  if (dr !== 0) return dr;
+  const aAll = agendaIsAllDay(a);
+  const bAll = agendaIsAllDay(b);
+  if (aAll !== bAll) return aAll ? -1 : 1;
+  const at = agendaStartTime(a) || "~"; // empty times sort after normal times
+  const bt = agendaStartTime(b) || "~";
+  const tcmp = String(at).localeCompare(String(bt));
+  if (tcmp !== 0) return tcmp;
+  return String((a?.title || "")).localeCompare(String((b?.title || "")));
+}
+
+function toggleAgendaTimeFields() {
+  const allDay = document.getElementById("agAllDay")?.checked;
+  const start = document.getElementById("agStart");
+  const end = document.getElementById("agEnd");
+  if (!start || !end) return;
+  if (allDay) {
+    start.disabled = true;
+    end.disabled = true;
+    start.classList.add("muted");
+    end.classList.add("muted");
+  } else {
+    start.disabled = false;
+    end.disabled = false;
+    start.classList.remove("muted");
+    end.classList.remove("muted");
+  }
+}
+
+function agendaTimeLabel(a) {
+  const start = agendaStartTime(a);
+  if (agendaIsAllDay(a)) return "Journée entière";
+  if (start) return `${esc(start)}${a.endTime ? " - " + esc(a.endTime) : ""}`;
+  return "Heure à confirmer";
 }
 
 function daysUntil(value) {
@@ -814,7 +903,7 @@ function cockpitTodayItems() {
   state.meetingPreparations.filter(p => !["Prête", "Réalisée", "Compte rendu à finaliser", "Clôturée"].includes(p.status)).forEach(p => {
     const a = byId("agenda", p.agendaId);
     const due = daysUntil(a?.date);
-    if (a && due !== null && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: due <= 0 ? "red" : "orange", due: a.date, time: a.startTime || "", owner: p.organizer, link: p.status, detail: p.objectiveMain || a.type }));
+    if (a && due !== null && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: due <= 0 ? "red" : "orange", due: a.date, time: agendaStartTime(a), owner: p.organizer, link: p.status, detail: p.objectiveMain || a.type }));
   });
   return items.sort((a, b) => levelRank(a.level) - levelRank(b.level) || dateRank(a.due) - dateRank(b.due) || String(a.time).localeCompare(String(b.time)));
 }
@@ -825,14 +914,14 @@ function cockpitUpcomingItems() {
     const due = daysUntil(item.due);
     if (due !== null && due >= 0 && due <= 7 && !items.some(x => x.key === item.key)) items.push(item);
   };
-  state.agenda.forEach(a => push(cockpitItem({ entity: "agenda", id: a.id, type: "Rendez-vous", title: a.title, level: "green", due: a.date, time: a.startTime || a.time || "", owner: agendaLinkedNames(a), link: a.location || a.type })));
+  state.agenda.forEach(a => push(cockpitItem({ entity: "agenda", id: a.id, type: "Rendez-vous", title: a.title, level: "green", due: a.date, time: agendaStartTime(a), owner: agendaLinkedNames(a), link: a.location || a.type })));
   state.actions.filter(a => !a.done).forEach(a => push(cockpitItem({ entity: "actions", id: a.id, type: "Action", title: a.title, level: a.level || a.priorityLevel || "orange", due: a.due, link: a.link, action: "action" })));
   state.priorities.filter(p => !p.done).forEach(p => push(cockpitItem({ entity: "priorities", id: p.id, type: "Priorité", title: p.title, level: p.level, due: p.due, owner: p.owner, link: p.link, action: "priority" })));
   state.projects.forEach(p => push(cockpitItem({ entity: "projects", id: p.id, type: "Projet", title: p.name, level: p.status || p.priorityLevel || "orange", due: p.deadline, owner: projectOwnerName(p), link: p.next })));
   state.decisions.filter(isPendingDecision).forEach(d => push(cockpitItem({ entity: "decisions", id: d.id, type: "Décision", title: d.title, level: d.importance || "orange", due: d.reviewDate, owner: d.owner, link: d.nextStep || d.context, detail: decisionStatusLabel(d.status) })));
   state.meetingPreparations.forEach(p => {
     const a = byId("agenda", p.agendaId);
-    if (a) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Préparation réunion", title: a.title, level: p.status === "À préparer" ? "orange" : "green", due: a.date, time: a.startTime || "", owner: p.organizer, link: p.status }));
+    if (a) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Préparation réunion", title: a.title, level: p.status === "À préparer" ? "orange" : "green", due: a.date, time: agendaStartTime(a), owner: p.organizer, link: p.status }));
   });
   return items.sort((a, b) => dateRank(a.due) - dateRank(b.due) || String(a.time).localeCompare(String(b.time)) || levelRank(a.level) - levelRank(b.level));
 }
@@ -854,7 +943,7 @@ function cockpitAlertItems(todayItems = cockpitTodayItems()) {
   state.meetingPreparations.filter(p => p.status === "À préparer").forEach(p => {
     const a = byId("agenda", p.agendaId);
     const due = daysUntil(a?.date);
-    if (a && due !== null && due >= 0 && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: "orange", due: a.date, time: a.startTime || "", owner: p.organizer, link: p.status, detail: "Moins de 48 h" }));
+    if (a && due !== null && due >= 0 && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: "orange", due: a.date, time: agendaStartTime(a), owner: p.organizer, link: p.status, detail: "Moins de 48 h" }));
   });
   cockpitUpcomingItems().forEach(item => {
     if (item.entity === "agenda") return;
@@ -979,13 +1068,10 @@ function openCockpitLinked(itemKey, target) {
     const manager = source.ownerId ? byId("managers", source.ownerId) : relatedManagerFromText(`${source.owner || ""} ${source.link || ""} ${source.title || ""} ${source.name || ""}`);
     if (manager) return openManager(manager.id);
   }
-  if (target === "project") {
-    const project = relatedProjectFromText(`${source.link || ""} ${source.title || ""} ${source.name || ""}`);
-    if (project) return openProject(project.id);
-  }
+  const project = relatedProjectFromText(`${source.link || ""} ${source.title || ""} ${source.name || ""}`);
+  if (project) return openProject(project.id);
   openCockpitEntity(entity, id);
 }
-
 function openLinkedFromPriority(id) {
   const p = byId("priorities", id);
   if (!p) return setView("priorities");
@@ -1109,7 +1195,7 @@ function cockpitFavoriteLinks() {
 }
 
 function futureMeetings() {
-  return state.agenda.filter(a => (a.date || "") >= isoToday()).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || "")));
+  return state.agenda.filter(a => (a.date || "") >= localIsoDate()).slice().sort(compareAgendaEvents);
 }
 
 function cockpitCreateBar() {
@@ -1125,15 +1211,15 @@ function cockpitCreateBar() {
 }
 
 function agendaItems() {
-  const todayIso = isoToday();
-  const tomorrowIso = isoAddDays(1);
-  const weekIso = isoAddDays(7);
+  const todayIso = localIsoDate();
+  const tomorrowIso = localIsoAddDays(1);
+  const weekIso = localIsoAddDays(7);
   return state.agenda.filter(a => {
     if (agendaFilter === "today") return a.date === todayIso;
     if (agendaFilter === "tomorrow") return a.date === tomorrowIso;
     if (agendaFilter === "week") return a.date >= todayIso && a.date <= weekIso;
     return true;
-  }).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || "")));
+  }).slice().sort(compareAgendaEvents);
 }
 
 function agendaEmptyLabel() {
@@ -1146,11 +1232,11 @@ function agendaEmptyLabel() {
 }
 
 function agendaTodayItems() {
-  return state.agenda.filter(a => a.date === isoToday()).sort((a, b) => String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || "")));
+  return state.agenda.filter(a => a.date === localIsoDate()).slice().sort(compareAgendaEvents);
 }
 
 function agendaUpcomingItems(limit = 4) {
-  return state.agenda.filter(a => (a.date || "") > isoToday()).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || ""))).slice(0, limit);
+  return state.agenda.filter(a => (a.date || "") > localIsoDate()).slice().sort(compareAgendaEvents).slice(0, limit);
 }
 
 function agendaFilterLabel() {
@@ -1165,18 +1251,20 @@ function setAgendaFilter(filter) {
 function agendaLinkedNames(a) {
   const managers = state.managers.filter(m => (a.linkedManagers || []).includes(m.id)).map(m => m.name);
   const projects = state.projects.filter(p => (a.linkedProjects || []).includes(p.id)).map(p => p.name);
-  return [...managers, ...projects].join(" · ");
+  const folders = state.folders.filter(f => (a.linkedFolders || []).includes(f.id)).map(f => f.name);
+  return [...managers, ...projects, ...folders].filter(Boolean).join(" · ");
 }
 
 function agendaItem(a) {
-  const time = `${esc(a.startTime || a.time || "")}${a.endTime ? " - " + esc(a.endTime) : ""}`;
+  const start = agendaStartTime(a);
+  const time = agendaIsAllDay(a) ? "Journée entière" : (start ? `${esc(start)}${a.endTime ? " - " + esc(a.endTime) : ""}` : "Heure à confirmer");
   const links = agendaLinkedNames(a);
   const prep = meetingPrepForAgenda(a.id);
   const status = prep?.status || "À préparer";
   const subjectCount = ensureArray(prep?.ideas).length + ensureArray(prep?.agendaTopics).length;
   const subjectBadge = subjectCount ? ` · <span class="subject-count">📝 ${subjectCount}</span>` : "";
   const alert = daysUntil(a.date) !== null && daysUntil(a.date) >= 0 && daysUntil(a.date) <= 2 && status === "À préparer" ? `<small class="prep-alert">Réunion à préparer sous 48 h</small>` : "";
-  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== isoToday() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function agendaCompact() {
@@ -1187,7 +1275,11 @@ function agendaCompact() {
 }
 
 function agendaLinkedList(items) {
-  return items.sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || ""))).map(a => `<div class="item clickable" onclick="openMeetingPreparation('${a.id}')"><strong>${esc(a.date || "")} · ${esc(a.startTime || a.time || "")}${a.endTime ? " - " + esc(a.endTime) : ""}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")} · ${esc(meetingPrepForAgenda(a.id)?.status || "À préparer")}</span>${a.location ? `<span class="meta">${esc(a.location)}</span>` : ""}</div>`).join("") || `<div class="empty">Aucun rendez-vous lié.</div>`;
+  return items.slice().sort(compareAgendaEvents).map(a => {
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="openMeetingPreparation('${a.id}')"><strong>${esc(a.date || "")} · ${esc(timeLabel)}${a.endTime ? " - " + esc(a.endTime) : ""}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")} · ${esc(meetingPrepForAgenda(a.id)?.status || "À préparer")}</span>${a.location ? `<span class="meta">${esc(a.location)}</span>` : ""}</div>`;
+  }).join("") || `<div class="empty">Aucun rendez-vous lié.</div>`;
 }
 
 function managerAgendaList(m) {
@@ -1198,7 +1290,9 @@ function managerMeetingPreparationsList(m) {
   const linked = state.meetingPreparations.filter(p => (p.linkedManagers || []).includes(m.id) || (byId("agenda", p.agendaId)?.linkedManagers || []).includes(m.id));
   return linked.map(p => {
     const a = byId("agenda", p.agendaId) || {};
-    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(a.startTime || "")} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(timeLabel)} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
   }).join("") || `<div class="empty">Aucune préparation de réunion liée.</div>`;
 }
 
@@ -1210,7 +1304,9 @@ function projectMeetingPreparationsList(project) {
   const linked = state.meetingPreparations.filter(p => (p.linkedProjects || []).includes(project.id) || (byId("agenda", p.agendaId)?.linkedProjects || []).includes(project.id));
   return linked.map(p => {
     const a = byId("agenda", p.agendaId) || {};
-    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(a.startTime || "")} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(timeLabel)} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
   }).join("") || `<div class="empty">Aucune préparation de réunion liée.</div>`;
 }
 
@@ -1218,17 +1314,35 @@ function openAgendaModal(id = "") {
   agendaEditId = id;
   agendaModalOpen = true;
   renderCockpit();
+  toggleAgendaTimeFields();
 }
 
 function closeAgendaModal() {
   agendaEditId = "";
   agendaModalOpen = false;
+  agendaFormError = "";
   renderCockpit();
 }
 
 function agendaForm() {
   const a = agendaEditId ? byId("agenda", agendaEditId) : null;
-  return `<div class="agenda-form"><div class="form-grid"><input id="agDate" type="date" value="${esc(a?.date || isoToday())}"><input id="agStart" type="time" value="${esc(a?.startTime || a?.time || "09:00")}"><input id="agEnd" type="time" value="${esc(a?.endTime || "")}"><input id="agTitle" value="${esc(a?.title || "")}" placeholder="Titre"><select id="agType"><option ${(!a || a.type === "CODIR") ? "selected" : ""}>CODIR</option><option ${a?.type === "Exploitation" ? "selected" : ""}>Exploitation</option><option ${a?.type === "RH" ? "selected" : ""}>RH</option><option ${a?.type === "Projet" ? "selected" : ""}>Projet</option><option ${a?.type === "CSE" ? "selected" : ""}>CSE</option><option ${a?.type === "Entretien manager" ? "selected" : ""}>Entretien manager</option><option ${a?.type === "Autre" ? "selected" : ""}>Autre</option></select><input id="agLocation" value="${esc(a?.location || "")}" placeholder="Lieu"><textarea id="agNotes" class="full" placeholder="Notes">${esc(a?.notes || a?.detail || "")}</textarea></div><div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, a?.linkedManagers || [], m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div><div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div></div>`;
+  const dateValue = esc(a?.date || localIsoDate());
+  const allDayChecked = agendaIsAllDay(a) ? "checked" : "";
+  const startValue = esc(a?.startTime || a?.time || "");
+  const endValue = esc(a?.endTime || "");
+  return `<div class="agenda-form">${agendaFormError ? `<div class="form-error">${esc(agendaFormError)}</div>` : ""}
+    <div class="form-grid">
+      <input id="agDate" type="date" value="${dateValue}">
+      <label class="check-row"><input id="agAllDay" type="checkbox" ${allDayChecked} onchange="toggleAgendaTimeFields()"> Journée entière</label>
+      <div class="time-row"><input id="agStart" type="time" value="${startValue}"><input id="agEnd" type="time" value="${endValue}"></div>
+      <input id="agTitle" value="${esc(a?.title || "")}" placeholder="Titre">
+      <select id="agType"><option ${(!a || a.type === "CODIR") ? "selected" : ""}>CODIR</option><option ${a?.type === "Exploitation" ? "selected" : ""}>Exploitation</option><option ${a?.type === "RH" ? "selected" : ""}>RH</option><option ${a?.type === "Projet" ? "selected" : ""}>Projet</option><option ${a?.type === "CSE" ? "selected" : ""}>CSE</option><option ${a?.type === "Entretien manager" ? "selected" : ""}>Entretien manager</option><option ${a?.type === "Autre" ? "selected" : ""}>Autre</option></select>
+      <input id="agLocation" value="${esc(a?.location || "")}" placeholder="Lieu">
+      <textarea id="agNotes" class="full" placeholder="Notes">${esc(a?.notes || a?.detail || "")}</textarea>
+    </div>
+    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, a?.linkedManagers || [], m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
+    <div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div>
+  </div>`;
 }
 
 function agendaModal() {
@@ -1259,7 +1373,7 @@ function meetingSubjectModal() {
 function meetingSubjectForm(selectedAgendaId = "", showMeetingSelect = false) {
   const meetings = futureMeetings();
   const selected = byId("agenda", selectedAgendaId) || meetings[0] || {};
-  return `<div class="form-grid"><textarea id="msText" class="full" placeholder="Sujet, question ou point à aborder"></textarea>${showMeetingSelect ? `<select id="msAgenda" class="full">${meetings.map(a => `<option value="${esc(a.id)}" ${selected.id === a.id ? "selected" : ""}>${esc(a.date || "")} · ${esc(a.startTime || a.time || "")} · ${esc(a.title || "Réunion")}</option>`).join("")}</select>` : `<input class="full" value="${esc(`${selected.date || ""} · ${selected.startTime || selected.time || ""} · ${selected.title || "Réunion"}`)}" disabled>`}<select id="msCategory"><option>Sujet</option><option>Question</option><option>Information</option><option>Décision attendue</option><option>Point de vigilance</option></select><select id="msImportance"><option>normale</option><option>importante</option><option>critique</option></select></div><div class="modal-actions"><button class="action" onclick="saveMeetingSubjectQuick()">Enregistrer</button><button class="secondary" onclick="closeMeetingSubjectModal()">Annuler</button></div>`;
+  return `<div class="form-grid"><textarea id="msText" class="full" placeholder="Sujet, question ou point à aborder"></textarea>${showMeetingSelect ? `<select id="msAgenda" class="full">${meetings.map(a => `<option value="${esc(a.id)}" ${selected.id === a.id ? "selected" : ""}>${esc(a.date || "")} · ${esc(agendaStartTime(a) || (agendaIsAllDay(a) ? 'Journée entière' : 'Heure à confirmer'))} · ${esc(a.title || "Réunion")}</option>`).join("")}</select>` : `<input class="full" value="${esc(`${selected.date || ""} · ${agendaStartTime(selected) || (agendaIsAllDay(selected) ? 'Journée entière' : 'Heure à confirmer')} · ${selected.title || "Réunion"}`)}" disabled>`}<select id="msCategory"><option>Sujet</option><option>Question</option><option>Information</option><option>Décision attendue</option><option>Point de vigilance</option></select><select id="msImportance"><option>normale</option><option>importante</option><option>critique</option></select></div><div class="modal-actions"><button class="action" onclick="saveMeetingSubjectQuick()">Enregistrer</button><button class="secondary" onclick="closeMeetingSubjectModal()">Annuler</button></div>`;
 }
 
 function saveMeetingSubjectQuick() {
@@ -1277,19 +1391,68 @@ function saveMeetingSubjectQuick() {
 }
 
 function readAgendaForm(existing = {}) {
+  agendaFormError = "";
   const title = document.getElementById("agTitle").value.trim();
-  if (!title) return null;
-  return { ...existing, date: document.getElementById("agDate").value || isoToday(), startTime: document.getElementById("agStart").value || "09:00", time: document.getElementById("agStart").value || "09:00", endTime: document.getElementById("agEnd").value, title, type: document.getElementById("agType").value, location: document.getElementById("agLocation").value.trim(), notes: document.getElementById("agNotes").value.trim(), detail: document.getElementById("agNotes").value.trim(), linkedManagers: checkedValues("agManagers"), linkedProjects: checkedValues("agProjects"), linkedFolders: checkedValues("agFolders") };
+  const date = document.getElementById("agDate").value || "";
+  const allDay = document.getElementById("agAllDay")?.checked || false;
+  const start = document.getElementById("agStart").value.trim();
+  const end = document.getElementById("agEnd").value.trim();
+  if (!date) {
+    agendaFormError = "La date est obligatoire.";
+    renderCockpit();
+    return null;
+  }
+  if (!title) {
+    agendaFormError = "Le titre est obligatoire.";
+    renderCockpit();
+    return null;
+  }
+  if (end && !start) {
+    agendaFormError = "Heure de fin sans heure de début impossible.";
+    renderCockpit();
+    return null;
+  }
+  if (start && end) {
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
+    if (Number.isFinite(sh) && Number.isFinite(eh)) {
+      const smins = sh * 60 + (Number.isFinite(sm) ? sm : 0);
+      const emins = eh * 60 + (Number.isFinite(em) ? em : 0);
+      if (emins < smins) {
+        agendaFormError = "L'heure de fin ne peut pas être antérieure à l'heure de début.";
+        renderCockpit();
+        return null;
+      }
+    }
+  }
+  const data = {
+    ...existing,
+    date: date || localIsoDate(),
+    startTime: allDay ? "" : (start || ""),
+    time: allDay ? "" : (start || ""),
+    endTime: allDay ? "" : (end || ""),
+    title,
+    type: document.getElementById("agType").value,
+    location: document.getElementById("agLocation").value.trim(),
+    notes: document.getElementById("agNotes").value.trim(),
+    detail: document.getElementById("agNotes").value.trim(),
+    allDay,
+    linkedManagers: checkedValues("agManagers"),
+    linkedProjects: checkedValues("agProjects"),
+    linkedFolders: checkedValues("agFolders")
+  };
+  agendaFormError = "";
+  return data;
 }
 
 function addAgenda() {
-  const data = readAgendaForm({ id: newId("agenda") });
+  const data = readAgendaForm({ id: newId("agenda"), createdAt: localIsoDate(), source: "manual", externalId: "", calendarId: "", syncStatus: "local", lastSyncedAt: "" });
   if (!data) return;
   state.agenda.push(data);
   persist("agenda");
   ensureMeetingPreparation(data.id);
-  addActivity("📅 Agenda", data.title, `${data.date} ${data.startTime}`, data.id);
-  agendaFilter = data.date === isoToday() ? "today" : agendaFilter;
+  addActivity("📅 Agenda", data.title, `${data.date} ${agendaStartTime(data)}`, data.id);
+  agendaFilter = data.date === localIsoDate() ? "today" : agendaFilter;
   agendaModalOpen = false;
   agendaEditId = "";
   renderCockpit();
@@ -1305,6 +1468,7 @@ function saveAgenda() {
   const data = readAgendaForm(a);
   if (!data) return;
   Object.assign(a, data);
+  a.updatedAt = localIsoDate();
   persist("agenda");
   syncMeetingPreparationLinks(a.id);
   addActivity("📅 Agenda modifié", a.title, `${a.date} ${a.startTime}`, a.id);
@@ -1562,7 +1726,7 @@ function transferPrepIdea(id, ideaId) {
   if (!p || !idea) return;
   const meetings = futureMeetings().filter(a => a.id !== p.agendaId);
   if (!meetings.length) return alert("Aucune autre réunion future disponible.");
-  const choice = prompt(`Transférer vers quelle réunion ?\n${meetings.map((a, i) => `${i + 1}. ${a.date || ""} ${a.startTime || a.time || ""} · ${a.title || "Réunion"}`).join("\n")}`, "1");
+  const choice = prompt(`Transférer vers quelle réunion ?\n${meetings.map((a, i) => `${i + 1}. ${a.date || ""} ${agendaStartTime(a) || "Heure à confirmer"} · ${a.title || "Réunion"}`).join("\n")}`, "1");
   const index = Number(choice) - 1;
   const target = meetings[index];
   if (!target) return;
@@ -1596,7 +1760,7 @@ function transformIdeaToAction(id, ideaId) {
 function transformIdeaToDecision(id, ideaId) {
   const p = prepById(id), a = byId("agenda", p?.agendaId), idea = p?.ideas.find(x => x.id === ideaId);
   if (!p || !idea) return;
-  const decision = { id: newId("decision"), title: idea.text, date: isoToday(), status: "review", importance: idea.importance === "critique" ? "red" : "orange", context: `Préparation réunion ${a?.title || ""}`, problem: idea.text, decision: "", rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: idea.managerId ? [idea.managerId] : p.linkedManagers, linkedProjects: idea.projectId ? [idea.projectId] : p.linkedProjects, linkedActions: [], linkedDocuments: [], linkedFolders: idea.folderId ? [idea.folderId] : p.linkedFolders, linkedMeetingPreparations: [p.id], reviewDate: a?.date || "", events: [], directorNotes: [], nextStep: "Décision à préparer", tags: ["Réunion", "Préparation"] };
+  const decision = { id: newId("decision"), title: idea.text, date: localIsoDate(), status: "review", importance: idea.importance === "critique" ? "red" : "orange", context: `Préparation réunion ${a?.title || ""}`, problem: idea.text, decision: "", rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: idea.managerId ? [idea.managerId] : p.linkedManagers, linkedProjects: idea.projectId ? [idea.projectId] : p.linkedProjects, linkedActions: [], linkedDocuments: [], linkedFolders: idea.folderId ? [idea.folderId] : p.linkedFolders, linkedMeetingPreparations: [p.id], reviewDate: a?.date || "", events: [], directorNotes: [], nextStep: "Décision à préparer", tags: ["Réunion", "Préparation"] };
   state.decisions.unshift(decision);
   p.linkedDecisions = [...new Set([...(p.linkedDecisions || []), decision.id])];
   persist("decisions");
@@ -1689,7 +1853,7 @@ function addPrepDocument(id) {
   const documentId = document.getElementById("pdDocument").value;
   const title = document.getElementById("pdTitle").value.trim();
   if (!documentId && !title) return;
-  p.usefulDocuments.push({ id: newId("prepdoc"), documentId, title, type: document.getElementById("pdType").value.trim(), version: document.getElementById("pdVersion").value.trim(), status: document.getElementById("pdStatus").value, date: isoToday() });
+  p.usefulDocuments.push({ id: newId("prepdoc"), documentId, title, type: document.getElementById("pdType").value.trim(), version: document.getElementById("pdVersion").value.trim(), status: document.getElementById("pdStatus").value, date: localIsoDate() });
   if (documentId) p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), documentId])];
   savePrepAndOpen(p);
 }
@@ -1697,7 +1861,7 @@ function addPrepDocument(id) {
 function createDocumentFromPrep(id, prepDocId) {
   const p = prepById(id), prepDoc = p?.usefulDocuments.find(x => x.id === prepDocId), a = byId("agenda", p?.agendaId);
   if (!p || !prepDoc) return;
-  const doc = { id: newId("document"), title: prepDoc.title || "Document réunion", type: prepDoc.type || "Support réunion", category: "Réunion", status: prepDoc.status || "À préparer", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: prepDoc.version || "V1", date: isoToday(), updatedAt: isoToday(), summary: `Document utile pour ${a?.title || "réunion"}`, content: "", tags: ["Réunion", "Préparation"], linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId };
+  const doc = { id: newId("document"), title: prepDoc.title || "Document réunion", type: prepDoc.type || "Support réunion", category: "Réunion", status: prepDoc.status || "À préparer", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: prepDoc.version || "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: `Document utile pour ${a?.title || "réunion"}`, content: "", tags: ["Réunion", "Préparation"], linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId };
   state.documents.unshift(doc);
   prepDoc.documentId = doc.id;
   p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), doc.id])];
@@ -1731,7 +1895,7 @@ function addPrepArbitration(id) {
 function transformArbitrationToDecision(id, arbitrationId) {
   const p = prepById(id), item = p?.arbitrations.find(x => x.id === arbitrationId), a = byId("agenda", p?.agendaId);
   if (!p || !item) return;
-  const decision = { id: newId("decision"), title: item.subject, date: isoToday(), status: item.status === "Décidée" ? "decided" : "review", importance: item.status === "Prête à décider" ? "orange" : "green", context: item.context || `Arbitrage préparé pour ${a?.title || "réunion"}`, problem: item.subject, decision: item.status === "Décidée" ? item.recommendation : "", rationale: item.recommendation || "", alternatives: item.options || "", impacts: item.benefits || "", risks: item.risks || "", owner: item.decider || p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: item.wantedDate || a?.date || "", events: [], directorNotes: [], nextStep: "Arbitrage issu d'une préparation de réunion", tags: ["Réunion", "Arbitrage"] };
+  const decision = { id: newId("decision"), title: item.subject, date: localIsoDate(), status: item.status === "Décidée" ? "decided" : "review", importance: item.status === "Prête à décider" ? "orange" : "green", context: item.context || `Arbitrage préparé pour ${a?.title || "réunion"}`, problem: item.subject, decision: item.status === "Décidée" ? item.recommendation : "", rationale: item.recommendation || "", alternatives: item.options || "", impacts: item.benefits || "", risks: item.risks || "", owner: item.decider || p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: item.wantedDate || a?.date || "", events: [], directorNotes: [], nextStep: "Arbitrage issu d'une préparation de réunion", tags: ["Réunion", "Arbitrage"] };
   state.decisions.unshift(decision);
   p.linkedDecisions = [...new Set([...(p.linkedDecisions || []), decision.id])];
   item.status = "Décidée";
@@ -1794,7 +1958,7 @@ function createConductAction(id) {
 function createConductDecision(id) {
   const p = prepById(id), text = document.getElementById("runDecision")?.value.trim(), a = byId("agenda", p?.agendaId);
   if (!p || !text) return;
-  const decision = { id: newId("decision"), title: text, date: isoToday(), status: "decided", importance: "orange", context: `Décision prise pendant ${a?.title || "réunion"}`, problem: "", decision: text, rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: "", events: [], directorNotes: [], nextStep: "", tags: ["Réunion"] };
+  const decision = { id: newId("decision"), title: text, date: localIsoDate(), status: "decided", importance: "orange", context: `Décision prise pendant ${a?.title || "réunion"}`, problem: "", decision: text, rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: "", events: [], directorNotes: [], nextStep: "", tags: ["Réunion"] };
   state.decisions.unshift(decision);
   p.linkedDecisions = [...new Set([...(p.linkedDecisions || []), decision.id])];
   p.run.decisions.push({ id: newId("run"), type: "Décision", text, createdAt: new Date().toLocaleString("fr-FR"), decisionId: decision.id });
@@ -1824,7 +1988,7 @@ function meetingReportContent(p) {
 function generateMeetingReport(id) {
   const p = prepById(id), a = byId("agenda", p?.agendaId);
   if (!p || !a) return;
-  const doc = { id: newId("document"), title: `Compte rendu - ${a.title}`, type: "Compte rendu", category: p.template || a.type || "Réunion", status: "Brouillon", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: "V1", date: isoToday(), updatedAt: isoToday(), summary: p.objectiveMain || a.notes || "", content: meetingReportContent(p), tags: ["Compte rendu", "Réunion", p.template || a.type || ""].filter(Boolean), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId, reportTemplate: p.template || "Réunion" };
+  const doc = { id: newId("document"), title: `Compte rendu - ${a.title}`, type: "Compte rendu", category: p.template || a.type || "Réunion", status: "Brouillon", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: p.objectiveMain || a.notes || "", content: meetingReportContent(p), tags: ["Compte rendu", "Réunion", p.template || a.type || ""].filter(Boolean), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId, reportTemplate: p.template || "Réunion" };
   state.documents.unshift(doc);
   p.finalReportId = doc.id;
   p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), doc.id])];
@@ -2280,8 +2444,84 @@ function folderQuickForm(folder, mode) {
   if (mode === "decision") return `<div class="card full-span"><h2>Nouvelle décision liée</h2><input id="fdTitle" placeholder="Titre"><textarea id="fdContext" placeholder="Contexte"></textarea><button class="action" onclick="saveFolderDecision('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
   if (mode === "journal") return `<div class="card full-span"><h2>Nouvelle entrée Journal liée</h2><input id="fjTitle" placeholder="Titre"><textarea id="fjSummary" placeholder="Résumé"></textarea><button class="action" onclick="saveFolderJournal('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
   if (mode === "document") return `<div class="card full-span"><h2>Nouveau document lié</h2><input id="fdocTitle" placeholder="Titre"><input id="fdocType" placeholder="Type"><textarea id="fdocContent" placeholder="Contenu"></textarea><button class="action" onclick="saveFolderDocument('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
-  if (mode === "agenda") return `<div class="card full-span"><h2>Nouveau rendez-vous lié</h2><div class="form-grid"><input id="fagDate" type="date" value="${isoToday()}"><input id="fagStart" type="time" value="09:00"><input id="fagEnd" type="time"><input id="fagTitle" placeholder="Titre"><select id="fagType"><option>Projet</option><option>CODIR</option><option>Exploitation</option><option>RH</option><option>CSE</option><option>Entretien manager</option><option>Autre</option></select><input id="fagLocation" placeholder="Lieu"></div><textarea id="fagNotes" placeholder="Notes"></textarea><button class="action" onclick="saveFolderAgenda('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
+  if (mode === "agenda") return `<div class="card full-span"><h2>Nouveau rendez-vous lié</h2><div class="form-grid"><input id="fagDate" type="date" value="${localIsoDate()}"><label class="check-row"><input id="fagAllDay" type="checkbox" onchange="toggleFolderQuickAgendaTimeFields()"> Journée entière</label><div class="time-row"><input id="fagStart" type="time" value=""><input id="fagEnd" type="time" value=""></div><input id="fagTitle" placeholder="Titre"><select id="fagType"><option>Projet</option><option>CODIR</option><option>Exploitation</option><option>RH</option><option>CSE</option><option>Entretien manager</option><option>Autre</option></select><input id="fagLocation" placeholder="Lieu"></div><textarea id="fagNotes" placeholder="Notes"></textarea><button class="action" onclick="saveFolderAgenda('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
   return "";
+}
+
+function toggleFolderQuickAgendaTimeFields() {
+  const allDay = document.getElementById("fagAllDay")?.checked;
+  const start = document.getElementById("fagStart");
+  const end = document.getElementById("fagEnd");
+  if (!start || !end) return;
+  if (allDay) {
+    start.disabled = true;
+    end.disabled = true;
+    start.classList.add("muted");
+    end.classList.add("muted");
+  } else {
+    start.disabled = false;
+    end.disabled = false;
+    start.classList.remove("muted");
+    end.classList.remove("muted");
+  }
+}
+
+function readFolderAgendaForm(folderId) {
+  const folder = byId("folders", folderId);
+  if (!folder) return null;
+  const title = document.getElementById("fagTitle")?.value.trim();
+  const date = document.getElementById("fagDate")?.value || "";
+  const allDay = document.getElementById("fagAllDay")?.checked || false;
+  const start = document.getElementById("fagStart")?.value.trim();
+  const end = document.getElementById("fagEnd")?.value.trim();
+  const notes = document.getElementById("fagNotes")?.value.trim();
+  if (!date) {
+    alert("La date est obligatoire.");
+    return null;
+  }
+  if (!title) {
+    alert("Le titre est obligatoire.");
+    return null;
+  }
+  if (end && !start) {
+    alert("Heure de fin sans heure de début impossible.");
+    return null;
+  }
+  if (start && end) {
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
+    if (Number.isFinite(sh) && Number.isFinite(eh)) {
+      const smins = sh * 60 + (Number.isFinite(sm) ? sm : 0);
+      const emins = eh * 60 + (Number.isFinite(em) ? em : 0);
+      if (emins < smins) {
+        alert("L'heure de fin ne peut pas être antérieure à l'heure de début.");
+        return null;
+      }
+    }
+  }
+  return {
+    id: newId("agenda"),
+    createdAt: localIsoDate(),
+    updatedAt: localIsoDate(),
+    source: "manual",
+    externalId: "",
+    calendarId: "",
+    syncStatus: "local",
+    lastSyncedAt: "",
+    date,
+    startTime: allDay ? "" : (start || ""),
+    time: allDay ? "" : (start || ""),
+    endTime: allDay ? "" : (end || ""),
+    title,
+    type: document.getElementById("fagType")?.value || "",
+    location: document.getElementById("fagLocation")?.value.trim(),
+    notes,
+    detail: notes,
+    allDay,
+    linkedManagers: folder.linkedManagers || [],
+    linkedProjects: [],
+    linkedFolders: [folder.id]
+  };
 }
 
 function saveFolderAction(folderId) {
@@ -2354,9 +2594,9 @@ function saveFolderDocument(folderId) {
 
 function saveFolderAgenda(folderId) {
   const folder = byId("folders", folderId);
-  const title = document.getElementById("fagTitle").value.trim();
-  if (!folder || !title) return;
-  const a = { id: newId("agenda"), date: document.getElementById("fagDate").value || isoToday(), startTime: document.getElementById("fagStart").value || "09:00", time: document.getElementById("fagStart").value || "09:00", endTime: document.getElementById("fagEnd").value, title, type: document.getElementById("fagType").value, location: document.getElementById("fagLocation").value.trim(), notes: document.getElementById("fagNotes").value.trim(), linkedManagers: folder.linkedManagers || [], linkedProjects: [], linkedFolders: [folder.id] };
+  if (!folder) return;
+  const a = readFolderAgendaForm(folderId);
+  if (!a) return;
   state.agenda.push(a);
   persist("agenda");
   addActivity("Agenda", a.title, folder.name, a.id);
@@ -2408,7 +2648,11 @@ function folderDocumentsList(items, folderId) {
 }
 
 function folderAgendaList(items, folderId) {
-  return [...items].sort((a, b) => dateRank(a.date) - dateRank(b.date) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || ""))).map(a => `<div class="item clickable" onclick="agendaFilter='all';renderCockpit()"><strong>${esc(a.date || "")} · ${esc(a.startTime || a.time || "")}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")}</span><span class="meta">${esc(a.location || "")}</span></div>`).join("") || folderEmpty(folderId, "agenda", "réunion");
+  return [...items].slice().sort(compareAgendaEvents).map(a => {
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="agendaFilter='all';renderCockpit()"><strong>${esc(a.date || "")} · ${esc(timeLabel)}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")}</span><span class="meta">${esc(a.location || "")}</span></div>`;
+  }).join("") || folderEmpty(folderId, "agenda", "réunion");
 }
 
 function linkedFoldersList(item) {
