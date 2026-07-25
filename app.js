@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.0";
+﻿const DEOS_VERSION = "V5.4";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -19,6 +19,7 @@ let identity = { ...identityDefaults };
 
 const entities = ["actions", "managers", "projects", "decisions", "priorities", "activity", "journal", "documents", "agenda", "folders", "performance", "meetingPreparations", "links", "performance_imports"];
 const state = Object.fromEntries(entities.map(name => [name, []]));
+state.settings = {};
 let agendaEditId = "";
 let agendaFilter = "today";
 let agendaModalOpen = false;
@@ -49,7 +50,7 @@ let backupPreviewSummary = null;
 let backupPreviewOpen = false;
 let agendaFormError = "";
 
-const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique" };
+const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
 
 const defaults = {
@@ -708,6 +709,7 @@ async function init() {
     state[name] = normalizeCollection(name, saved(name, await loadJson(name)));
     persist(name);
   }
+  state.settings = ensureSettings(saved("settings", {}));
   const restoreMessage = localStorage.getItem("deos_restore_success");
   if (restoreMessage) {
     restoreSuccessMessage = restoreMessage;
@@ -5279,6 +5281,95 @@ function openLink(id) {
   renderLinks();
 }
 
+function getDefaultCalendarConnectionSettings() {
+  return {
+    provider: "none",
+    accountEmail: "",
+    calendarName: "",
+    syncDirection: "import",
+    showInAgenda: true,
+    showTodayInCockpit: true,
+    maskPrivateEvents: false,
+    syncFrequency: "manual",
+    connectionStatus: "not_configured",
+    lastSyncAt: null,
+    nextSyncAt: null
+  };
+}
+
+function ensureSettings(raw = {}) {
+  return state.settings = {
+    ...raw,
+    calendarConnection: {
+      ...getDefaultCalendarConnectionSettings(),
+      ...(raw.calendarConnection || {})
+    }
+  };
+}
+
+function getCalendarConnectionSettings() {
+  return (state.settings && state.settings.calendarConnection) ? state.settings.calendarConnection : getDefaultCalendarConnectionSettings();
+}
+
+function persistSettings() {
+  localStorage.setItem("deos_settings", JSON.stringify(state.settings));
+}
+
+function settingsCalendarConnectionCard() {
+  const settings = getCalendarConnectionSettings();
+  const status = settings.connectionStatus || (settings.provider === "google" ? "connection_required" : "not_configured");
+  const visibleStatus = status === "connected" ? "connection_required" : status;
+  const statusClass = visibleStatus === "connection_required" ? "orange" : "red";
+  const statusLabel = {
+    not_configured: "Non configuré",
+    connection_required: "Connexion requise",
+    connection_error: "Erreur de connexion"
+  }[visibleStatus] || "Non configuré";
+  return `<div class="card settings-card settings-calendar-card"><div class="settings-card-heading"><h2>Agenda et connexions externes</h2><p class="muted">Configurez le calendrier professionnel qui pourra être synchronisé avec DEOS.</p><div class="settings-info-box">Aucun accès à votre compte Google n’est réalisé dans cette version.</div></div><div class="settings-card-grid"><section class="settings-card-block"><h3>Connexion</h3><div class="settings-card-control"><label for="ccProvider">Fournisseur de calendrier</label><select id="ccProvider"><option value="none"${settings.provider !== "google" ? " selected" : ""}>Aucun</option><option value="google"${settings.provider === "google" ? " selected" : ""}>Google Calendar</option></select></div><div class="settings-card-control"><label for="ccAccountEmail">Adresse e-mail du compte professionnel</label><input id="ccAccountEmail" type="email" value="${esc(settings.accountEmail)}" placeholder="adresse@exemple.com"></div><div class="settings-card-control"><label for="ccCalendarName">Nom du calendrier à synchroniser</label><input id="ccCalendarName" value="${esc(settings.calendarName)}" placeholder="Par exemple : Agenda pro"></div></section><section class="settings-card-block"><h3>Synchronisation</h3><div class="settings-card-grid-2col"><div class="settings-card-control"><label for="ccSyncDirection">Sens de synchronisation</label><select id="ccSyncDirection"><option value="import"${settings.syncDirection === "import" ? " selected" : ""}>Importer uniquement vers DEOS</option><option value="two-way"${settings.syncDirection === "two-way" ? " selected" : ""}>Synchronisation bidirectionnelle</option></select></div><div class="settings-card-control"><label for="ccSyncFrequency">Fréquence de synchronisation</label><select id="ccSyncFrequency"><option value="manual"${settings.syncFrequency === "manual" ? " selected" : ""}>Synchronisation manuelle</option><option value="hourly"${settings.syncFrequency === "hourly" ? " selected" : ""}>Toutes les heures</option><option value="daily"${settings.syncFrequency === "daily" ? " selected" : ""}>Quotidien</option></select></div></div><p class="muted settings-help-text">Cette option sera utilisée lorsque la synchronisation automatique sera activée.</p></section><section class="settings-card-block"><h3>Affichage dans DEOS</h3><div class="settings-card-check"><label><input id="ccShowInAgenda" type="checkbox"${settings.showInAgenda ? " checked" : ""}><span>Afficher les événements externes dans la page Agenda</span></label></div><div class="settings-card-check"><label><input id="ccShowTodayInCockpit" type="checkbox"${settings.showTodayInCockpit ? " checked" : ""}><span>Afficher les rendez-vous du jour dans le Cockpit</span></label></div><div class="settings-card-check"><label><input id="ccMaskPrivateEvents" type="checkbox"${settings.maskPrivateEvents ? " checked" : ""}><span>Importer les événements privés en masquant leur contenu</span></label></div></section><section class="settings-card-block settings-calendar-status"><h3>État et informations</h3><div class="settings-calendar-badge-row"><div><strong>État de la connexion</strong></div><div><span class="badge ${statusClass}">${esc(statusLabel)}</span></div></div><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(settings.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Prochain contrôle</strong><span>${esc(settings.nextSyncAt || "Non planifié")}</span></div></div></section></div><div class="row-actions settings-calendar-buttons"><button class="action" onclick="saveCalendarConnectionSettings()">Enregistrer la configuration</button><div class="settings-calendar-actions-right"><button class="secondary" onclick="prepareGoogleCalendarConnection()">Préparer la connexion Google</button><button class="secondary" onclick="resetCalendarConnectionSettings()">Réinitialiser</button></div></div><p class="muted settings-calendar-note">Ces réglages sont stockés localement. La synchronisation réelle sera déployée plus tard.</p></div>`;
+}
+
+function readCalendarConnectionSettingsForm() {
+  const provider = document.getElementById("ccProvider")?.value || "none";
+  const accountEmail = document.getElementById("ccAccountEmail")?.value.trim();
+  const calendarName = document.getElementById("ccCalendarName")?.value.trim();
+  const syncDirection = document.getElementById("ccSyncDirection")?.value || "import";
+  const syncFrequency = document.getElementById("ccSyncFrequency")?.value || "manual";
+  const showInAgenda = document.getElementById("ccShowInAgenda")?.checked || false;
+  const showTodayInCockpit = document.getElementById("ccShowTodayInCockpit")?.checked || false;
+  const maskPrivateEvents = document.getElementById("ccMaskPrivateEvents")?.checked || false;
+  const connectionStatus = provider === "google" ? "connection_required" : "not_configured";
+  return {
+    ...getDefaultCalendarConnectionSettings(),
+    ...getCalendarConnectionSettings(),
+    provider,
+    accountEmail,
+    calendarName,
+    syncDirection,
+    syncFrequency,
+    showInAgenda,
+    showTodayInCockpit,
+    maskPrivateEvents,
+    connectionStatus
+  };
+}
+
+function saveCalendarConnectionSettings() {
+  state.settings.calendarConnection = readCalendarConnectionSettingsForm();
+  persistSettings();
+  renderSettings("Configuration Agenda enregistrée.");
+}
+
+function resetCalendarConnectionSettings() {
+  if (!confirm("Réinitialiser uniquement les réglages Agenda et connexions externes ? Les rendez-vous et autres données DEOS resteront inchangés.")) return;
+  state.settings.calendarConnection = getDefaultCalendarConnectionSettings();
+  persistSettings();
+  renderSettings("Réglages Agenda réinitialisés.");
+}
+
+function prepareGoogleCalendarConnection() {
+  alert("La connexion sécurisée à Google Calendar sera activée dans une prochaine version. Votre configuration est enregistrée, mais aucun accès à votre compte Google n’a encore été accordé.");
+}
+
 function settingsPreviewHtml(data = identity) {
   const logo = data.logoType === "image" && data.logoImage
     ? `<span class="settings-logo settings-logo-image" style="background-image:url('${esc(data.logoImage)}')"></span>`
@@ -5292,7 +5383,7 @@ function renderSettings(message = "") {
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
   const statusMessage = message || restoreSuccessMessage;
   restoreSuccessMessage = "";
-  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div><div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
+  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
 
 function readSettingsForm() {
