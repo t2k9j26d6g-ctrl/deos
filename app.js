@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.6";
+﻿const DEOS_VERSION = "V5.7";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -50,6 +50,7 @@ const entities = ["actions", "managers", "projects", "decisions", "priorities", 
 const state = Object.fromEntries(entities.map(name => [name, []]));
 state.settings = {};
 state.externalCalendarEvents = []; // Événements Google Calendar importés (V5.5)
+state.externalEventEnrichments = {}; // Enrichissements locaux des événements Google (V5.7)
 let agendaEditId = "";
 let agendaFilter = "today";
 let agendaModalOpen = false;
@@ -742,6 +743,9 @@ async function init() {
   state.settings = ensureSettings(saved("settings", {}));
   // V5.5 — Charger les événements externes (Google Calendar)
   state.externalCalendarEvents = saved("external_events", []);
+  // V5.7 — Charger les enrichissements locaux des événements Google
+  state.externalEventEnrichments = saved("external_event_enrichments", {});
+  ensureExternalEventEnrichments();
   // [DEOS STATE TRACE] After loadState
   console.log("[DEOS STATE TRACE] after loadState:", state.externalCalendarEvents.length);
   // Restaurer la session Google si disponible (token sessionStorage seulement)
@@ -1472,8 +1476,149 @@ function externalEventModal() {
   if (!googleExternalEventModalId) return "";
   const ev = (state.externalCalendarEvents || []).find(e => e.externalId === googleExternalEventModalId);
   if (!ev) return "";
+  const enrichment = getExternalEventEnrichment(ev._key);
   const time = ev.allDay ? "Journée entière" : `${esc(ev.startTime || "")}${ev.endTime ? " - " + esc(ev.endTime) : ""}`;
-  return `<div class="modal-backdrop" onclick="closeExternalEventModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>📅 Événement Google Calendar</h2><button class="icon-close" onclick="closeExternalEventModal()" aria-label="Fermer">×</button></div><div style="padding:16px;display:grid;gap:10px"><p class="muted" style="margin:0">Événement en lecture seule — importé depuis Google Calendar</p><strong style="font-size:18px">${esc(ev.title)}</strong><div style="display:grid;grid-template-columns:120px 1fr;gap:8px;font-size:14px"><span style="color:#64748b">Date</span><span>${esc(ev.date)}</span><span style="color:#64748b">Heure</span><span>${time}</span>${ev.location ? `<span style="color:#64748b">Lieu</span><span>${esc(ev.location)}</span>` : ""}<span style="color:#64748b">Calendrier</span><span>${esc(ev.calendarName || "Google Calendar")}</span><span style="color:#64748b">Statut</span><span>${esc(ev.status || "confirmé")}</span></div>${ev.description ? `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;font-size:13px;color:#475569;white-space:pre-wrap">${esc(ev.description)}</div>` : ""}<div class="modal-actions"><button class="secondary" onclick="closeExternalEventModal()">Fermer</button></div></div></div></div>`;
+  
+  // Zone Google Calendar (lecture seule)
+  const googleSection = `<div style="border-bottom:1px solid #e2e8f0;padding-bottom:16px;margin-bottom:16px">
+    <h3 style="margin:0 0 12px 0;color:#1e293b">📅 Informations Google Calendar</h3>
+    <p class="muted" style="margin:0 0 12px 0;font-size:12px">Lecture seule — importé depuis Google Calendar</p>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:8px;font-size:14px">
+      <span style="color:#64748b;font-weight:500">Titre</span><span style="font-weight:500">${esc(ev.title)}</span>
+      <span style="color:#64748b">Date</span><span>${esc(ev.date)}</span>
+      <span style="color:#64748b">Heure</span><span>${time}</span>
+      ${ev.location ? `<span style="color:#64748b">Lieu</span><span>${esc(ev.location)}</span>` : ""}
+      <span style="color:#64748b">Calendrier</span><span>${esc(ev.calendarName || "Google Calendar")}</span>
+      <span style="color:#64748b">Statut</span><span>${esc(ev.status || "confirmé")}</span>
+    </div>
+    ${ev.description ? `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-size:12px;color:#475569;white-space:pre-wrap;margin-top:10px">
+      <span style="color:#64748b;font-size:11px">Description Google</span><br>${esc(ev.description)}
+    </div>` : ""}
+  </div>`;
+  
+  // Zone Préparation DEOS (modifiable)
+  const preparationStatuses = ["not_started", "to_prepare", "in_progress", "ready", "completed", "cancelled"];
+  const preparationLabels = {
+    "not_started": "Non commencé",
+    "to_prepare": "À préparer",
+    "in_progress": "En cours",
+    "ready": "Prêt",
+    "completed": "Réalisé",
+    "cancelled": "Annulé"
+  };
+  
+  const deosSectionHTML = `<div>
+    <h3 style="margin:0 0 12px 0;color:#1e293b">✅ Préparation et suivi DEOS</h3>
+    
+    <div style="display:grid;gap:12px">
+      <!-- Statut -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Statut de préparation</label>
+        <select id="enrichStatus" style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;font-size:14px">
+          ${preparationStatuses.map(s => `<option value="${s}" ${enrichment.preparationStatus === s ? "selected" : ""}>${preparationLabels[s]}</option>`).join("")}
+        </select>
+      </div>
+      
+      <!-- Sujets à traiter -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Sujets à traiter</label>
+          <button class="icon-btn" onclick="addExternalEventSubject('${esc(ev._key)}')" title="Ajouter un sujet" style="padding:4px 8px;font-size:11px">+ Ajouter</button>
+        </div>
+        <div id="subjectsList" style="display:grid;gap:6px;max-height:120px;overflow-y:auto">
+          ${enrichment.subjects && enrichment.subjects.length > 0 ? enrichment.subjects.map((s, idx) => `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:8px;font-size:13px;display:flex;gap:8px;align-items:center">
+            <input type="checkbox" ${s.completed ? "checked" : ""} onchange="updateExternalEventSubject('${esc(ev._key)}', '${esc(s.id)}', '${esc(s.title)}', '', this.checked)" style="cursor:pointer">
+            <span style="${s.completed ? "text-decoration:line-through;color:#94a3b8" : ""}">${esc(s.title)}</span>
+            <button class="icon-btn" onclick="deleteExternalEventSubject('${esc(ev._key)}', '${esc(s.id)}')" style="padding:2px 6px;font-size:11px;margin-left:auto">✕</button>
+          </div>`).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucun sujet pour le moment</p>"}
+        </div>
+      </div>
+      
+      <!-- Préparation -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Préparation</label>
+        <textarea id="enrichPrep" placeholder="Objectif, messages clés, points de vigilance..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.preparation)}</textarea>
+      </div>
+      
+      <!-- Notes -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Notes</label>
+        <textarea id="enrichNotes" placeholder="Notes libres utilisables pendant la réunion..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.notes)}</textarea>
+      </div>
+      
+      <!-- Compte rendu -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Compte rendu</label>
+        <textarea id="enrichReport" placeholder="Résumé, décisions prises, actions décidées..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.report)}</textarea>
+      </div>
+      
+      <!-- Liens utiles -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Liens utiles</label>
+          <button class="icon-btn" onclick="addExternalEventLink('${esc(ev._key)}')" title="Ajouter un lien" style="padding:4px 8px;font-size:11px">+ Lien</button>
+        </div>
+        <div id="linksList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
+          ${enrichment.links && enrichment.links.length > 0 ? enrichment.links.map(l => `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
+            <a href="${esc(l.url)}" target="_blank" style="color:#0284c7;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.url)}">${esc(l.name || l.url)}</a>
+            <button class="icon-btn" onclick="deleteExternalEventLink('${esc(ev._key)}', '${esc(l.id)}')" style="padding:2px 6px;font-size:11px">✕</button>
+          </div>`).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucun lien pour le moment</p>"}
+        </div>
+      </div>
+      
+      <!-- Actions liées -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Actions liées</label>
+          <button class="icon-btn" onclick="createActionFromExternalEvent('${esc(ev._key)}', '${esc(ev.title)}')" title="Créer une action" style="padding:4px 8px;font-size:11px">+ Action</button>
+        </div>
+        <div id="actionsList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
+          ${enrichment.linkedActionIds && enrichment.linkedActionIds.length > 0 ? enrichment.linkedActionIds.map(actionId => {
+            const action = byId("actions", actionId);
+            return action ? `<div style="background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
+              <a href="javascript:openActionModal('${esc(actionId)}')" style="color:#059669;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(action.title)}</a>
+              <button class="icon-btn" onclick="unlinkActionFromExternalEvent('${esc(ev._key)}', '${esc(actionId)}')" style="padding:2px 6px;font-size:11px">✕</button>
+            </div>` : "";
+          }).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucune action liée</p>"}
+        </div>
+      </div>
+      
+      <!-- Décisions liées -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Décisions liées</label>
+          <button class="icon-btn" onclick="createDecisionFromExternalEvent('${esc(ev._key)}', '${esc(ev.title)}')" title="Créer une décision" style="padding:4px 8px;font-size:11px">+ Décision</button>
+        </div>
+        <div id="decisionsList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
+          ${enrichment.linkedDecisionIds && enrichment.linkedDecisionIds.length > 0 ? enrichment.linkedDecisionIds.map(decisionId => {
+            const decision = byId("decisions", decisionId);
+            return decision ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
+              <a href="javascript:openDecisionModal('${esc(decisionId)}')" style="color:#b45309;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(decision.title)}</a>
+              <button class="icon-btn" onclick="unlinkDecisionFromExternalEvent('${esc(ev._key)}', '${esc(decisionId)}')" style="padding:2px 6px;font-size:11px">✕</button>
+            </div>` : "";
+          }).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucune décision liée</p>"}
+        </div>
+      </div>
+    </div>
+  </div>`;
+  
+  return `<div class="modal-backdrop" onclick="closeExternalEventModal()"><div class="modal-panel" style="max-height:85vh;overflow-y:auto" onclick="event.stopPropagation()">
+    <div class="modal-head" style="position:sticky;top:0;background:#fff;z-index:10;border-bottom:1px solid #e2e8f0;padding-bottom:12px">
+      <h2 style="margin:0">📅 Rendez-vous Google Calendar</h2>
+      <button class="icon-close" onclick="closeExternalEventModal()" aria-label="Fermer">×</button>
+    </div>
+    <div style="padding:16px;display:grid;gap:16px">
+      ${googleSection}
+      ${enrichment.sourceUnavailable ? `<div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:12px;font-size:13px;color:#991b1b">
+        ⚠️ L'événement Google d'origine n'est plus disponible. Vos enrichissements locaux sont conservés.
+      </div>` : ""}
+      ${deosSectionHTML}
+      <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid #e2e8f0;padding-top:12px">
+        <button class="action" onclick="saveExternalEventEnrichmentFromModal('${esc(ev._key)}')">Enregistrer</button>
+        <button class="secondary" onclick="closeExternalEventModal()">Fermer</button>
+      </div>
+    </div>
+  </div></div>`;
 }
 
 function openMeetingSubjectModal(agendaId = "") {
@@ -6057,6 +6202,7 @@ function onClickSyncGoogleNow() {
 
 function persistExternalEvents() {
   localStorage.setItem("deos_external_events", JSON.stringify(state.externalCalendarEvents || []));
+  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
 }
 
 function googleConnectionStatusLabel() {
@@ -6289,6 +6435,9 @@ function reconcileGoogleCalendarEvents(freshEvents) {
   const now = Date.now();
   let added = 0, updated = 0, removed = 0;
   console.log("[DEOS AGENDA TRACE] Reconciliation - freshEvents:", freshEvents.length);
+  // V5.7 — IMPORTANT: Ne jamais écraser state.externalEventEnrichments
+  // Les enrichissements restent attachés grâce à la clé stable (_key)
+  
   // [DEOS V5.6.5] DIAGNOSTIC: verify _key structure
   const keyIssues = [];
   for (let i = 0; i < Math.min(5, freshEvents.length); i++) {
@@ -6319,6 +6468,10 @@ function reconcileGoogleCalendarEvents(freshEvents) {
     if (!fresIds.has(oldId)) {
       const idx = state.externalCalendarEvents.findIndex(e => e._key === oldId);
       if (idx >= 0) {
+        // V5.7 — Marquer l'enrichissement comme source indisponible
+        if (state.externalEventEnrichments[oldId]) {
+          state.externalEventEnrichments[oldId].sourceUnavailable = true;
+        }
         state.externalCalendarEvents.splice(idx, 1);
         removed++;
       }
@@ -6392,4 +6545,313 @@ init();
 
 
 
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// V5.7 â€” ENRICHISSEMENT LOCAL DES Ã‰VÃ‰NEMENTS GOOGLE CALENDAR
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+/**
+ * Initialise la structure d'enrichissements si elle n'existe pas
+ * S'exÃ©cute au dÃ©marrage pour garantir une structure cohÃ©rente
+ */
+function ensureExternalEventEnrichments() {
+  if (!state.externalEventEnrichments) {
+    state.externalEventEnrichments = {};
+  }
+  console.log("[DEOS V5.7] ensureExternalEventEnrichments: structure initialized with", Object.keys(state.externalEventEnrichments).length, "enrichments");
+}
+
+/**
+ * Obtient ou crÃ©e un enrichissement pour un Ã©vÃ©nement externe
+ * @param {string} eventKey - ClÃ© stable de l'Ã©vÃ©nement (google_<externalId>)
+ * @returns {object} Enrichissement (existant ou nouvellement crÃ©Ã©)
+ */
+function getExternalEventEnrichment(eventKey) {
+  if (!state.externalEventEnrichments[eventKey]) {
+    state.externalEventEnrichments[eventKey] = {
+      eventKey: eventKey,
+      subjects: [],
+      preparation: "",
+      notes: "",
+      report: "",
+      linkedActionIds: [],
+      linkedDecisionIds: [],
+      linkedDocumentIds: [],
+      links: [],
+      preparationStatus: "not_started",
+      sourceUnavailable: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    console.log("[DEOS V5.7] getExternalEventEnrichment: created new enrichment for", eventKey);
+  }
+  return state.externalEventEnrichments[eventKey];
+}
+
+/**
+ * Sauvegarde un enrichissement dans l'Ã©tat global
+ * @param {string} eventKey - ClÃ© stable de l'Ã©vÃ©nement
+ * @param {object} enrichment - DonnÃ©es d'enrichissement
+ */
+function saveExternalEventEnrichment(eventKey, enrichment) {
+  enrichment.updatedAt = new Date().toISOString();
+  state.externalEventEnrichments[eventKey] = enrichment;
+  persistExternalEvents();
+  console.log("[DEOS V5.7] saveExternalEventEnrichment: saved for", eventKey);
+}
+
+/**
+ * Sauvegarde les donnÃ©es de la modale d'enrichissement
+ * AppelÃ©e par le bouton "Enregistrer" de la modale
+ */
+function saveExternalEventEnrichmentFromModal(eventKey) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  
+  // RÃ©cupÃ©rer les valeurs du formulaire
+  enrichment.preparationStatus = document.getElementById("enrichStatus")?.value || "not_started";
+  enrichment.preparation = document.getElementById("enrichPrep")?.value || "";
+  enrichment.notes = document.getElementById("enrichNotes")?.value || "";
+  enrichment.report = document.getElementById("enrichReport")?.value || "";
+  
+  saveExternalEventEnrichment(eventKey, enrichment);
+  
+  // Afficher une confirmation discrÃ¨te
+  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+  if (ev) {
+    addActivity("âœ… Enrichissement rendez-vous", ev.title, "Informations mises Ã  jour", ev._key);
+  }
+  
+  // Garder la modale ouverte pour que l'utilisateur voie la confirmation
+  setTimeout(() => {
+    // Notification discrÃ¨te - le titre de la modale pourrait changer
+    console.log("[DEOS V5.7] Enrichissement enregistrÃ© pour", eventKey);
+  }, 100);
+}
+
+/**
+ * Ajoute un sujet Ã  traiter pour un Ã©vÃ©nement externe
+ */
+function addExternalEventSubject(eventKey) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const subjectText = prompt("Ajouter un sujet Ã  traiter:");
+  
+  if (subjectText && subjectText.trim()) {
+    const newSubject = {
+      id: newId("subject"),
+      title: subjectText.trim(),
+      notes: "",
+      completed: false,
+      order: (enrichment.subjects || []).length
+    };
+    
+    if (!enrichment.subjects) enrichment.subjects = [];
+    enrichment.subjects.push(newSubject);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Met Ã  jour un sujet existant
+ */
+function updateExternalEventSubject(eventKey, subjectId, title, notes, completed) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const subject = (enrichment.subjects || []).find(s => s.id === subjectId);
+  
+  if (subject) {
+    if (title !== undefined) subject.title = title;
+    if (notes !== undefined) subject.notes = notes;
+    if (completed !== undefined) subject.completed = !!completed;
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Supprime un sujet
+ */
+function deleteExternalEventSubject(eventKey, subjectId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const idx = (enrichment.subjects || []).findIndex(s => s.id === subjectId);
+  
+  if (idx >= 0) {
+    enrichment.subjects.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Ajoute un lien utile
+ */
+function addExternalEventLink(eventKey) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const linkName = prompt("Nom du lien:");
+  
+  if (linkName && linkName.trim()) {
+    const linkUrl = prompt("URL du lien:");
+    
+    if (linkUrl && linkUrl.trim()) {
+      const newLink = {
+        id: newId("link"),
+        name: linkName.trim(),
+        url: linkUrl.trim(),
+        createdAt: new Date().toISOString()
+      };
+      
+      if (!enrichment.links) enrichment.links = [];
+      enrichment.links.push(newLink);
+      saveExternalEventEnrichment(eventKey, enrichment);
+      renderCockpit();
+    }
+  }
+}
+
+/**
+ * Supprime un lien
+ */
+function deleteExternalEventLink(eventKey, linkId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const idx = (enrichment.links || []).findIndex(l => l.id === linkId);
+  
+  if (idx >= 0) {
+    enrichment.links.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Lie une action existante Ã  un Ã©vÃ©nement externe
+ */
+function linkActionToExternalEvent(eventKey, actionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const action = byId("actions", actionId);
+  
+  if (!action) return;
+  if (!enrichment.linkedActionIds) enrichment.linkedActionIds = [];
+  
+  // Ã‰viter les doublons
+  if (enrichment.linkedActionIds.includes(actionId)) return;
+  
+  enrichment.linkedActionIds.push(actionId);
+  saveExternalEventEnrichment(eventKey, enrichment);
+  console.log("[DEOS V5.7] Action", actionId, "linked to external event", eventKey);
+}
+
+/**
+ * DÃ©tache une action d'un Ã©vÃ©nement externe (sans supprimer l'action)
+ */
+function unlinkActionFromExternalEvent(eventKey, actionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  if (!enrichment.linkedActionIds) enrichment.linkedActionIds = [];
+  
+  const idx = enrichment.linkedActionIds.indexOf(actionId);
+  if (idx >= 0) {
+    enrichment.linkedActionIds.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * CrÃ©e une nouvelle action DEOS liÃ©e Ã  un Ã©vÃ©nement externe
+ */
+function createActionFromExternalEvent(eventKey, eventTitle) {
+  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+  if (!ev) return;
+  
+  const actionTitle = prompt("Titre de la nouvelle action:", `Ã€ propos de: ${eventTitle}`);
+  if (!actionTitle || !actionTitle.trim()) return;
+  
+  const newAction = {
+    id: newId("action"),
+    title: actionTitle.trim(),
+    link: eventTitle,
+    done: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  state.actions.push(newAction);
+  persist("actions");
+  linkActionToExternalEvent(eventKey, newAction.id);
+  addActivity("ðŸ“Œ Action crÃ©Ã©e", actionTitle, `LiÃ©e au rendez-vous: ${eventTitle}`, newAction.id);
+  renderCockpit();
+}
+
+/**
+ * Lie une dÃ©cision existante Ã  un Ã©vÃ©nement externe
+ */
+function linkDecisionToExternalEvent(eventKey, decisionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const decision = byId("decisions", decisionId);
+  
+  if (!decision) return;
+  if (!enrichment.linkedDecisionIds) enrichment.linkedDecisionIds = [];
+  
+  // Ã‰viter les doublons
+  if (enrichment.linkedDecisionIds.includes(decisionId)) return;
+  
+  enrichment.linkedDecisionIds.push(decisionId);
+  saveExternalEventEnrichment(eventKey, enrichment);
+  console.log("[DEOS V5.7] Decision", decisionId, "linked to external event", eventKey);
+}
+
+/**
+ * DÃ©tache une dÃ©cision d'un Ã©vÃ©nement externe (sans supprimer la dÃ©cision)
+ */
+function unlinkDecisionFromExternalEvent(eventKey, decisionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  if (!enrichment.linkedDecisionIds) enrichment.linkedDecisionIds = [];
+  
+  const idx = enrichment.linkedDecisionIds.indexOf(decisionId);
+  if (idx >= 0) {
+    enrichment.linkedDecisionIds.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * CrÃ©e une nouvelle dÃ©cision DEOS liÃ©e Ã  un Ã©vÃ©nement externe
+ */
+function createDecisionFromExternalEvent(eventKey, eventTitle) {
+  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+  if (!ev) return;
+  
+  const decisionTitle = prompt("Titre de la nouvelle dÃ©cision:", `Ã€ propos de: ${eventTitle}`);
+  if (!decisionTitle || !decisionTitle.trim()) return;
+  
+  const newDecision = {
+    id: newId("decision"),
+    title: decisionTitle.trim(),
+    context: eventTitle,
+    status: "Ã€ valider",
+    priority: "normale",
+    owner: identityName(),
+    deadline: ev.date,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  state.decisions.push(newDecision);
+  persist("decisions");
+  linkDecisionToExternalEvent(eventKey, newDecision.id);
+  addActivity("âš–ï¸ DÃ©cision crÃ©Ã©e", decisionTitle, `LiÃ©e au rendez-vous: ${eventTitle}`, newDecision.id);
+  renderCockpit();
+}
+
+/**
+ * Marque un Ã©vÃ©nement comme source indisponible
+ * AppelÃ©e automatiquement lors d'une sync si l'Ã©vÃ©nement Google est supprimÃ©
+ */
+function markExternalEventSourceMissing(eventKey, missing = true) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  enrichment.sourceUnavailable = !!missing;
+  saveExternalEventEnrichment(eventKey, enrichment);
+  console.log("[DEOS V5.7] Event", eventKey, "marked as source unavailable:", missing);
+}
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
