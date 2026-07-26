@@ -1,17 +1,24 @@
-﻿const DEOS_VERSION = "V5.5";
+﻿const DEOS_VERSION = "V5.6";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
-// ── Google Calendar V5.5 ──────────────────────────────────────────────────────
+// ── Google Calendar V5.6 ──────────────────────────────────────────────────────
 // Méthode OAuth : Google Identity Services (GIS) — initTokenClient (Implicit Grant)
 // Scope minimal principe du moindre privilège : lecture seule calendriers + événements
 // Access token : sessionStorage uniquement — jamais localStorage ni code source
 // Client Secret : jamais stocké dans DEOS — uniquement le Client ID public OAuth
 // Documentation API : https://developers.google.com/calendar/api/v3/reference
+// V5.6 : Synchronisation automatique, gestion expiration token, réconciliation
 const GOOGLE_SCOPES = "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.calendarlist.readonly";
 const GOOGLE_CALENDAR_API = "https://www.googleapis.com/calendar/v3";
-const GOOGLE_SYNC_DAYS_PAST = 30;   // jours dans le passé à importer
-const GOOGLE_SYNC_DAYS_FUTURE = 90; // jours dans le futur à importer
+const GOOGLE_SYNC_PAST_DAYS = 30;     // jours dans le passé à importer
+const GOOGLE_SYNC_FUTURE_DAYS = 90;   // jours dans le futur à importer
+const GOOGLE_SYNC_INTERVALS = {       // Mapping fréquence configurée → intervalle en ms (V5.6)
+  manual: null,      // aucun timer
+  "15min": 15 * 60 * 1000,      // 15 minutes
+  "hourly": 60 * 60 * 1000,     // 1 heure
+  "daily": 24 * 60 * 60 * 1000  // 1 jour
+};
 
 // Variables de runtime Google (non persistées en localStorage)
 let googleAccessToken = null;
@@ -20,6 +27,9 @@ let googleAvailableCalendars = [];
 let googleConnectedEmail = "";
 let googleExternalEventModalId = "";
 let googleSyncInProgress = false;
+let googleSyncTimerId = null;          // ID du timer automatique (V5.6)
+let googleLastSyncAt = null;           // timestamp dernière synchro (V5.6)
+let googleNextSyncAt = null;           // timestamp prochaine synchro (V5.6)
 
 const identityDefaults = {
   appName: "DEOS",
@@ -732,6 +742,8 @@ async function init() {
   state.settings = ensureSettings(saved("settings", {}));
   // V5.5 — Charger les événements externes (Google Calendar)
   state.externalCalendarEvents = saved("external_events", []);
+  // [DEOS STATE TRACE] After loadState
+  console.log("[DEOS STATE TRACE] after loadState:", state.externalCalendarEvents.length);
   // Restaurer la session Google si disponible (token sessionStorage seulement)
   const _gcToken = sessionStorage.getItem("deos_gc_token");
   if (_gcToken) {
@@ -740,6 +752,18 @@ async function init() {
     googleConnectedEmail = sessionStorage.getItem("deos_gc_email") || "";
   } else if (getCalendarConnectionSettings().provider === "google") {
     googleConnectionStatus = "connection_required";
+  }
+  // V5.6 — Restaurer l'état de synchronisation Google et lancer auto-sync
+  const settings = getCalendarConnectionSettings();
+  if (settings.lastSyncAt) googleLastSyncAt = parseInt(settings.lastSyncAt, 10) || null;
+  if (googleConnectionStatus === "connected" && settings.googleCalendarId && settings.syncFrequency !== "manual") {
+    if (shouldRunGoogleSyncNow()) {
+      console.log("[DEOS Google Calendar] Sync immédiate au démarrage (dernière synchro dépassée)");
+      syncGoogleCalendarNow().catch(e => console.error("[DEOS Google Calendar] Erreur sync démarrage:", e));
+    } else {
+      scheduleNextGoogleSync();
+    }
+    startGoogleCalendarAutoSync();
   }
   const restoreMessage = localStorage.getItem("deos_restore_success");
   if (restoreMessage) {
@@ -1244,6 +1268,8 @@ function cockpitCreateBar() {
 }
 
 function agendaItems() {
+  // [DEOS STATE TRACE] At agendaItems entry
+  console.log("[DEOS STATE TRACE] agendaItems state external events:", state.externalCalendarEvents.length);
   const settings = getCalendarConnectionSettings();
   const todayIso = localIsoDate();
   const tomorrowIso = localIsoAddDays(1);
@@ -1255,10 +1281,39 @@ function agendaItems() {
     return true;
   };
   const manual = state.agenda.filter(filter);
+  // [DEOS AGENDA TRACE] Diagnostic
+  console.log("[DEOS AGENDA TRACE] manual events:", manual.length);
+  console.log("[DEOS AGENDA TRACE] showInAgenda setting:", settings.showInAgenda);
+  console.log("[DEOS AGENDA TRACE] external events stored:", (state.externalCalendarEvents || []).length);
+  // [DEOS V5.6.5] DIAGNOSTIC: trace filter steps
+  console.log("[DEOS AGENDA TRACE] agendaFilter:", agendaFilter);
+  console.log("[DEOS AGENDA TRACE] today:", todayIso);
+  console.log("[DEOS AGENDA TRACE] week range:", todayIso, "→", weekIso);
+  
+  const externalStored = state.externalCalendarEvents || [];
+  console.log("[DEOS AGENDA TRACE] Step 1 - external stored total:", externalStored.length);
+  
+  const externalAfterFilter = externalStored.filter(filter);
+  console.log("[DEOS AGENDA TRACE] Step 2 - after date filter:", externalAfterFilter.length);
+  
+  // [DEOS V5.6.5] DIAGNOSTIC: check for invalid dates
+  const withInvalidDate = externalStored.filter(e => !e.date || typeof e.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.date));
+  if (withInvalidDate.length > 0) {
+    console.warn("[DEOS AGENDA TRACE] ⚠️ Events with invalid dates:", withInvalidDate.length);
+    console.log("[DEOS AGENDA TRACE] Sample invalid:", withInvalidDate.slice(0, 3));
+  }
+  
   const external = settings.showInAgenda
-    ? (state.externalCalendarEvents || []).filter(filter).map(e => ({ ...e, _external: true }))
+    ? externalAfterFilter.map(e => ({ ...e, _external: true }))
     : [];
-  return [...manual, ...external].slice().sort(compareAgendaEvents);
+  console.log("[DEOS AGENDA TRACE] Step 3 - external events mapped:", external.length);
+  console.log("[DEOS AGENDA TRACE] google events after filter:", external.length);
+  const merged = [...manual, ...external];
+  console.log("[DEOS AGENDA TRACE] merged events before sort:", merged.length);
+  const result = merged.slice().sort(compareAgendaEvents);
+  console.log("[DEOS AGENDA TRACE] merged events after sort:", result.length);
+  console.log("[DEOS AGENDA TRACE] merged events:", (manual.length + external.length));
+  return result;
 }
 
 function agendaEmptyLabel() {
@@ -2083,7 +2138,7 @@ function renderCockpit() {
     ${cockpitCreateBar()}
     <div class="cockpit-top">
       <div class="card hero compact-hero">
-        <h2>Brief du jour</h2><p class="muted">${today()} · ${esc(identity.appName)} ${esc(identity.appVersion)}</p>
+        <h2>Brief du jour</h2><p class="muted">${today()} · ${esc(identity.appName)} ${esc(DEOS_VERSION)}</p>
         <div class="quick-kpis">
           ${cockpitKpi("Urgences", metrics.red, "red", "danger-kpi")}
           ${cockpitKpi("Actions ouvertes", metrics.openActions, "actions")}
@@ -5399,34 +5454,21 @@ function settingsCalendarConnectionCard() {
   return `<div class="card settings-card settings-calendar-card"><div class="settings-card-heading"><h2>Agenda et connexions externes</h2><p class="muted">Configurez le calendrier professionnel qui pourra être synchronisé avec DEOS.</p><div class="settings-info-box">Aucun accès à votre compte Google n’est réalisé dans cette version.</div></div><div class="settings-card-grid"><section class="settings-card-block"><h3>Connexion</h3><div class="settings-card-control"><label for="ccProvider">Fournisseur de calendrier</label><select id="ccProvider"><option value="none"${settings.provider !== "google" ? " selected" : ""}>Aucun</option><option value="google"${settings.provider === "google" ? " selected" : ""}>Google Calendar</option></select></div><div class="settings-card-control"><label for="ccAccountEmail">Adresse e-mail du compte professionnel</label><input id="ccAccountEmail" type="email" value="${esc(settings.accountEmail)}" placeholder="adresse@exemple.com"></div><div class="settings-card-control"><label for="ccCalendarName">Nom du calendrier à synchroniser</label><input id="ccCalendarName" value="${esc(settings.calendarName)}" placeholder="Par exemple : Agenda pro"></div></section><section class="settings-card-block"><h3>Synchronisation</h3><div class="settings-card-grid-2col"><div class="settings-card-control"><label for="ccSyncDirection">Sens de synchronisation</label><select id="ccSyncDirection"><option value="import"${settings.syncDirection === "import" ? " selected" : ""}>Importer uniquement vers DEOS</option><option value="two-way"${settings.syncDirection === "two-way" ? " selected" : ""}>Synchronisation bidirectionnelle</option></select></div><div class="settings-card-control"><label for="ccSyncFrequency">Fréquence de synchronisation</label><select id="ccSyncFrequency"><option value="manual"${settings.syncFrequency === "manual" ? " selected" : ""}>Synchronisation manuelle</option><option value="hourly"${settings.syncFrequency === "hourly" ? " selected" : ""}>Toutes les heures</option><option value="daily"${settings.syncFrequency === "daily" ? " selected" : ""}>Quotidien</option></select></div></div><p class="muted settings-help-text">Cette option sera utilisée lorsque la synchronisation automatique sera activée.</p></section><section class="settings-card-block"><h3>Affichage dans DEOS</h3><div class="settings-card-check"><label><input id="ccShowInAgenda" type="checkbox"${settings.showInAgenda ? " checked" : ""}><span>Afficher les événements externes dans la page Agenda</span></label></div><div class="settings-card-check"><label><input id="ccShowTodayInCockpit" type="checkbox"${settings.showTodayInCockpit ? " checked" : ""}><span>Afficher les rendez-vous du jour dans le Cockpit</span></label></div><div class="settings-card-check"><label><input id="ccMaskPrivateEvents" type="checkbox"${settings.maskPrivateEvents ? " checked" : ""}><span>Importer les événements privés en masquant leur contenu</span></label></div></section><section class="settings-card-block settings-calendar-status"><h3>État et informations</h3><div class="settings-calendar-badge-row"><div><strong>État de la connexion</strong></div><div><span class="badge ${statusClass}">${esc(statusLabel)}</span></div></div><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(settings.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Prochain contrôle</strong><span>${esc(settings.nextSyncAt || "Non planifié")}</span></div></div></section></div><div class="row-actions settings-calendar-buttons"><button class="action" onclick="saveCalendarConnectionSettings()">Enregistrer la configuration</button><div class="settings-calendar-actions-right"><button class="secondary" onclick="prepareGoogleCalendarConnection()">Préparer la connexion Google</button><button class="secondary" onclick="resetCalendarConnectionSettings()">Réinitialiser</button></div></div><p class="muted settings-calendar-note">Ces réglages sont stockés localement. La synchronisation réelle sera déployée plus tard.</p></div>`;
 }
 
-function readCalendarConnectionSettingsForm() {
-  const provider = document.getElementById("ccProvider")?.value || "none";
-  const accountEmail = document.getElementById("ccAccountEmail")?.value.trim();
-  const calendarName = document.getElementById("ccCalendarName")?.value.trim();
-  const syncDirection = document.getElementById("ccSyncDirection")?.value || "import";
-  const syncFrequency = document.getElementById("ccSyncFrequency")?.value || "manual";
-  const showInAgenda = document.getElementById("ccShowInAgenda")?.checked || false;
-  const showTodayInCockpit = document.getElementById("ccShowTodayInCockpit")?.checked || false;
-  const maskPrivateEvents = document.getElementById("ccMaskPrivateEvents")?.checked || false;
-  const connectionStatus = provider === "google" ? "connection_required" : "not_configured";
-  return {
-    ...getDefaultCalendarConnectionSettings(),
-    ...getCalendarConnectionSettings(),
-    provider,
-    accountEmail,
-    calendarName,
-    syncDirection,
-    syncFrequency,
-    showInAgenda,
-    showTodayInCockpit,
-    maskPrivateEvents,
-    connectionStatus
-  };
-}
+// Ancienne version de settingsCalendarConnectionCard() supprimée (remplacée par version V5.6 ligne ~5891)
+
+// Ancienne version de readCalendarConnectionSettingsForm() supprimée (remplacée par version V5.6 ligne ~6023)
 
 function saveCalendarConnectionSettings() {
+  console.log("[DEOS SYNC TRACE] saveCalendarConnectionSettings called");
   state.settings.calendarConnection = readCalendarConnectionSettingsForm();
+  console.log("[DEOS SYNC TRACE] Saved settings - googleCalendarId:", state.settings.calendarConnection.googleCalendarId || "(empty)");
+  console.log("[DEOS SYNC TRACE] Saved settings - syncFrequency:", state.settings.calendarConnection.syncFrequency);
   persistSettings();
+  // V5.6 — Redémarrer auto-sync si configuration changée
+  const newSettings = getCalendarConnectionSettings();
+  if (googleConnectionStatus === "connected" && newSettings.googleCalendarId) {
+    restartGoogleCalendarAutoSync();
+  }
   renderSettings("Configuration Agenda enregistrée.");
 }
 
@@ -5641,14 +5683,24 @@ function connectGoogleCalendar() {
       await fetchGoogleCalendars();
       state.settings.calendarConnection.provider = "google";
       persistSettings();
-      renderSettings("Connexion Google reussie !");
+      // V5.6 — Redémarrer auto-sync si configurée
+      const settings = getCalendarConnectionSettings();
+      if (settings.googleCalendarId && settings.syncFrequency !== "manual") {
+        googleLastSyncAt = null;
+        googleNextSyncAt = null;
+        scheduleNextGoogleSync();
+        restartGoogleCalendarAutoSync();
+      }
+      renderSettings("Connexion Google réussie !");
     }
   });
   tokenClient.requestAccessToken({ prompt: "" });
 }
 
 function disconnectGoogleCalendar() {
-  if (!confirm("Deconnecter Google Calendar ? Les evenements deja importes seront supprimes de DEOS.")) return;
+  if (!confirm("Déconnecter Google Calendar ? Les événements déjà importés seront supprimés de DEOS.")) return;
+  // V5.6 — Arrêter auto-sync
+  stopGoogleCalendarAutoSync();
   const token = getGoogleAccessToken();
   if (token && typeof google !== "undefined" && google?.accounts?.oauth2) {
     try { google.accounts.oauth2.revoke(token, () => {}); } catch (e) { /* ignore */ }
@@ -5656,6 +5708,8 @@ function disconnectGoogleCalendar() {
   setGoogleAccessToken(null);
   googleConnectedEmail = "";
   googleAvailableCalendars = [];
+  googleLastSyncAt = null;
+  googleNextSyncAt = null;
   updateGoogleConnectionStatus("not_configured");
   state.externalCalendarEvents = [];
   localStorage.removeItem("deos_external_events");
@@ -5663,9 +5717,10 @@ function disconnectGoogleCalendar() {
     state.settings.calendarConnection.googleCalendarId = "";
     state.settings.calendarConnection.googleCalendarName = "";
     state.settings.calendarConnection.connectionStatus = "not_configured";
+    state.settings.calendarConnection.lastSyncAt = null;
   }
   persistSettings();
-  renderSettings("Deconnecte de Google Calendar. Donnees externes supprimees.");
+  renderSettings("Déconnecté de Google Calendar. Données externes supprimées.");
 }
 
 async function fetchGoogleCalendars() {
@@ -5676,8 +5731,7 @@ async function fetchGoogleCalendars() {
       headers: { "Authorization": `Bearer ${token}` }
     });
     if (resp.status === 401) {
-      setGoogleAccessToken(null);
-      updateGoogleConnectionStatus("session_expired");
+      handleGoogleTokenExpired();
       return [];
     }
     if (!resp.ok) {
@@ -5732,12 +5786,38 @@ function normalizeGoogleCalendarEvent(gcEvent, calendarId, calendarName) {
   if (priv && !settings.maskPrivateEvents) return null;
   const title = priv && settings.maskPrivateEvents ? "Prive" : (gcEvent.summary || "Sans titre");
   const description = priv && settings.maskPrivateEvents ? "" : (gcEvent.description || "");
+  // [DEOS AGENDA TRACE] Generate deduplication key
+  const deduplicationKey = `google_${gcEvent.id}`;
+  
+  // [DEOS V5.6.5] DIAGNOSTIC: date conversion
+  let localDate;
+  if (allDay) {
+    // For all-day events, start.date is already in YYYY-MM-DD format
+    localDate = startRaw;
+  } else {
+    // For timed events, convert ISO string to local date
+    try {
+      const dateObj = new Date(startRaw);
+      localDate = dateObj.toISOString().slice(0, 10);  // ISO format date, which is UTC
+      // Better: use local timezone conversion
+      const year = dateObj.getFullYear();
+      const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const day = String(dateObj.getDate()).padStart(2, '0');
+      localDate = `${year}-${month}-${day}`;
+    } catch (e) {
+      localDate = startRaw.slice(0, 10);
+    }
+  }
+  
   return {
+    _key: deduplicationKey,           // Clé de déduplication pour reconciliation
+    _calendarId: calendarId,          // ID du calendrier source (pour filtres)
+    _external: true,                  // Marqueur d'événement externe
     externalId: gcEvent.id,
     provider: "google",
     id: `gc_${gcEvent.id}`,
     title,
-    date: startRaw.slice(0, 10),
+    date: localDate,
     startTime: allDay ? "" : startRaw.slice(11, 16),
     endTime: allDay ? "" : endRaw.slice(11, 16),
     allDay,
@@ -5758,8 +5838,8 @@ async function fetchGoogleCalendarEvents() {
   const calendarId = settings.googleCalendarId;
   if (!calendarId) { console.warn("[DEOS] Aucun calendrier selectionne."); return []; }
   const now = new Date();
-  const past = new Date(now); past.setDate(past.getDate() - GOOGLE_SYNC_DAYS_PAST);
-  const future = new Date(now); future.setDate(future.getDate() + GOOGLE_SYNC_DAYS_FUTURE);
+  const past = new Date(now); past.setDate(past.getDate() - GOOGLE_SYNC_PAST_DAYS);
+  const future = new Date(now); future.setDate(future.getDate() + GOOGLE_SYNC_FUTURE_DAYS);
   const params = new URLSearchParams({
     timeMin: past.toISOString(),
     timeMax: future.toISOString(),
@@ -5783,7 +5863,22 @@ async function fetchGoogleCalendarEvents() {
       return [];
     }
     const data = await resp.json();
-    return (data.items || []).filter(e => e.status !== "cancelled");
+    const items = (data.items || []).filter(e => e.status !== "cancelled");
+    // [DEOS V5.6.5] DIAGNOSTIC: raw events sample
+    if (items.length > 0) {
+      const sample = items.slice(0, 20).map(e => ({
+        externalId: e.id,
+        summary: e.summary,
+        'start.dateTime': e.start?.dateTime,
+        'start.date': e.start?.date,
+        'end.dateTime': e.end?.dateTime,
+        'end.date': e.end?.date,
+        status: e.status
+      }));
+      console.log("[DEOS GOOGLE RAW SAMPLE] fetched items:", items.length);
+      console.table(sample);
+    }
+    return items;
   } catch (e) {
     console.error("[DEOS] fetchGoogleCalendarEvents:", e);
     updateGoogleConnectionStatus("connection_error");
@@ -5792,57 +5887,172 @@ async function fetchGoogleCalendarEvents() {
 }
 
 async function syncGoogleCalendarNow() {
-  if (googleSyncInProgress) return;
+  console.log("[DEOS SYNC TRACE] syncGoogleCalendarNow entered");
+  console.log("[DEOS SYNC TRACE] lock state - googleSyncInProgress:", googleSyncInProgress);
+  if (googleSyncInProgress) {
+    console.warn("[DEOS SYNC TRACE] ❌ EXIT: Sync already in progress");
+    return;
+  }
   const token = getGoogleAccessToken();
+  console.log("[DEOS SYNC TRACE] token present:", !!token);
   if (!token) {
-    renderSettings("Connexion Google requise. Cliquez sur Connecter Google Calendar.");
+    console.warn("[DEOS SYNC TRACE] ❌ EXIT: No token");
+    renderSettings("Session Google expirée, reconnectez-vous pour continuer.");
     return;
   }
   const settings = getCalendarConnectionSettings();
+  console.log("[DEOS SYNC TRACE] calendarId present:", !!settings.googleCalendarId);
+  console.log("[DEOS SYNC TRACE] calendarId value:", settings.googleCalendarId || "(empty)");
   if (!settings.googleCalendarId) {
-    renderSettings("Veuillez selectionner un calendrier dans la liste avant de synchroniser.");
+    console.warn("[DEOS SYNC TRACE] ❌ EXIT: No calendar selected");
+    renderSettings("Veuillez sélectionner un calendrier dans la liste avant de synchroniser.");
     return;
   }
+  console.log("[DEOS SYNC TRACE] ✓ All pre-checks passed, proceeding with sync");
   googleSyncInProgress = true;
   renderSettings("Synchronisation en cours...");
   try {
+    console.log("[DEOS SYNC TRACE] Fetching events from Google Calendar...");
     const rawEvents = await fetchGoogleCalendarEvents();
+    console.log("[DEOS SYNC TRACE] Fetched", rawEvents.length, "raw events");
+    // Vérifier si le token a expiré durant la récupération
     if (googleConnectionStatus === "session_expired") {
       googleSyncInProgress = false;
-      renderSettings("Session expiree. Reconnectez-vous a Google.");
+      console.error("[DEOS SYNC TRACE] ❌ Token expired during fetch");
+      handleGoogleTokenExpired();
       return;
     }
     if (googleConnectionStatus === "connection_error") {
       googleSyncInProgress = false;
-      renderSettings("Erreur reseau lors de la synchronisation.");
+      console.error("[DEOS SYNC TRACE] ❌ Network error during fetch");
+      renderSettings("Erreur réseau lors de la synchronisation. Vérifiez votre connexion.");
       return;
     }
     const calId = settings.googleCalendarId;
-    const calName = settings.googleCalendarName || settings.calendarName || "";
+    const calName = settings.googleCalendarName || "";
     const newEvents = rawEvents.map(e => normalizeGoogleCalendarEvent(e, calId, calName)).filter(Boolean);
-    // Deduplication : provider + externalId comme cle stable
-    const mergedMap = new Map(
-      (state.externalCalendarEvents || []).map(e => [`${e.provider}_${e.externalId}`, e])
-    );
-    for (const ev of newEvents) mergedMap.set(`${ev.provider}_${ev.externalId}`, ev);
-    // Supprimer les evenements absents de la reponse Google pour ce calendrier
-    const incomingIds = new Set(newEvents.map(e => `${e.provider}_${e.externalId}`));
-    state.externalCalendarEvents = Array.from(mergedMap.values()).filter(e =>
-      e.provider === "google" && e.calendarId === calId
-        ? incomingIds.has(`${e.provider}_${e.externalId}`)
-        : true
-    );
-    state.settings.calendarConnection.lastSyncAt = new Date().toISOString();
+    console.log("[DEOS SYNC TRACE] Normalized", newEvents.length, "events");
+    // [DEOS V5.6.5] DIAGNOSTIC: normalized events sample
+    if (newEvents.length > 0) {
+      const sample = newEvents.slice(0, 20).map(e => ({
+        externalId: e.externalId,
+        title: e.title,
+        date: e.date,
+        startTime: e.startTime,
+        endTime: e.endTime,
+        allDay: e.allDay,
+        _key: e._key,
+        _calendarId: e._calendarId,
+        _external: e._external
+      }));
+      console.log("[DEOS GOOGLE NORMALIZED SAMPLE] normalized events:", newEvents.length);
+      console.table(sample);
+    }
+    // [DEOS V5.6.5] DIAGNOSTIC: date types analysis
+    const timedEvents = rawEvents.filter(e => !!e.start?.dateTime);
+    const allDayEvents = rawEvents.filter(e => !!e.start?.date && !e.start?.dateTime);
+    console.log("[DEOS DATE ANALYSIS] timed events:", timedEvents.length);
+    console.log("[DEOS DATE ANALYSIS] all-day events:", allDayEvents.length);
+    if (timedEvents.length > 0) {
+      const timedSample = timedEvents.slice(0, 5).map(e => ({
+        id: e.id,
+        summary: e.summary,
+        'start.dateTime': e.start?.dateTime,
+        'end.dateTime': e.end?.dateTime
+      }));
+      console.log("[DEOS DATE ANALYSIS] Timed events sample (first 5):");
+      console.table(timedSample);
+    }
+    if (allDayEvents.length > 0) {
+      const allDaySample = allDayEvents.slice(0, 5).map(e => ({
+        id: e.id,
+        summary: e.summary,
+        'start.date': e.start?.date,
+        'end.date': e.end?.date
+      }));
+      console.log("[DEOS DATE ANALYSIS] All-day events sample (first 5):");
+      console.table(allDaySample);
+    }
+    // Log sample event structure
+    if (newEvents.length > 0) {
+      console.log("[DEOS AGENDA TRACE] Sample normalized event keys:", Object.keys(newEvents[0]));
+      console.log("[DEOS AGENDA TRACE] Sample event _key:", newEvents[0]._key);
+      console.log("[DEOS AGENDA TRACE] Sample event _calendarId:", newEvents[0]._calendarId);
+      console.log("[DEOS AGENDA TRACE] Sample event date:", newEvents[0].date);
+      console.log("[DEOS AGENDA TRACE] Sample event title:", newEvents[0].title);
+    }
+    // V5.6 — Réconciliation : ajouter/mettre à jour/supprimer
+    const reconciliation = reconcileGoogleCalendarEvents(newEvents);
+    console.log("[DEOS SYNC TRACE] Reconciliation complete: +", reconciliation.added, "~", reconciliation.updated, "-", reconciliation.removed);
+    // [DEOS STATE TRACE] After reconciliation
+    console.log("[DEOS STATE TRACE] after reconciliation:", state.externalCalendarEvents.length);
+    // [DEOS V5.6.5] DIAGNOSTIC: storage statistics
+    if (state.externalCalendarEvents.length > 0) {
+      const dates = state.externalCalendarEvents.map(e => e.date).sort();
+      const minDate = dates[0];
+      const maxDate = dates[dates.length - 1];
+      const today = localIsoDate();
+      const weekEnd = localIsoAddDays(7);
+      const nextSevenDays = state.externalCalendarEvents.filter(e => e.date >= today && e.date <= weekEnd).length;
+      const firstFive = state.externalCalendarEvents.slice(0, 5).map(e => ({
+        date: e.date,
+        title: e.title,
+        _key: e._key
+      }));
+      console.log("[DEOS GOOGLE STORED] total:", state.externalCalendarEvents.length);
+      console.log("[DEOS GOOGLE STORED] min date:", minDate);
+      console.log("[DEOS GOOGLE STORED] max date:", maxDate);
+      console.log("[DEOS GOOGLE STORED] today:", today);
+      console.log("[DEOS GOOGLE STORED] next 7 days:", nextSevenDays);
+      console.log("[DEOS GOOGLE STORED] first 5 events:");
+      console.table(firstFive);
+    }
+    // [DEOS V5.6.5] DIAGNOSTIC: deduplication check
+    const allKeys = state.externalCalendarEvents.map(e => e._key);
+    const uniqueKeys = new Set(allKeys);
+    const duplicateCount = allKeys.length - uniqueKeys.size;
+    console.log("[DEOS DEDUP CHECK] total events:", state.externalCalendarEvents.length);
+    console.log("[DEOS DEDUP CHECK] unique keys:", uniqueKeys.size);
+    console.log("[DEOS DEDUP CHECK] duplicate keys:", duplicateCount);
+    // [DEOS V5.6.5] DIAGNOSTIC: [DEOS AGENDA TRACE] After reconciliation
+    console.log("[DEOS AGENDA TRACE] External events after reconciliation:", state.externalCalendarEvents.length);
+    // Nettoyer les événements hors fenêtre de synchronisation (optionnel)
+    removeMissingGoogleEventsInWindow();
+    // Mettre à jour l'état de synchronisation
+    googleLastSyncAt = Date.now();
+    scheduleNextGoogleSync();
+    state.settings.calendarConnection.lastSyncAt = googleLastSyncAt;
+    state.settings.calendarConnection.lastSyncAtIso = new Date(googleLastSyncAt).toISOString();
     updateGoogleConnectionStatus("connected");
     persistSettings();
     persistExternalEvents();
+    // [DEOS STATE TRACE] After persistence
+    console.log("[DEOS STATE TRACE] after persistence:", state.externalCalendarEvents.length);
     googleSyncInProgress = false;
-    renderSettings(`Synchronisation reussie : ${newEvents.length} evenement(s) importe(s).`);
+    const msg = `Synchronisation réussie : ${reconciliation.added} ajoutés, ${reconciliation.updated} mis à jour, ${reconciliation.removed} supprimés.`;
+    console.log("[DEOS SYNC TRACE] ✓ Sync completed successfully");
+    console.log("[DEOS SYNC TRACE] Message:", msg);
+    // [DEOS STATE TRACE] Before renderSettings
+    console.log("[DEOS STATE TRACE] before renderSettings:", state.externalCalendarEvents.length);
+    renderSettings(msg);
+    updateGoogleSyncUi();
   } catch (e) {
-    console.error("[DEOS] syncGoogleCalendarNow:", e);
+    console.error("[DEOS SYNC TRACE] ❌ Sync failed with exception:", e);
     googleSyncInProgress = false;
-    renderSettings("Erreur inattendue lors de la synchronisation. Consultez la console.");
+    renderSettings("Erreur inattendue lors de la synchronisation. Consultez la console pour plus de détails.");
   }
+}
+
+// Fonction intermédiaire pour coordonner le clic du bouton "Synchroniser maintenant"
+// Appelle saveCalendarConnectionSettings() puis syncGoogleCalendarNow() avec timing approprié
+function onClickSyncGoogleNow() {
+  console.log("[DEOS SYNC TRACE] Button onclick handler fired");
+  saveCalendarConnectionSettings();
+  // Appeler syncGoogleCalendarNow() après une micro-pause pour laisser renderSettings() se terminer
+  setTimeout(() => {
+    console.log("[DEOS SYNC TRACE] setTimeout callback - now calling syncGoogleCalendarNow()");
+    syncGoogleCalendarNow().catch(e => console.error("[DEOS SYNC TRACE] Unhandled promise rejection:", e));
+  }, 100);
 }
 
 function persistExternalEvents() {
@@ -5874,8 +6084,9 @@ function settingsCalendarConnectionCard() {
   const connected = googleConnectionStatus === "connected";
   const statusClass = googleConnectionStatusClass();
   const statusLabel = googleConnectionStatusLabel();
-  const lastSync = s.lastSyncAt ? new Date(s.lastSyncAt).toLocaleString("fr-FR") : "Jamais";
-  const externalCount = (state.externalCalendarEvents || []).length;
+  // V5.6 — Utiliser updateGoogleSyncUi() pour l'état de sync
+  const syncUi = updateGoogleSyncUi();
+  const externalCount = (state.externalCalendarEvents || []).length;  // Total de tous les événements externes stockés
 
   // Liste des calendriers disponibles (apres authentification)
   const calendarOptions = googleAvailableCalendars.length > 0
@@ -5954,13 +6165,15 @@ function settingsCalendarConnectionCard() {
       <section class="settings-card-block">
         <h3>Etat et synchronisation</h3>
         <div class="settings-calendar-summary">
-          <div class="settings-calendar-summary-item"><strong>Derniere synchro</strong><span>${esc(lastSync)}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Derniere synchro</strong><span>${esc(syncUi.lastSync)}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Prochaine synchro</strong><span>${esc(syncUi.nextSync)}</span></div>
           <div class="settings-calendar-summary-item"><strong>Evenements importes</strong><span>${externalCount}</span></div>
           <div class="settings-calendar-summary-item"><strong>Calendrier selectionne</strong><span>${esc(s.googleCalendarName || s.googleCalendarId || "--")}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Frequence active</strong><span>${esc(s.syncFrequency === "manual" ? "Manuelle" : s.syncFrequency)}</span></div>
           <div class="settings-calendar-summary-item"><strong>Fournisseur</strong><span>${esc(s.provider === "google" ? "Google Calendar" : "Aucun")}</span></div>
         </div>
         ${connected
-          ? `<div style="margin-top:14px"><button class="action" onclick="saveCalendarConnectionSettings();syncGoogleCalendarNow()" ${googleSyncInProgress ? "disabled" : ""}>Synchroniser maintenant</button></div>`
+          ? `<div style="margin-top:14px"><button class="action" onclick="onClickSyncGoogleNow()" ${googleSyncInProgress ? "disabled" : ""}>Synchroniser maintenant</button></div>`
           : ""
         }
       </section>
@@ -5981,6 +6194,10 @@ function readCalendarConnectionSettingsForm() {
   const googleCalendarId = calendarSelect?.value || "";
   const googleCalendarName = calendarSelect?.options[calendarSelect?.selectedIndex]?.text || "";
   const syncFrequency = document.getElementById("ccSyncFrequency")?.value || "manual";
+  // [DEOS SYNC TRACE] Diagnostic
+  console.log("[DEOS SYNC TRACE] Form read - calendarSelect element exists:", !!calendarSelect);
+  console.log("[DEOS SYNC TRACE] Form read - googleCalendarId value:", googleCalendarId || "(empty)");
+  console.log("[DEOS SYNC TRACE] Form read - syncFrequency value:", syncFrequency);
   const showInAgenda = document.getElementById("ccShowInAgenda")?.checked ?? true;
   const showTodayInCockpit = document.getElementById("ccShowTodayInCockpit")?.checked ?? true;
   const maskPrivateEvents = document.getElementById("ccMaskPrivateEvents")?.checked ?? false;
@@ -6003,6 +6220,159 @@ function readCalendarConnectionSettingsForm() {
 // ── prepareGoogleCalendarConnection() remplace l'ancienne version ────────────
 function prepareGoogleCalendarConnection() {
   connectGoogleCalendar();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEOS V5.6 — Synchronisation Automatique et Gestion de l'Expiration du Token
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getGoogleSyncIntervalMs() {
+  const settings = getCalendarConnectionSettings();
+  const freq = settings.syncFrequency || "manual";
+  return GOOGLE_SYNC_INTERVALS[freq] || null;
+}
+
+function shouldRunGoogleSyncNow() {
+  const settings = getCalendarConnectionSettings();
+  if (googleConnectionStatus !== "connected" || !settings.googleCalendarId) return false;
+  if (!googleLastSyncAt) return true;
+  const interval = getGoogleSyncIntervalMs();
+  if (!interval) return false;
+  const now = Date.now();
+  return now - googleLastSyncAt >= interval;
+}
+
+function scheduleNextGoogleSync() {
+  const interval = getGoogleSyncIntervalMs();
+  if (!interval) {
+    googleNextSyncAt = null;
+    return;
+  }
+  const now = googleLastSyncAt || Date.now();
+  googleNextSyncAt = now + interval;
+}
+
+function handleGoogleTokenExpired() {
+  console.error("[DEOS Google Calendar] Token expiré. Session terminée.");
+  setGoogleAccessToken(null);
+  updateGoogleConnectionStatus("session_expired");
+  stopGoogleCalendarAutoSync();
+  renderSettings("Votre session Google a expiré. Reconnectez-vous pour reprendre la synchronisation.");
+}
+
+function startGoogleCalendarAutoSync() {
+  if (googleSyncTimerId !== null) return;
+  const interval = getGoogleSyncIntervalMs();
+  if (!interval) return;
+  googleSyncTimerId = setInterval(async () => {
+    if (googleConnectionStatus === "connected" && !googleSyncInProgress) {
+      await syncGoogleCalendarNow();
+    }
+  }, interval);
+  console.log("[DEOS Google Calendar] Auto-sync démarré, intervalle: " + interval + "ms");
+}
+
+function stopGoogleCalendarAutoSync() {
+  if (googleSyncTimerId !== null) {
+    clearInterval(googleSyncTimerId);
+    googleSyncTimerId = null;
+    console.log("[DEOS Google Calendar] Auto-sync arrêté");
+  }
+}
+
+function restartGoogleCalendarAutoSync() {
+  stopGoogleCalendarAutoSync();
+  startGoogleCalendarAutoSync();
+}
+
+function reconcileGoogleCalendarEvents(freshEvents) {
+  const now = Date.now();
+  let added = 0, updated = 0, removed = 0;
+  console.log("[DEOS AGENDA TRACE] Reconciliation - freshEvents:", freshEvents.length);
+  // [DEOS V5.6.5] DIAGNOSTIC: verify _key structure
+  const keyIssues = [];
+  for (let i = 0; i < Math.min(5, freshEvents.length); i++) {
+    const e = freshEvents[i];
+    if (!e._key) keyIssues.push(`Event ${i}: _key is missing`);
+    if (!e._calendarId) keyIssues.push(`Event ${i}: _calendarId is missing`);
+    if (e._key?.startsWith('undefined')) keyIssues.push(`Event ${i}: _key contains "undefined"`);
+  }
+  if (keyIssues.length > 0) {
+    console.error("[DEOS DEDUP CHECK] KEY ISSUES:", keyIssues);
+  }
+  // Log first event to debug structure
+  if (freshEvents.length > 0) {
+    console.log("[DEOS AGENDA TRACE] First freshEvent _key:", freshEvents[0]._key);
+    console.log("[DEOS AGENDA TRACE] First freshEvent _calendarId:", freshEvents[0]._calendarId);
+  }
+  const fresIds = new Set(freshEvents.map(e => e._key));
+  console.log("[DEOS AGENDA TRACE] Fresh IDs count:", fresIds.size);
+  console.log("[DEOS DEDUP CHECK] fresh unique keys:", fresIds.size);
+  // [DEOS V5.6.5] Check for undefined keys
+  if (fresIds.has(undefined)) console.error("[DEOS DEDUP CHECK] ⚠️ Fresh events contain undefined _key!");
+  const oldIds = state.externalCalendarEvents
+    .filter(e => e._calendarId === getCalendarConnectionSettings().googleCalendarId)
+    .map(e => e._key);
+  console.log("[DEOS AGENDA TRACE] Old events count:", oldIds.length);
+  console.log("[DEOS DEDUP CHECK] old events total:", state.externalCalendarEvents.length);
+  for (const oldId of oldIds) {
+    if (!fresIds.has(oldId)) {
+      const idx = state.externalCalendarEvents.findIndex(e => e._key === oldId);
+      if (idx >= 0) {
+        state.externalCalendarEvents.splice(idx, 1);
+        removed++;
+      }
+    }
+  }
+  for (const fresh of freshEvents) {
+    const idx = state.externalCalendarEvents.findIndex(e => e._key === fresh._key);
+    if (idx >= 0) {
+      const old = state.externalCalendarEvents[idx];
+      if (old.title !== fresh.title || old.startTime !== fresh.startTime || old.date !== fresh.date || old.description !== fresh.description) {
+        state.externalCalendarEvents[idx] = fresh;
+        updated++;
+      }
+    } else {
+      state.externalCalendarEvents.push(fresh);
+      added++;
+    }
+  }
+  console.log(`[DEOS Google Calendar] Réconciliation: ${added} ajoutés, ${updated} mis à jour, ${removed} supprimés`);
+  console.log("[DEOS AGENDA TRACE] Total external events after reconciliation:", state.externalCalendarEvents.length);
+  return { added, updated, removed };
+}
+
+function removeMissingGoogleEventsInWindow() {
+  const settings = getCalendarConnectionSettings();
+  const calendarId = settings.googleCalendarId;
+  if (!calendarId) return;
+  const now = new Date();
+  const past = new Date(now); past.setDate(past.getDate() - GOOGLE_SYNC_PAST_DAYS);
+  const future = new Date(now); future.setDate(future.getDate() + GOOGLE_SYNC_FUTURE_DAYS);
+  const pastIso = localIsoDate(past);
+  const futureIso = localIsoDate(future);
+  console.log("[DEOS STATE TRACE] removeMissingGoogleEventsInWindow: before filter:", state.externalCalendarEvents.length);
+  console.log("[DEOS STATE TRACE] window range:", pastIso, "→", futureIso);
+  state.externalCalendarEvents = state.externalCalendarEvents.filter(e => {
+    if (e._calendarId !== calendarId) return true; // Garder les événements d'autres calendriers
+    const eDate = String(e.date || "").substring(0, 10);
+    // GARDER les événements DANS la fenêtre de sync, SUPPRIMER les événements OUTSIDE
+    const keep = eDate >= pastIso && eDate <= futureIso;
+    if (!keep) {
+      console.log("[DEOS STATE TRACE] Removing event outside window:", e.title, "date:", e.date);
+    }
+    return keep;
+  });
+  console.log("[DEOS STATE TRACE] removeMissingGoogleEventsInWindow: after filter:", state.externalCalendarEvents.length);
+}
+
+function updateGoogleSyncUi() {
+  const settings = getCalendarConnectionSettings();
+  const freq = settings.syncFrequency || "manual";
+  const lastSync = googleLastSyncAt ? new Date(googleLastSyncAt).toLocaleString("fr-FR") : "Jamais";
+  const nextSync = googleNextSyncAt ? new Date(googleNextSyncAt).toLocaleString("fr-FR") : (freq === "manual" ? "Manuelle" : "Non planifiée");
+  const eventCount = state.externalCalendarEvents.filter(e => e._calendarId === settings.googleCalendarId).length;
+  return { lastSync, nextSync, eventCount };
 }
 
 init();
