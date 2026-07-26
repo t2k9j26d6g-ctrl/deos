@@ -1,6 +1,35 @@
-﻿const DEOS_VERSION = "V5.0";
+﻿const DEOS_VERSION = "V5.7";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
+
+// ── Google Calendar V5.6 ──────────────────────────────────────────────────────
+// Méthode OAuth : Google Identity Services (GIS) — initTokenClient (Implicit Grant)
+// Scope minimal principe du moindre privilège : lecture seule calendriers + événements
+// Access token : sessionStorage uniquement — jamais localStorage ni code source
+// Client Secret : jamais stocké dans DEOS — uniquement le Client ID public OAuth
+// Documentation API : https://developers.google.com/calendar/api/v3/reference
+// V5.6 : Synchronisation automatique, gestion expiration token, réconciliation
+const GOOGLE_SCOPES = "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.calendarlist.readonly";
+const GOOGLE_CALENDAR_API = "https://www.googleapis.com/calendar/v3";
+const GOOGLE_SYNC_PAST_DAYS = 30;     // jours dans le passé à importer
+const GOOGLE_SYNC_FUTURE_DAYS = 90;   // jours dans le futur à importer
+const GOOGLE_SYNC_INTERVALS = {       // Mapping fréquence configurée → intervalle en ms (V5.6)
+  manual: null,      // aucun timer
+  "15min": 15 * 60 * 1000,      // 15 minutes
+  "hourly": 60 * 60 * 1000,     // 1 heure
+  "daily": 24 * 60 * 60 * 1000  // 1 jour
+};
+
+// Variables de runtime Google (non persistées en localStorage)
+let googleAccessToken = null;
+let googleConnectionStatus = "not_configured";
+let googleAvailableCalendars = [];
+let googleConnectedEmail = "";
+let googleExternalEventModalId = "";
+let googleSyncInProgress = false;
+let googleSyncTimerId = null;          // ID du timer automatique (V5.6)
+let googleLastSyncAt = null;           // timestamp dernière synchro (V5.6)
+let googleNextSyncAt = null;           // timestamp prochaine synchro (V5.6)
 
 const identityDefaults = {
   appName: "DEOS",
@@ -19,6 +48,9 @@ let identity = { ...identityDefaults };
 
 const entities = ["actions", "managers", "projects", "decisions", "priorities", "activity", "journal", "documents", "agenda", "folders", "performance", "meetingPreparations", "links", "performance_imports"];
 const state = Object.fromEntries(entities.map(name => [name, []]));
+state.settings = {};
+state.externalCalendarEvents = []; // Événements Google Calendar importés (V5.5)
+state.externalEventEnrichments = {}; // Enrichissements locaux des événements Google (V5.7)
 let agendaEditId = "";
 let agendaFilter = "today";
 let agendaModalOpen = false;
@@ -47,8 +79,9 @@ let restoreSuccessMessage = "";
 let backupPreviewPayload = null;
 let backupPreviewSummary = null;
 let backupPreviewOpen = false;
+let agendaFormError = "";
 
-const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique" };
+const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
 
 const defaults = {
@@ -631,10 +664,36 @@ function normalizeEntity(name, item) {
   }
   if (name === "activity") return { detail: "", date: new Date().toLocaleString("fr-FR"), entityId: "", ...base };
   if (name === "agenda") {
-    const merged = { date: isoToday(), startTime: base.time || "09:00", endTime: "", title: "Rendez-vous", type: "Autre", location: "", notes: base.detail || "", linkedManagers: [], linkedProjects: [], linkedFolders: [], linkedView: "", linkedId: "", ...base };
-    if (!merged.startTime && merged.time) merged.startTime = merged.time;
-    if (!merged.notes && merged.detail) merged.notes = merged.detail;
-    return { ...merged, linkedManagers: ensureArray(merged.linkedManagers), linkedProjects: ensureArray(merged.linkedProjects), linkedFolders: ensureArray(merged.linkedFolders) };
+    const raw = { ...base };
+    const hasStartTime = Object.prototype.hasOwnProperty.call(raw, "startTime") && String(raw.startTime || "").trim() !== "";
+    const hasTime = Object.prototype.hasOwnProperty.call(raw, "time") && String(raw.time || "").trim() !== "";
+    const allDay = raw.allDay === true || (!hasStartTime && !hasTime && raw.allDay !== false);
+    const description = String(raw.description || raw.notes || raw.detail || "").trim();
+    const merged = {
+      ...raw,
+      date: raw.date || localIsoDate(),
+      startTime: hasStartTime ? String(raw.startTime || "").trim() : hasTime ? String(raw.time || "").trim() : "",
+      endTime: String(raw.endTime || "").trim(),
+      title: raw.title || "Rendez-vous",
+      type: raw.type || "Autre",
+      location: raw.location || "",
+      description,
+      notes: raw.notes || description,
+      detail: raw.detail || description,
+      allDay,
+      status: raw.status || "confirmed",
+      source: raw.source || "manual",
+      externalId: raw.externalId || "",
+      calendarId: raw.calendarId || "",
+      syncStatus: raw.syncStatus || "local",
+      lastSyncedAt: raw.lastSyncedAt || "",
+      createdAt: raw.createdAt || localIsoDate(),
+      updatedAt: raw.updatedAt || localIsoDate(),
+      linkedManagers: ensureArray(raw.linkedManagers),
+      linkedProjects: ensureArray(raw.linkedProjects),
+      linkedFolders: ensureArray(raw.linkedFolders)
+    };
+    return merged;
   }
   if (name === "actions") return { link: "", owner: "", due: "", level: "orange", done: false, linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
   if (name === "performance") return normalizePerformance(base);
@@ -681,6 +740,35 @@ async function init() {
     state[name] = normalizeCollection(name, saved(name, await loadJson(name)));
     persist(name);
   }
+  state.settings = ensureSettings(saved("settings", {}));
+  // V5.5 — Charger les événements externes (Google Calendar)
+  state.externalCalendarEvents = saved("external_events", []);
+  // V5.7 — Charger les enrichissements locaux des événements Google
+  state.externalEventEnrichments = saved("external_event_enrichments", {});
+  ensureExternalEventEnrichments();
+  // [DEOS STATE TRACE] After loadState
+  console.log("[DEOS STATE TRACE] after loadState:", state.externalCalendarEvents.length);
+  // Restaurer la session Google si disponible (token sessionStorage seulement)
+  const _gcToken = sessionStorage.getItem("deos_gc_token");
+  if (_gcToken) {
+    googleAccessToken = _gcToken;
+    googleConnectionStatus = "connected";
+    googleConnectedEmail = sessionStorage.getItem("deos_gc_email") || "";
+  } else if (getCalendarConnectionSettings().provider === "google") {
+    googleConnectionStatus = "connection_required";
+  }
+  // V5.6 — Restaurer l'état de synchronisation Google et lancer auto-sync
+  const settings = getCalendarConnectionSettings();
+  if (settings.lastSyncAt) googleLastSyncAt = parseInt(settings.lastSyncAt, 10) || null;
+  if (googleConnectionStatus === "connected" && settings.googleCalendarId && settings.syncFrequency !== "manual") {
+    if (shouldRunGoogleSyncNow()) {
+      console.log("[DEOS Google Calendar] Sync immédiate au démarrage (dernière synchro dépassée)");
+      syncGoogleCalendarNow().catch(e => console.error("[DEOS Google Calendar] Erreur sync démarrage:", e));
+    } else {
+      scheduleNextGoogleSync();
+    }
+    startGoogleCalendarAutoSync();
+  }
   const restoreMessage = localStorage.getItem("deos_restore_success");
   if (restoreMessage) {
     restoreSuccessMessage = restoreMessage;
@@ -713,6 +801,68 @@ function parseDateValue(value) {
   if (fr) return new Date(Number(fr[3]), Number(fr[2]) - 1, Number(fr[1]));
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function localIsoDate(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function localIsoAddDays(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(days));
+  return localIsoDate(d);
+}
+
+// Agenda helpers V5.3
+function agendaStartTime(a) {
+  return String((a && (a.startTime || a.time)) || "").trim();
+}
+
+function agendaDescription(a) {
+  return String((a && (a.description || a.notes || a.detail)) || "").trim();
+}
+
+function agendaIsAllDay(a) {
+  return Boolean(a && (a.allDay === true || String(a.allDay) === "true"));
+}
+
+function compareAgendaEvents(a, b) {
+  const dr = dateRank(a?.date) - dateRank(b?.date);
+  if (dr !== 0) return dr;
+  const aAll = agendaIsAllDay(a);
+  const bAll = agendaIsAllDay(b);
+  if (aAll !== bAll) return aAll ? -1 : 1;
+  const at = agendaStartTime(a) || "~"; // empty times sort after normal times
+  const bt = agendaStartTime(b) || "~";
+  const tcmp = String(at).localeCompare(String(bt));
+  if (tcmp !== 0) return tcmp;
+  return String((a?.title || "")).localeCompare(String((b?.title || "")));
+}
+
+function toggleAgendaTimeFields() {
+  const allDay = document.getElementById("agAllDay")?.checked;
+  const start = document.getElementById("agStart");
+  const end = document.getElementById("agEnd");
+  if (!start || !end) return;
+  if (allDay) {
+    start.disabled = true;
+    end.disabled = true;
+    start.classList.add("muted");
+    end.classList.add("muted");
+  } else {
+    start.disabled = false;
+    end.disabled = false;
+    start.classList.remove("muted");
+    end.classList.remove("muted");
+  }
+}
+
+function agendaTimeLabel(a) {
+  const start = agendaStartTime(a);
+  if (agendaIsAllDay(a)) return "Journée entière";
+  if (start) return `${esc(start)}${a.endTime ? " - " + esc(a.endTime) : ""}`;
+  return "Heure à confirmer";
 }
 
 function daysUntil(value) {
@@ -814,7 +964,7 @@ function cockpitTodayItems() {
   state.meetingPreparations.filter(p => !["Prête", "Réalisée", "Compte rendu à finaliser", "Clôturée"].includes(p.status)).forEach(p => {
     const a = byId("agenda", p.agendaId);
     const due = daysUntil(a?.date);
-    if (a && due !== null && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: due <= 0 ? "red" : "orange", due: a.date, time: a.startTime || "", owner: p.organizer, link: p.status, detail: p.objectiveMain || a.type }));
+    if (a && due !== null && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: due <= 0 ? "red" : "orange", due: a.date, time: agendaStartTime(a), owner: p.organizer, link: p.status, detail: p.objectiveMain || a.type }));
   });
   return items.sort((a, b) => levelRank(a.level) - levelRank(b.level) || dateRank(a.due) - dateRank(b.due) || String(a.time).localeCompare(String(b.time)));
 }
@@ -825,14 +975,14 @@ function cockpitUpcomingItems() {
     const due = daysUntil(item.due);
     if (due !== null && due >= 0 && due <= 7 && !items.some(x => x.key === item.key)) items.push(item);
   };
-  state.agenda.forEach(a => push(cockpitItem({ entity: "agenda", id: a.id, type: "Rendez-vous", title: a.title, level: "green", due: a.date, time: a.startTime || a.time || "", owner: agendaLinkedNames(a), link: a.location || a.type })));
+  state.agenda.forEach(a => push(cockpitItem({ entity: "agenda", id: a.id, type: "Rendez-vous", title: a.title, level: "green", due: a.date, time: agendaStartTime(a), owner: agendaLinkedNames(a), link: a.location || a.type })));
   state.actions.filter(a => !a.done).forEach(a => push(cockpitItem({ entity: "actions", id: a.id, type: "Action", title: a.title, level: a.level || a.priorityLevel || "orange", due: a.due, link: a.link, action: "action" })));
   state.priorities.filter(p => !p.done).forEach(p => push(cockpitItem({ entity: "priorities", id: p.id, type: "Priorité", title: p.title, level: p.level, due: p.due, owner: p.owner, link: p.link, action: "priority" })));
   state.projects.forEach(p => push(cockpitItem({ entity: "projects", id: p.id, type: "Projet", title: p.name, level: p.status || p.priorityLevel || "orange", due: p.deadline, owner: projectOwnerName(p), link: p.next })));
   state.decisions.filter(isPendingDecision).forEach(d => push(cockpitItem({ entity: "decisions", id: d.id, type: "Décision", title: d.title, level: d.importance || "orange", due: d.reviewDate, owner: d.owner, link: d.nextStep || d.context, detail: decisionStatusLabel(d.status) })));
   state.meetingPreparations.forEach(p => {
     const a = byId("agenda", p.agendaId);
-    if (a) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Préparation réunion", title: a.title, level: p.status === "À préparer" ? "orange" : "green", due: a.date, time: a.startTime || "", owner: p.organizer, link: p.status }));
+    if (a) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Préparation réunion", title: a.title, level: p.status === "À préparer" ? "orange" : "green", due: a.date, time: agendaStartTime(a), owner: p.organizer, link: p.status }));
   });
   return items.sort((a, b) => dateRank(a.due) - dateRank(b.due) || String(a.time).localeCompare(String(b.time)) || levelRank(a.level) - levelRank(b.level));
 }
@@ -854,7 +1004,7 @@ function cockpitAlertItems(todayItems = cockpitTodayItems()) {
   state.meetingPreparations.filter(p => p.status === "À préparer").forEach(p => {
     const a = byId("agenda", p.agendaId);
     const due = daysUntil(a?.date);
-    if (a && due !== null && due >= 0 && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: "orange", due: a.date, time: a.startTime || "", owner: p.organizer, link: p.status, detail: "Moins de 48 h" }));
+    if (a && due !== null && due >= 0 && due <= 2) push(cockpitItem({ entity: "meetingPreparations", id: p.id, type: "Réunion à préparer", title: a.title, level: "orange", due: a.date, time: agendaStartTime(a), owner: p.organizer, link: p.status, detail: "Moins de 48 h" }));
   });
   cockpitUpcomingItems().forEach(item => {
     if (item.entity === "agenda") return;
@@ -979,13 +1129,10 @@ function openCockpitLinked(itemKey, target) {
     const manager = source.ownerId ? byId("managers", source.ownerId) : relatedManagerFromText(`${source.owner || ""} ${source.link || ""} ${source.title || ""} ${source.name || ""}`);
     if (manager) return openManager(manager.id);
   }
-  if (target === "project") {
-    const project = relatedProjectFromText(`${source.link || ""} ${source.title || ""} ${source.name || ""}`);
-    if (project) return openProject(project.id);
-  }
+  const project = relatedProjectFromText(`${source.link || ""} ${source.title || ""} ${source.name || ""}`);
+  if (project) return openProject(project.id);
   openCockpitEntity(entity, id);
 }
-
 function openLinkedFromPriority(id) {
   const p = byId("priorities", id);
   if (!p) return setView("priorities");
@@ -1109,7 +1256,7 @@ function cockpitFavoriteLinks() {
 }
 
 function futureMeetings() {
-  return state.agenda.filter(a => (a.date || "") >= isoToday()).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || "")));
+  return state.agenda.filter(a => (a.date || "") >= localIsoDate()).slice().sort(compareAgendaEvents);
 }
 
 function cockpitCreateBar() {
@@ -1125,15 +1272,52 @@ function cockpitCreateBar() {
 }
 
 function agendaItems() {
-  const todayIso = isoToday();
-  const tomorrowIso = isoAddDays(1);
-  const weekIso = isoAddDays(7);
-  return state.agenda.filter(a => {
+  // [DEOS STATE TRACE] At agendaItems entry
+  console.log("[DEOS STATE TRACE] agendaItems state external events:", state.externalCalendarEvents.length);
+  const settings = getCalendarConnectionSettings();
+  const todayIso = localIsoDate();
+  const tomorrowIso = localIsoAddDays(1);
+  const weekIso = localIsoAddDays(7);
+  const filter = a => {
     if (agendaFilter === "today") return a.date === todayIso;
     if (agendaFilter === "tomorrow") return a.date === tomorrowIso;
     if (agendaFilter === "week") return a.date >= todayIso && a.date <= weekIso;
     return true;
-  }).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || "")));
+  };
+  const manual = state.agenda.filter(filter);
+  // [DEOS AGENDA TRACE] Diagnostic
+  console.log("[DEOS AGENDA TRACE] manual events:", manual.length);
+  console.log("[DEOS AGENDA TRACE] showInAgenda setting:", settings.showInAgenda);
+  console.log("[DEOS AGENDA TRACE] external events stored:", (state.externalCalendarEvents || []).length);
+  // [DEOS V5.6.5] DIAGNOSTIC: trace filter steps
+  console.log("[DEOS AGENDA TRACE] agendaFilter:", agendaFilter);
+  console.log("[DEOS AGENDA TRACE] today:", todayIso);
+  console.log("[DEOS AGENDA TRACE] week range:", todayIso, "→", weekIso);
+  
+  const externalStored = state.externalCalendarEvents || [];
+  console.log("[DEOS AGENDA TRACE] Step 1 - external stored total:", externalStored.length);
+  
+  const externalAfterFilter = externalStored.filter(filter);
+  console.log("[DEOS AGENDA TRACE] Step 2 - after date filter:", externalAfterFilter.length);
+  
+  // [DEOS V5.6.5] DIAGNOSTIC: check for invalid dates
+  const withInvalidDate = externalStored.filter(e => !e.date || typeof e.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.date));
+  if (withInvalidDate.length > 0) {
+    console.warn("[DEOS AGENDA TRACE] ⚠️ Events with invalid dates:", withInvalidDate.length);
+    console.log("[DEOS AGENDA TRACE] Sample invalid:", withInvalidDate.slice(0, 3));
+  }
+  
+  const external = settings.showInAgenda
+    ? externalAfterFilter.map(e => ({ ...e, _external: true }))
+    : [];
+  console.log("[DEOS AGENDA TRACE] Step 3 - external events mapped:", external.length);
+  console.log("[DEOS AGENDA TRACE] google events after filter:", external.length);
+  const merged = [...manual, ...external];
+  console.log("[DEOS AGENDA TRACE] merged events before sort:", merged.length);
+  const result = merged.slice().sort(compareAgendaEvents);
+  console.log("[DEOS AGENDA TRACE] merged events after sort:", result.length);
+  console.log("[DEOS AGENDA TRACE] merged events:", (manual.length + external.length));
+  return result;
 }
 
 function agendaEmptyLabel() {
@@ -1146,11 +1330,16 @@ function agendaEmptyLabel() {
 }
 
 function agendaTodayItems() {
-  return state.agenda.filter(a => a.date === isoToday()).sort((a, b) => String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || "")));
+  const settings = getCalendarConnectionSettings();
+  const manual = state.agenda.filter(a => a.date === localIsoDate());
+  const external = settings.showTodayInCockpit
+    ? (state.externalCalendarEvents || []).filter(a => a.date === localIsoDate()).map(e => ({ ...e, _external: true }))
+    : [];
+  return [...manual, ...external].slice().sort(compareAgendaEvents);
 }
 
 function agendaUpcomingItems(limit = 4) {
-  return state.agenda.filter(a => (a.date || "") > isoToday()).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || ""))).slice(0, limit);
+  return state.agenda.filter(a => (a.date || "") > localIsoDate()).slice().sort(compareAgendaEvents).slice(0, limit);
 }
 
 function agendaFilterLabel() {
@@ -1165,18 +1354,28 @@ function setAgendaFilter(filter) {
 function agendaLinkedNames(a) {
   const managers = state.managers.filter(m => (a.linkedManagers || []).includes(m.id)).map(m => m.name);
   const projects = state.projects.filter(p => (a.linkedProjects || []).includes(p.id)).map(p => p.name);
-  return [...managers, ...projects].join(" · ");
+  const folders = state.folders.filter(f => (a.linkedFolders || []).includes(f.id)).map(f => f.name);
+  return [...managers, ...projects, ...folders].filter(Boolean).join(" · ");
 }
 
 function agendaItem(a) {
-  const time = `${esc(a.startTime || a.time || "")}${a.endTime ? " - " + esc(a.endTime) : ""}`;
+  // Événement externe (Google Calendar) — lecture seule
+  if (a._external) {
+    const start = agendaStartTime(a);
+    const time = a.allDay ? "Journée entière" : (start ? `${esc(start)}${a.endTime ? " - " + esc(a.endTime) : ""}` : "Heure à confirmer");
+    const providerBadge = `<span class="gc-badge" title="Importé depuis Google Calendar">📅 Google</span>`;
+    return `<div class="agenda-line agenda-line-external"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}${providerBadge}<small>${esc(a.calendarName || "Google Calendar")}${a.location ? " · " + esc(a.location) : ""}</small></span><div class="row-actions"><button class="secondary" onclick="openExternalEventModal('${esc(a.externalId)}')">Détails</button></div></div>`;
+  }
+  // Événement manuel DEOS
+  const start = agendaStartTime(a);
+  const time = agendaIsAllDay(a) ? "Journée entière" : (start ? `${esc(start)}${a.endTime ? " - " + esc(a.endTime) : ""}` : "Heure à confirmer");
   const links = agendaLinkedNames(a);
   const prep = meetingPrepForAgenda(a.id);
   const status = prep?.status || "À préparer";
   const subjectCount = ensureArray(prep?.ideas).length + ensureArray(prep?.agendaTopics).length;
   const subjectBadge = subjectCount ? ` · <span class="subject-count">📝 ${subjectCount}</span>` : "";
   const alert = daysUntil(a.date) !== null && daysUntil(a.date) >= 0 && daysUntil(a.date) <= 2 && status === "À préparer" ? `<small class="prep-alert">Réunion à préparer sous 48 h</small>` : "";
-  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== isoToday() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function agendaCompact() {
@@ -1187,7 +1386,11 @@ function agendaCompact() {
 }
 
 function agendaLinkedList(items) {
-  return items.sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || ""))).map(a => `<div class="item clickable" onclick="openMeetingPreparation('${a.id}')"><strong>${esc(a.date || "")} · ${esc(a.startTime || a.time || "")}${a.endTime ? " - " + esc(a.endTime) : ""}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")} · ${esc(meetingPrepForAgenda(a.id)?.status || "À préparer")}</span>${a.location ? `<span class="meta">${esc(a.location)}</span>` : ""}</div>`).join("") || `<div class="empty">Aucun rendez-vous lié.</div>`;
+  return items.slice().sort(compareAgendaEvents).map(a => {
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="openMeetingPreparation('${a.id}')"><strong>${esc(a.date || "")} · ${esc(timeLabel)}${a.endTime ? " - " + esc(a.endTime) : ""}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")} · ${esc(meetingPrepForAgenda(a.id)?.status || "À préparer")}</span>${a.location ? `<span class="meta">${esc(a.location)}</span>` : ""}</div>`;
+  }).join("") || `<div class="empty">Aucun rendez-vous lié.</div>`;
 }
 
 function managerAgendaList(m) {
@@ -1198,7 +1401,9 @@ function managerMeetingPreparationsList(m) {
   const linked = state.meetingPreparations.filter(p => (p.linkedManagers || []).includes(m.id) || (byId("agenda", p.agendaId)?.linkedManagers || []).includes(m.id));
   return linked.map(p => {
     const a = byId("agenda", p.agendaId) || {};
-    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(a.startTime || "")} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(timeLabel)} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
   }).join("") || `<div class="empty">Aucune préparation de réunion liée.</div>`;
 }
 
@@ -1210,7 +1415,9 @@ function projectMeetingPreparationsList(project) {
   const linked = state.meetingPreparations.filter(p => (p.linkedProjects || []).includes(project.id) || (byId("agenda", p.agendaId)?.linkedProjects || []).includes(project.id));
   return linked.map(p => {
     const a = byId("agenda", p.agendaId) || {};
-    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(a.startTime || "")} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="openMeetingPreparation('${esc(p.agendaId)}')"><strong>${esc(a.date || "")} · ${esc(timeLabel)} · ${esc(a.title || "Réunion")}</strong><span class="muted">${esc(a.type || "Réunion")} · ${esc(p.status || "À préparer")}</span><span class="meta">${esc(p.objectiveMain || a.notes || "")}</span></div>`;
   }).join("") || `<div class="empty">Aucune préparation de réunion liée.</div>`;
 }
 
@@ -1218,23 +1425,200 @@ function openAgendaModal(id = "") {
   agendaEditId = id;
   agendaModalOpen = true;
   renderCockpit();
+  toggleAgendaTimeFields();
 }
 
 function closeAgendaModal() {
   agendaEditId = "";
   agendaModalOpen = false;
+  agendaFormError = "";
   renderCockpit();
 }
 
 function agendaForm() {
   const a = agendaEditId ? byId("agenda", agendaEditId) : null;
-  return `<div class="agenda-form"><div class="form-grid"><input id="agDate" type="date" value="${esc(a?.date || isoToday())}"><input id="agStart" type="time" value="${esc(a?.startTime || a?.time || "09:00")}"><input id="agEnd" type="time" value="${esc(a?.endTime || "")}"><input id="agTitle" value="${esc(a?.title || "")}" placeholder="Titre"><select id="agType"><option ${(!a || a.type === "CODIR") ? "selected" : ""}>CODIR</option><option ${a?.type === "Exploitation" ? "selected" : ""}>Exploitation</option><option ${a?.type === "RH" ? "selected" : ""}>RH</option><option ${a?.type === "Projet" ? "selected" : ""}>Projet</option><option ${a?.type === "CSE" ? "selected" : ""}>CSE</option><option ${a?.type === "Entretien manager" ? "selected" : ""}>Entretien manager</option><option ${a?.type === "Autre" ? "selected" : ""}>Autre</option></select><input id="agLocation" value="${esc(a?.location || "")}" placeholder="Lieu"><textarea id="agNotes" class="full" placeholder="Notes">${esc(a?.notes || a?.detail || "")}</textarea></div><div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, a?.linkedManagers || [], m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div><div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div></div>`;
+  const dateValue = esc(a?.date || localIsoDate());
+  const allDayChecked = agendaIsAllDay(a) ? "checked" : "";
+  const startValue = esc(a?.startTime || a?.time || "");
+  const endValue = esc(a?.endTime || "");
+  return `<div class="agenda-form">${agendaFormError ? `<div class="form-error">${esc(agendaFormError)}</div>` : ""}
+    <div class="form-grid">
+      <input id="agDate" type="date" value="${dateValue}">
+      <label class="check-row"><input id="agAllDay" type="checkbox" ${allDayChecked} onchange="toggleAgendaTimeFields()"> Journée entière</label>
+      <div class="time-row"><input id="agStart" type="time" value="${startValue}"><input id="agEnd" type="time" value="${endValue}"></div>
+      <input id="agTitle" value="${esc(a?.title || "")}" placeholder="Titre">
+      <select id="agType"><option ${(!a || a.type === "CODIR") ? "selected" : ""}>CODIR</option><option ${a?.type === "Exploitation" ? "selected" : ""}>Exploitation</option><option ${a?.type === "RH" ? "selected" : ""}>RH</option><option ${a?.type === "Projet" ? "selected" : ""}>Projet</option><option ${a?.type === "CSE" ? "selected" : ""}>CSE</option><option ${a?.type === "Entretien manager" ? "selected" : ""}>Entretien manager</option><option ${a?.type === "Autre" ? "selected" : ""}>Autre</option></select>
+      <input id="agLocation" value="${esc(a?.location || "")}" placeholder="Lieu">
+      <textarea id="agNotes" class="full" placeholder="Notes">${esc(a?.notes || a?.detail || "")}</textarea>
+    </div>
+    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, a?.linkedManagers || [], m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
+    <div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div>
+  </div>`;
 }
 
 function agendaModal() {
   if (!agendaModalOpen) return "";
   const isEdit = Boolean(agendaEditId);
   return `<div class="modal-backdrop" onclick="closeAgendaModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>${isEdit ? "Modifier rendez-vous" : "Nouveau rendez-vous"}</h2><button class="icon-close" onclick="closeAgendaModal()" aria-label="Fermer">×</button></div>${agendaForm()}</div></div>`;
+}
+
+function openExternalEventModal(externalId) {
+  googleExternalEventModalId = externalId || "";
+  renderCockpit();
+}
+
+function closeExternalEventModal() {
+  googleExternalEventModalId = "";
+  renderCockpit();
+}
+
+function externalEventModal() {
+  if (!googleExternalEventModalId) return "";
+  const ev = (state.externalCalendarEvents || []).find(e => e.externalId === googleExternalEventModalId);
+  if (!ev) return "";
+  const enrichment = getExternalEventEnrichment(ev._key);
+  const time = ev.allDay ? "Journée entière" : `${esc(ev.startTime || "")}${ev.endTime ? " - " + esc(ev.endTime) : ""}`;
+  
+  // Zone Google Calendar (lecture seule)
+  const googleSection = `<div style="border-bottom:1px solid #e2e8f0;padding-bottom:16px;margin-bottom:16px">
+    <h3 style="margin:0 0 12px 0;color:#1e293b">📅 Informations Google Calendar</h3>
+    <p class="muted" style="margin:0 0 12px 0;font-size:12px">Lecture seule — importé depuis Google Calendar</p>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:8px;font-size:14px">
+      <span style="color:#64748b;font-weight:500">Titre</span><span style="font-weight:500">${esc(ev.title)}</span>
+      <span style="color:#64748b">Date</span><span>${esc(ev.date)}</span>
+      <span style="color:#64748b">Heure</span><span>${time}</span>
+      ${ev.location ? `<span style="color:#64748b">Lieu</span><span>${esc(ev.location)}</span>` : ""}
+      <span style="color:#64748b">Calendrier</span><span>${esc(ev.calendarName || "Google Calendar")}</span>
+      <span style="color:#64748b">Statut</span><span>${esc(ev.status || "confirmé")}</span>
+    </div>
+    ${ev.description ? `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-size:12px;color:#475569;white-space:pre-wrap;margin-top:10px">
+      <span style="color:#64748b;font-size:11px">Description Google</span><br>${esc(ev.description)}
+    </div>` : ""}
+  </div>`;
+  
+  // Zone Préparation DEOS (modifiable)
+  const preparationStatuses = ["not_started", "to_prepare", "in_progress", "ready", "completed", "cancelled"];
+  const preparationLabels = {
+    "not_started": "Non commencé",
+    "to_prepare": "À préparer",
+    "in_progress": "En cours",
+    "ready": "Prêt",
+    "completed": "Réalisé",
+    "cancelled": "Annulé"
+  };
+  
+  const deosSectionHTML = `<div>
+    <h3 style="margin:0 0 12px 0;color:#1e293b">✅ Préparation et suivi DEOS</h3>
+    
+    <div style="display:grid;gap:12px">
+      <!-- Statut -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Statut de préparation</label>
+        <select id="enrichStatus" style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;font-size:14px">
+          ${preparationStatuses.map(s => `<option value="${s}" ${enrichment.preparationStatus === s ? "selected" : ""}>${preparationLabels[s]}</option>`).join("")}
+        </select>
+      </div>
+      
+      <!-- Sujets à traiter -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Sujets à traiter</label>
+          <button class="icon-btn" onclick="addExternalEventSubject('${esc(ev._key)}')" title="Ajouter un sujet" style="padding:4px 8px;font-size:11px">+ Ajouter</button>
+        </div>
+        <div id="subjectsList" style="display:grid;gap:6px;max-height:120px;overflow-y:auto">
+          ${enrichment.subjects && enrichment.subjects.length > 0 ? enrichment.subjects.map((s, idx) => `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:8px;font-size:13px;display:flex;gap:8px;align-items:center">
+            <input type="checkbox" ${s.completed ? "checked" : ""} onchange="updateExternalEventSubject('${esc(ev._key)}', '${esc(s.id)}', '${esc(s.title)}', '', this.checked)" style="cursor:pointer">
+            <span style="${s.completed ? "text-decoration:line-through;color:#94a3b8" : ""}">${esc(s.title)}</span>
+            <button class="icon-btn" onclick="deleteExternalEventSubject('${esc(ev._key)}', '${esc(s.id)}')" style="padding:2px 6px;font-size:11px;margin-left:auto">✕</button>
+          </div>`).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucun sujet pour le moment</p>"}
+        </div>
+      </div>
+      
+      <!-- Préparation -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Préparation</label>
+        <textarea id="enrichPrep" placeholder="Objectif, messages clés, points de vigilance..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.preparation)}</textarea>
+      </div>
+      
+      <!-- Notes -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Notes</label>
+        <textarea id="enrichNotes" placeholder="Notes libres utilisables pendant la réunion..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.notes)}</textarea>
+      </div>
+      
+      <!-- Compte rendu -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Compte rendu</label>
+        <textarea id="enrichReport" placeholder="Résumé, décisions prises, actions décidées..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.report)}</textarea>
+      </div>
+      
+      <!-- Liens utiles -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Liens utiles</label>
+          <button class="icon-btn" onclick="addExternalEventLink('${esc(ev._key)}')" title="Ajouter un lien" style="padding:4px 8px;font-size:11px">+ Lien</button>
+        </div>
+        <div id="linksList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
+          ${enrichment.links && enrichment.links.length > 0 ? enrichment.links.map(l => `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
+            <a href="${esc(l.url)}" target="_blank" style="color:#0284c7;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.url)}">${esc(l.name || l.url)}</a>
+            <button class="icon-btn" onclick="deleteExternalEventLink('${esc(ev._key)}', '${esc(l.id)}')" style="padding:2px 6px;font-size:11px">✕</button>
+          </div>`).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucun lien pour le moment</p>"}
+        </div>
+      </div>
+      
+      <!-- Actions liées -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Actions liées</label>
+          <button class="icon-btn" onclick="createActionFromExternalEvent('${esc(ev._key)}', '${esc(ev.title)}')" title="Créer une action" style="padding:4px 8px;font-size:11px">+ Action</button>
+        </div>
+        <div id="actionsList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
+          ${enrichment.linkedActionIds && enrichment.linkedActionIds.length > 0 ? enrichment.linkedActionIds.map(actionId => {
+            const action = byId("actions", actionId);
+            return action ? `<div style="background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
+              <a href="javascript:openActionModal('${esc(actionId)}')" style="color:#059669;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(action.title)}</a>
+              <button class="icon-btn" onclick="unlinkActionFromExternalEvent('${esc(ev._key)}', '${esc(actionId)}')" style="padding:2px 6px;font-size:11px">✕</button>
+            </div>` : "";
+          }).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucune action liée</p>"}
+        </div>
+      </div>
+      
+      <!-- Décisions liées -->
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <label style="font-size:12px;color:#64748b;font-weight:500">Décisions liées</label>
+          <button class="icon-btn" onclick="createDecisionFromExternalEvent('${esc(ev._key)}', '${esc(ev.title)}')" title="Créer une décision" style="padding:4px 8px;font-size:11px">+ Décision</button>
+        </div>
+        <div id="decisionsList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
+          ${enrichment.linkedDecisionIds && enrichment.linkedDecisionIds.length > 0 ? enrichment.linkedDecisionIds.map(decisionId => {
+            const decision = byId("decisions", decisionId);
+            return decision ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
+              <a href="javascript:openDecisionModal('${esc(decisionId)}')" style="color:#b45309;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(decision.title)}</a>
+              <button class="icon-btn" onclick="unlinkDecisionFromExternalEvent('${esc(ev._key)}', '${esc(decisionId)}')" style="padding:2px 6px;font-size:11px">✕</button>
+            </div>` : "";
+          }).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucune décision liée</p>"}
+        </div>
+      </div>
+    </div>
+  </div>`;
+  
+  return `<div class="modal-backdrop" onclick="closeExternalEventModal()"><div class="modal-panel" style="max-height:85vh;overflow-y:auto" onclick="event.stopPropagation()">
+    <div class="modal-head" style="position:sticky;top:0;background:#fff;z-index:10;border-bottom:1px solid #e2e8f0;padding-bottom:12px">
+      <h2 style="margin:0">📅 Rendez-vous Google Calendar</h2>
+      <button class="icon-close" onclick="closeExternalEventModal()" aria-label="Fermer">×</button>
+    </div>
+    <div style="padding:16px;display:grid;gap:16px">
+      ${googleSection}
+      ${enrichment.sourceUnavailable ? `<div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:12px;font-size:13px;color:#991b1b">
+        ⚠️ L'événement Google d'origine n'est plus disponible. Vos enrichissements locaux sont conservés.
+      </div>` : ""}
+      ${deosSectionHTML}
+      <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid #e2e8f0;padding-top:12px">
+        <button class="action" onclick="saveExternalEventEnrichmentFromModal('${esc(ev._key)}')">Enregistrer</button>
+        <button class="secondary" onclick="closeExternalEventModal()">Fermer</button>
+      </div>
+    </div>
+  </div></div>`;
 }
 
 function openMeetingSubjectModal(agendaId = "") {
@@ -1259,7 +1643,7 @@ function meetingSubjectModal() {
 function meetingSubjectForm(selectedAgendaId = "", showMeetingSelect = false) {
   const meetings = futureMeetings();
   const selected = byId("agenda", selectedAgendaId) || meetings[0] || {};
-  return `<div class="form-grid"><textarea id="msText" class="full" placeholder="Sujet, question ou point à aborder"></textarea>${showMeetingSelect ? `<select id="msAgenda" class="full">${meetings.map(a => `<option value="${esc(a.id)}" ${selected.id === a.id ? "selected" : ""}>${esc(a.date || "")} · ${esc(a.startTime || a.time || "")} · ${esc(a.title || "Réunion")}</option>`).join("")}</select>` : `<input class="full" value="${esc(`${selected.date || ""} · ${selected.startTime || selected.time || ""} · ${selected.title || "Réunion"}`)}" disabled>`}<select id="msCategory"><option>Sujet</option><option>Question</option><option>Information</option><option>Décision attendue</option><option>Point de vigilance</option></select><select id="msImportance"><option>normale</option><option>importante</option><option>critique</option></select></div><div class="modal-actions"><button class="action" onclick="saveMeetingSubjectQuick()">Enregistrer</button><button class="secondary" onclick="closeMeetingSubjectModal()">Annuler</button></div>`;
+  return `<div class="form-grid"><textarea id="msText" class="full" placeholder="Sujet, question ou point à aborder"></textarea>${showMeetingSelect ? `<select id="msAgenda" class="full">${meetings.map(a => `<option value="${esc(a.id)}" ${selected.id === a.id ? "selected" : ""}>${esc(a.date || "")} · ${esc(agendaStartTime(a) || (agendaIsAllDay(a) ? 'Journée entière' : 'Heure à confirmer'))} · ${esc(a.title || "Réunion")}</option>`).join("")}</select>` : `<input class="full" value="${esc(`${selected.date || ""} · ${agendaStartTime(selected) || (agendaIsAllDay(selected) ? 'Journée entière' : 'Heure à confirmer')} · ${selected.title || "Réunion"}`)}" disabled>`}<select id="msCategory"><option>Sujet</option><option>Question</option><option>Information</option><option>Décision attendue</option><option>Point de vigilance</option></select><select id="msImportance"><option>normale</option><option>importante</option><option>critique</option></select></div><div class="modal-actions"><button class="action" onclick="saveMeetingSubjectQuick()">Enregistrer</button><button class="secondary" onclick="closeMeetingSubjectModal()">Annuler</button></div>`;
 }
 
 function saveMeetingSubjectQuick() {
@@ -1277,19 +1661,68 @@ function saveMeetingSubjectQuick() {
 }
 
 function readAgendaForm(existing = {}) {
+  agendaFormError = "";
   const title = document.getElementById("agTitle").value.trim();
-  if (!title) return null;
-  return { ...existing, date: document.getElementById("agDate").value || isoToday(), startTime: document.getElementById("agStart").value || "09:00", time: document.getElementById("agStart").value || "09:00", endTime: document.getElementById("agEnd").value, title, type: document.getElementById("agType").value, location: document.getElementById("agLocation").value.trim(), notes: document.getElementById("agNotes").value.trim(), detail: document.getElementById("agNotes").value.trim(), linkedManagers: checkedValues("agManagers"), linkedProjects: checkedValues("agProjects"), linkedFolders: checkedValues("agFolders") };
+  const date = document.getElementById("agDate").value || "";
+  const allDay = document.getElementById("agAllDay")?.checked || false;
+  const start = document.getElementById("agStart").value.trim();
+  const end = document.getElementById("agEnd").value.trim();
+  if (!date) {
+    agendaFormError = "La date est obligatoire.";
+    renderCockpit();
+    return null;
+  }
+  if (!title) {
+    agendaFormError = "Le titre est obligatoire.";
+    renderCockpit();
+    return null;
+  }
+  if (end && !start) {
+    agendaFormError = "Heure de fin sans heure de début impossible.";
+    renderCockpit();
+    return null;
+  }
+  if (start && end) {
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
+    if (Number.isFinite(sh) && Number.isFinite(eh)) {
+      const smins = sh * 60 + (Number.isFinite(sm) ? sm : 0);
+      const emins = eh * 60 + (Number.isFinite(em) ? em : 0);
+      if (emins < smins) {
+        agendaFormError = "L'heure de fin ne peut pas être antérieure à l'heure de début.";
+        renderCockpit();
+        return null;
+      }
+    }
+  }
+  const data = {
+    ...existing,
+    date: date || localIsoDate(),
+    startTime: allDay ? "" : (start || ""),
+    time: allDay ? "" : (start || ""),
+    endTime: allDay ? "" : (end || ""),
+    title,
+    type: document.getElementById("agType").value,
+    location: document.getElementById("agLocation").value.trim(),
+    notes: document.getElementById("agNotes").value.trim(),
+    detail: document.getElementById("agNotes").value.trim(),
+    allDay,
+    linkedManagers: checkedValues("agManagers"),
+    linkedProjects: checkedValues("agProjects"),
+    linkedFolders: checkedValues("agFolders")
+  };
+  agendaFormError = "";
+  return data;
 }
 
 function addAgenda() {
-  const data = readAgendaForm({ id: newId("agenda") });
+  const data = readAgendaForm({ id: newId("agenda"), createdAt: localIsoDate(), source: "manual", externalId: "", calendarId: "", syncStatus: "local", lastSyncedAt: "" });
   if (!data) return;
   state.agenda.push(data);
   persist("agenda");
   ensureMeetingPreparation(data.id);
-  addActivity("📅 Agenda", data.title, `${data.date} ${data.startTime}`, data.id);
-  agendaFilter = data.date === isoToday() ? "today" : agendaFilter;
+  addActivity("📅 Agenda", data.title, `${data.date} ${agendaStartTime(data)}`, data.id);
+  agendaFilter = data.date === localIsoDate() ? "today" : agendaFilter;
   agendaModalOpen = false;
   agendaEditId = "";
   renderCockpit();
@@ -1305,6 +1738,7 @@ function saveAgenda() {
   const data = readAgendaForm(a);
   if (!data) return;
   Object.assign(a, data);
+  a.updatedAt = localIsoDate();
   persist("agenda");
   syncMeetingPreparationLinks(a.id);
   addActivity("📅 Agenda modifié", a.title, `${a.date} ${a.startTime}`, a.id);
@@ -1562,7 +1996,7 @@ function transferPrepIdea(id, ideaId) {
   if (!p || !idea) return;
   const meetings = futureMeetings().filter(a => a.id !== p.agendaId);
   if (!meetings.length) return alert("Aucune autre réunion future disponible.");
-  const choice = prompt(`Transférer vers quelle réunion ?\n${meetings.map((a, i) => `${i + 1}. ${a.date || ""} ${a.startTime || a.time || ""} · ${a.title || "Réunion"}`).join("\n")}`, "1");
+  const choice = prompt(`Transférer vers quelle réunion ?\n${meetings.map((a, i) => `${i + 1}. ${a.date || ""} ${agendaStartTime(a) || "Heure à confirmer"} · ${a.title || "Réunion"}`).join("\n")}`, "1");
   const index = Number(choice) - 1;
   const target = meetings[index];
   if (!target) return;
@@ -1596,7 +2030,7 @@ function transformIdeaToAction(id, ideaId) {
 function transformIdeaToDecision(id, ideaId) {
   const p = prepById(id), a = byId("agenda", p?.agendaId), idea = p?.ideas.find(x => x.id === ideaId);
   if (!p || !idea) return;
-  const decision = { id: newId("decision"), title: idea.text, date: isoToday(), status: "review", importance: idea.importance === "critique" ? "red" : "orange", context: `Préparation réunion ${a?.title || ""}`, problem: idea.text, decision: "", rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: idea.managerId ? [idea.managerId] : p.linkedManagers, linkedProjects: idea.projectId ? [idea.projectId] : p.linkedProjects, linkedActions: [], linkedDocuments: [], linkedFolders: idea.folderId ? [idea.folderId] : p.linkedFolders, linkedMeetingPreparations: [p.id], reviewDate: a?.date || "", events: [], directorNotes: [], nextStep: "Décision à préparer", tags: ["Réunion", "Préparation"] };
+  const decision = { id: newId("decision"), title: idea.text, date: localIsoDate(), status: "review", importance: idea.importance === "critique" ? "red" : "orange", context: `Préparation réunion ${a?.title || ""}`, problem: idea.text, decision: "", rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: idea.managerId ? [idea.managerId] : p.linkedManagers, linkedProjects: idea.projectId ? [idea.projectId] : p.linkedProjects, linkedActions: [], linkedDocuments: [], linkedFolders: idea.folderId ? [idea.folderId] : p.linkedFolders, linkedMeetingPreparations: [p.id], reviewDate: a?.date || "", events: [], directorNotes: [], nextStep: "Décision à préparer", tags: ["Réunion", "Préparation"] };
   state.decisions.unshift(decision);
   p.linkedDecisions = [...new Set([...(p.linkedDecisions || []), decision.id])];
   persist("decisions");
@@ -1689,7 +2123,7 @@ function addPrepDocument(id) {
   const documentId = document.getElementById("pdDocument").value;
   const title = document.getElementById("pdTitle").value.trim();
   if (!documentId && !title) return;
-  p.usefulDocuments.push({ id: newId("prepdoc"), documentId, title, type: document.getElementById("pdType").value.trim(), version: document.getElementById("pdVersion").value.trim(), status: document.getElementById("pdStatus").value, date: isoToday() });
+  p.usefulDocuments.push({ id: newId("prepdoc"), documentId, title, type: document.getElementById("pdType").value.trim(), version: document.getElementById("pdVersion").value.trim(), status: document.getElementById("pdStatus").value, date: localIsoDate() });
   if (documentId) p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), documentId])];
   savePrepAndOpen(p);
 }
@@ -1697,7 +2131,7 @@ function addPrepDocument(id) {
 function createDocumentFromPrep(id, prepDocId) {
   const p = prepById(id), prepDoc = p?.usefulDocuments.find(x => x.id === prepDocId), a = byId("agenda", p?.agendaId);
   if (!p || !prepDoc) return;
-  const doc = { id: newId("document"), title: prepDoc.title || "Document réunion", type: prepDoc.type || "Support réunion", category: "Réunion", status: prepDoc.status || "À préparer", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: prepDoc.version || "V1", date: isoToday(), updatedAt: isoToday(), summary: `Document utile pour ${a?.title || "réunion"}`, content: "", tags: ["Réunion", "Préparation"], linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId };
+  const doc = { id: newId("document"), title: prepDoc.title || "Document réunion", type: prepDoc.type || "Support réunion", category: "Réunion", status: prepDoc.status || "À préparer", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: prepDoc.version || "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: `Document utile pour ${a?.title || "réunion"}`, content: "", tags: ["Réunion", "Préparation"], linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId };
   state.documents.unshift(doc);
   prepDoc.documentId = doc.id;
   p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), doc.id])];
@@ -1731,7 +2165,7 @@ function addPrepArbitration(id) {
 function transformArbitrationToDecision(id, arbitrationId) {
   const p = prepById(id), item = p?.arbitrations.find(x => x.id === arbitrationId), a = byId("agenda", p?.agendaId);
   if (!p || !item) return;
-  const decision = { id: newId("decision"), title: item.subject, date: isoToday(), status: item.status === "Décidée" ? "decided" : "review", importance: item.status === "Prête à décider" ? "orange" : "green", context: item.context || `Arbitrage préparé pour ${a?.title || "réunion"}`, problem: item.subject, decision: item.status === "Décidée" ? item.recommendation : "", rationale: item.recommendation || "", alternatives: item.options || "", impacts: item.benefits || "", risks: item.risks || "", owner: item.decider || p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: item.wantedDate || a?.date || "", events: [], directorNotes: [], nextStep: "Arbitrage issu d'une préparation de réunion", tags: ["Réunion", "Arbitrage"] };
+  const decision = { id: newId("decision"), title: item.subject, date: localIsoDate(), status: item.status === "Décidée" ? "decided" : "review", importance: item.status === "Prête à décider" ? "orange" : "green", context: item.context || `Arbitrage préparé pour ${a?.title || "réunion"}`, problem: item.subject, decision: item.status === "Décidée" ? item.recommendation : "", rationale: item.recommendation || "", alternatives: item.options || "", impacts: item.benefits || "", risks: item.risks || "", owner: item.decider || p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: item.wantedDate || a?.date || "", events: [], directorNotes: [], nextStep: "Arbitrage issu d'une préparation de réunion", tags: ["Réunion", "Arbitrage"] };
   state.decisions.unshift(decision);
   p.linkedDecisions = [...new Set([...(p.linkedDecisions || []), decision.id])];
   item.status = "Décidée";
@@ -1794,7 +2228,7 @@ function createConductAction(id) {
 function createConductDecision(id) {
   const p = prepById(id), text = document.getElementById("runDecision")?.value.trim(), a = byId("agenda", p?.agendaId);
   if (!p || !text) return;
-  const decision = { id: newId("decision"), title: text, date: isoToday(), status: "decided", importance: "orange", context: `Décision prise pendant ${a?.title || "réunion"}`, problem: "", decision: text, rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: "", events: [], directorNotes: [], nextStep: "", tags: ["Réunion"] };
+  const decision = { id: newId("decision"), title: text, date: localIsoDate(), status: "decided", importance: "orange", context: `Décision prise pendant ${a?.title || "réunion"}`, problem: "", decision: text, rationale: "", alternatives: "", impacts: "", risks: "", owner: p.organizer || identityName(), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedActions: p.linkedActions, linkedDocuments: p.linkedDocuments, linkedFolders: p.linkedFolders, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], reviewDate: "", events: [], directorNotes: [], nextStep: "", tags: ["Réunion"] };
   state.decisions.unshift(decision);
   p.linkedDecisions = [...new Set([...(p.linkedDecisions || []), decision.id])];
   p.run.decisions.push({ id: newId("run"), type: "Décision", text, createdAt: new Date().toLocaleString("fr-FR"), decisionId: decision.id });
@@ -1824,7 +2258,7 @@ function meetingReportContent(p) {
 function generateMeetingReport(id) {
   const p = prepById(id), a = byId("agenda", p?.agendaId);
   if (!p || !a) return;
-  const doc = { id: newId("document"), title: `Compte rendu - ${a.title}`, type: "Compte rendu", category: p.template || a.type || "Réunion", status: "Brouillon", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: "V1", date: isoToday(), updatedAt: isoToday(), summary: p.objectiveMain || a.notes || "", content: meetingReportContent(p), tags: ["Compte rendu", "Réunion", p.template || a.type || ""].filter(Boolean), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId, reportTemplate: p.template || "Réunion" };
+  const doc = { id: newId("document"), title: `Compte rendu - ${a.title}`, type: "Compte rendu", category: p.template || a.type || "Réunion", status: "Brouillon", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: p.objectiveMain || a.notes || "", content: meetingReportContent(p), tags: ["Compte rendu", "Réunion", p.template || a.type || ""].filter(Boolean), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId, reportTemplate: p.template || "Réunion" };
   state.documents.unshift(doc);
   p.finalReportId = doc.id;
   p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), doc.id])];
@@ -1849,7 +2283,7 @@ function renderCockpit() {
     ${cockpitCreateBar()}
     <div class="cockpit-top">
       <div class="card hero compact-hero">
-        <h2>Brief du jour</h2><p class="muted">${today()} · ${esc(identity.appName)} ${esc(identity.appVersion)}</p>
+        <h2>Brief du jour</h2><p class="muted">${today()} · ${esc(identity.appName)} ${esc(DEOS_VERSION)}</p>
         <div class="quick-kpis">
           ${cockpitKpi("Urgences", metrics.red, "red", "danger-kpi")}
           ${cockpitKpi("Actions ouvertes", metrics.openActions, "actions")}
@@ -1878,7 +2312,7 @@ function renderCockpit() {
       <div class="card"><h2>Projets sensibles</h2>${projects.map(cockpitProjectItem).join("") || `<div class="empty">Aucun projet sensible.</div>`}</div>
       <div class="card"><h2>Décisions À suivre</h2>${decisions.map(cockpitDecisionItem).join("") || `<div class="empty">Aucune décision À suivre.</div>`}</div>
     </div>
-    <div class="card"><h2>Dossiers sensibles</h2>${folders.map(cockpitFolderItem).join("") || `<div class="empty">Aucun dossier sensible.</div>`}</div>${agendaModal()}${meetingSubjectModal()}`);
+    <div class="card"><h2>Dossiers sensibles</h2>${folders.map(cockpitFolderItem).join("") || `<div class="empty">Aucun dossier sensible.</div>`}</div>${agendaModal()}${meetingSubjectModal()}${externalEventModal()}`);
 }
 
 function priorityItem(p) {
@@ -2280,8 +2714,84 @@ function folderQuickForm(folder, mode) {
   if (mode === "decision") return `<div class="card full-span"><h2>Nouvelle décision liée</h2><input id="fdTitle" placeholder="Titre"><textarea id="fdContext" placeholder="Contexte"></textarea><button class="action" onclick="saveFolderDecision('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
   if (mode === "journal") return `<div class="card full-span"><h2>Nouvelle entrée Journal liée</h2><input id="fjTitle" placeholder="Titre"><textarea id="fjSummary" placeholder="Résumé"></textarea><button class="action" onclick="saveFolderJournal('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
   if (mode === "document") return `<div class="card full-span"><h2>Nouveau document lié</h2><input id="fdocTitle" placeholder="Titre"><input id="fdocType" placeholder="Type"><textarea id="fdocContent" placeholder="Contenu"></textarea><button class="action" onclick="saveFolderDocument('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
-  if (mode === "agenda") return `<div class="card full-span"><h2>Nouveau rendez-vous lié</h2><div class="form-grid"><input id="fagDate" type="date" value="${isoToday()}"><input id="fagStart" type="time" value="09:00"><input id="fagEnd" type="time"><input id="fagTitle" placeholder="Titre"><select id="fagType"><option>Projet</option><option>CODIR</option><option>Exploitation</option><option>RH</option><option>CSE</option><option>Entretien manager</option><option>Autre</option></select><input id="fagLocation" placeholder="Lieu"></div><textarea id="fagNotes" placeholder="Notes"></textarea><button class="action" onclick="saveFolderAgenda('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
+  if (mode === "agenda") return `<div class="card full-span"><h2>Nouveau rendez-vous lié</h2><div class="form-grid"><input id="fagDate" type="date" value="${localIsoDate()}"><label class="check-row"><input id="fagAllDay" type="checkbox" onchange="toggleFolderQuickAgendaTimeFields()"> Journée entière</label><div class="time-row"><input id="fagStart" type="time" value=""><input id="fagEnd" type="time" value=""></div><input id="fagTitle" placeholder="Titre"><select id="fagType"><option>Projet</option><option>CODIR</option><option>Exploitation</option><option>RH</option><option>CSE</option><option>Entretien manager</option><option>Autre</option></select><input id="fagLocation" placeholder="Lieu"></div><textarea id="fagNotes" placeholder="Notes"></textarea><button class="action" onclick="saveFolderAgenda('${folder.id}')">Enregistrer</button><button class="secondary" onclick="openFolder('${folder.id}')">Annuler</button></div>`;
   return "";
+}
+
+function toggleFolderQuickAgendaTimeFields() {
+  const allDay = document.getElementById("fagAllDay")?.checked;
+  const start = document.getElementById("fagStart");
+  const end = document.getElementById("fagEnd");
+  if (!start || !end) return;
+  if (allDay) {
+    start.disabled = true;
+    end.disabled = true;
+    start.classList.add("muted");
+    end.classList.add("muted");
+  } else {
+    start.disabled = false;
+    end.disabled = false;
+    start.classList.remove("muted");
+    end.classList.remove("muted");
+  }
+}
+
+function readFolderAgendaForm(folderId) {
+  const folder = byId("folders", folderId);
+  if (!folder) return null;
+  const title = document.getElementById("fagTitle")?.value.trim();
+  const date = document.getElementById("fagDate")?.value || "";
+  const allDay = document.getElementById("fagAllDay")?.checked || false;
+  const start = document.getElementById("fagStart")?.value.trim();
+  const end = document.getElementById("fagEnd")?.value.trim();
+  const notes = document.getElementById("fagNotes")?.value.trim();
+  if (!date) {
+    alert("La date est obligatoire.");
+    return null;
+  }
+  if (!title) {
+    alert("Le titre est obligatoire.");
+    return null;
+  }
+  if (end && !start) {
+    alert("Heure de fin sans heure de début impossible.");
+    return null;
+  }
+  if (start && end) {
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
+    if (Number.isFinite(sh) && Number.isFinite(eh)) {
+      const smins = sh * 60 + (Number.isFinite(sm) ? sm : 0);
+      const emins = eh * 60 + (Number.isFinite(em) ? em : 0);
+      if (emins < smins) {
+        alert("L'heure de fin ne peut pas être antérieure à l'heure de début.");
+        return null;
+      }
+    }
+  }
+  return {
+    id: newId("agenda"),
+    createdAt: localIsoDate(),
+    updatedAt: localIsoDate(),
+    source: "manual",
+    externalId: "",
+    calendarId: "",
+    syncStatus: "local",
+    lastSyncedAt: "",
+    date,
+    startTime: allDay ? "" : (start || ""),
+    time: allDay ? "" : (start || ""),
+    endTime: allDay ? "" : (end || ""),
+    title,
+    type: document.getElementById("fagType")?.value || "",
+    location: document.getElementById("fagLocation")?.value.trim(),
+    notes,
+    detail: notes,
+    allDay,
+    linkedManagers: folder.linkedManagers || [],
+    linkedProjects: [],
+    linkedFolders: [folder.id]
+  };
 }
 
 function saveFolderAction(folderId) {
@@ -2354,9 +2864,9 @@ function saveFolderDocument(folderId) {
 
 function saveFolderAgenda(folderId) {
   const folder = byId("folders", folderId);
-  const title = document.getElementById("fagTitle").value.trim();
-  if (!folder || !title) return;
-  const a = { id: newId("agenda"), date: document.getElementById("fagDate").value || isoToday(), startTime: document.getElementById("fagStart").value || "09:00", time: document.getElementById("fagStart").value || "09:00", endTime: document.getElementById("fagEnd").value, title, type: document.getElementById("fagType").value, location: document.getElementById("fagLocation").value.trim(), notes: document.getElementById("fagNotes").value.trim(), linkedManagers: folder.linkedManagers || [], linkedProjects: [], linkedFolders: [folder.id] };
+  if (!folder) return;
+  const a = readFolderAgendaForm(folderId);
+  if (!a) return;
   state.agenda.push(a);
   persist("agenda");
   addActivity("Agenda", a.title, folder.name, a.id);
@@ -2408,7 +2918,11 @@ function folderDocumentsList(items, folderId) {
 }
 
 function folderAgendaList(items, folderId) {
-  return [...items].sort((a, b) => dateRank(a.date) - dateRank(b.date) || String(a.startTime || a.time || "").localeCompare(String(b.startTime || b.time || ""))).map(a => `<div class="item clickable" onclick="agendaFilter='all';renderCockpit()"><strong>${esc(a.date || "")} · ${esc(a.startTime || a.time || "")}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")}</span><span class="meta">${esc(a.location || "")}</span></div>`).join("") || folderEmpty(folderId, "agenda", "réunion");
+  return [...items].slice().sort(compareAgendaEvents).map(a => {
+    const start = agendaStartTime(a);
+    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
+    return `<div class="item clickable" onclick="agendaFilter='all';renderCockpit()"><strong>${esc(a.date || "")} · ${esc(timeLabel)}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")}</span><span class="meta">${esc(a.location || "")}</span></div>`;
+  }).join("") || folderEmpty(folderId, "agenda", "réunion");
 }
 
 function linkedFoldersList(item) {
@@ -5035,6 +5549,85 @@ function openLink(id) {
   renderLinks();
 }
 
+function getDefaultCalendarConnectionSettings() {
+  return {
+    provider: "none",
+    accountEmail: "",
+    googleClientId: "",       // Client ID OAuth public Google Cloud Console
+    calendarName: "",
+    googleCalendarId: "",     // ID Google du calendrier sélectionné
+    googleCalendarName: "",   // Nom affiché du calendrier sélectionné
+    syncDirection: "import",
+    showInAgenda: true,
+    showTodayInCockpit: true,
+    maskPrivateEvents: false,
+    syncFrequency: "manual",
+    connectionStatus: "not_configured",
+    lastSyncAt: null,
+    nextSyncAt: null
+  };
+}
+
+function ensureSettings(raw = {}) {
+  return state.settings = {
+    ...raw,
+    calendarConnection: {
+      ...getDefaultCalendarConnectionSettings(),
+      ...(raw.calendarConnection || {})
+    }
+  };
+}
+
+function getCalendarConnectionSettings() {
+  return (state.settings && state.settings.calendarConnection) ? state.settings.calendarConnection : getDefaultCalendarConnectionSettings();
+}
+
+function persistSettings() {
+  localStorage.setItem("deos_settings", JSON.stringify(state.settings));
+}
+
+function settingsCalendarConnectionCard() {
+  const settings = getCalendarConnectionSettings();
+  const status = settings.connectionStatus || (settings.provider === "google" ? "connection_required" : "not_configured");
+  const visibleStatus = status === "connected" ? "connection_required" : status;
+  const statusClass = visibleStatus === "connection_required" ? "orange" : "red";
+  const statusLabel = {
+    not_configured: "Non configuré",
+    connection_required: "Connexion requise",
+    connection_error: "Erreur de connexion"
+  }[visibleStatus] || "Non configuré";
+  return `<div class="card settings-card settings-calendar-card"><div class="settings-card-heading"><h2>Agenda et connexions externes</h2><p class="muted">Configurez le calendrier professionnel qui pourra être synchronisé avec DEOS.</p><div class="settings-info-box">Aucun accès à votre compte Google n’est réalisé dans cette version.</div></div><div class="settings-card-grid"><section class="settings-card-block"><h3>Connexion</h3><div class="settings-card-control"><label for="ccProvider">Fournisseur de calendrier</label><select id="ccProvider"><option value="none"${settings.provider !== "google" ? " selected" : ""}>Aucun</option><option value="google"${settings.provider === "google" ? " selected" : ""}>Google Calendar</option></select></div><div class="settings-card-control"><label for="ccAccountEmail">Adresse e-mail du compte professionnel</label><input id="ccAccountEmail" type="email" value="${esc(settings.accountEmail)}" placeholder="adresse@exemple.com"></div><div class="settings-card-control"><label for="ccCalendarName">Nom du calendrier à synchroniser</label><input id="ccCalendarName" value="${esc(settings.calendarName)}" placeholder="Par exemple : Agenda pro"></div></section><section class="settings-card-block"><h3>Synchronisation</h3><div class="settings-card-grid-2col"><div class="settings-card-control"><label for="ccSyncDirection">Sens de synchronisation</label><select id="ccSyncDirection"><option value="import"${settings.syncDirection === "import" ? " selected" : ""}>Importer uniquement vers DEOS</option><option value="two-way"${settings.syncDirection === "two-way" ? " selected" : ""}>Synchronisation bidirectionnelle</option></select></div><div class="settings-card-control"><label for="ccSyncFrequency">Fréquence de synchronisation</label><select id="ccSyncFrequency"><option value="manual"${settings.syncFrequency === "manual" ? " selected" : ""}>Synchronisation manuelle</option><option value="hourly"${settings.syncFrequency === "hourly" ? " selected" : ""}>Toutes les heures</option><option value="daily"${settings.syncFrequency === "daily" ? " selected" : ""}>Quotidien</option></select></div></div><p class="muted settings-help-text">Cette option sera utilisée lorsque la synchronisation automatique sera activée.</p></section><section class="settings-card-block"><h3>Affichage dans DEOS</h3><div class="settings-card-check"><label><input id="ccShowInAgenda" type="checkbox"${settings.showInAgenda ? " checked" : ""}><span>Afficher les événements externes dans la page Agenda</span></label></div><div class="settings-card-check"><label><input id="ccShowTodayInCockpit" type="checkbox"${settings.showTodayInCockpit ? " checked" : ""}><span>Afficher les rendez-vous du jour dans le Cockpit</span></label></div><div class="settings-card-check"><label><input id="ccMaskPrivateEvents" type="checkbox"${settings.maskPrivateEvents ? " checked" : ""}><span>Importer les événements privés en masquant leur contenu</span></label></div></section><section class="settings-card-block settings-calendar-status"><h3>État et informations</h3><div class="settings-calendar-badge-row"><div><strong>État de la connexion</strong></div><div><span class="badge ${statusClass}">${esc(statusLabel)}</span></div></div><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(settings.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Prochain contrôle</strong><span>${esc(settings.nextSyncAt || "Non planifié")}</span></div></div></section></div><div class="row-actions settings-calendar-buttons"><button class="action" onclick="saveCalendarConnectionSettings()">Enregistrer la configuration</button><div class="settings-calendar-actions-right"><button class="secondary" onclick="prepareGoogleCalendarConnection()">Préparer la connexion Google</button><button class="secondary" onclick="resetCalendarConnectionSettings()">Réinitialiser</button></div></div><p class="muted settings-calendar-note">Ces réglages sont stockés localement. La synchronisation réelle sera déployée plus tard.</p></div>`;
+}
+
+// Ancienne version de settingsCalendarConnectionCard() supprimée (remplacée par version V5.6 ligne ~5891)
+
+// Ancienne version de readCalendarConnectionSettingsForm() supprimée (remplacée par version V5.6 ligne ~6023)
+
+function saveCalendarConnectionSettings() {
+  console.log("[DEOS SYNC TRACE] saveCalendarConnectionSettings called");
+  state.settings.calendarConnection = readCalendarConnectionSettingsForm();
+  console.log("[DEOS SYNC TRACE] Saved settings - googleCalendarId:", state.settings.calendarConnection.googleCalendarId || "(empty)");
+  console.log("[DEOS SYNC TRACE] Saved settings - syncFrequency:", state.settings.calendarConnection.syncFrequency);
+  persistSettings();
+  // V5.6 — Redémarrer auto-sync si configuration changée
+  const newSettings = getCalendarConnectionSettings();
+  if (googleConnectionStatus === "connected" && newSettings.googleCalendarId) {
+    restartGoogleCalendarAutoSync();
+  }
+  renderSettings("Configuration Agenda enregistrée.");
+}
+
+function resetCalendarConnectionSettings() {
+  if (!confirm("Réinitialiser uniquement les réglages Agenda et connexions externes ? Les rendez-vous et autres données DEOS resteront inchangés.")) return;
+  state.settings.calendarConnection = getDefaultCalendarConnectionSettings();
+  persistSettings();
+  renderSettings("Réglages Agenda réinitialisés.");
+}
+
+function prepareGoogleCalendarConnection() {
+  alert("La connexion sécurisée à Google Calendar sera activée dans une prochaine version. Votre configuration est enregistrée, mais aucun accès à votre compte Google n’a encore été accordé.");
+}
+
 function settingsPreviewHtml(data = identity) {
   const logo = data.logoType === "image" && data.logoImage
     ? `<span class="settings-logo settings-logo-image" style="background-image:url('${esc(data.logoImage)}')"></span>`
@@ -5048,7 +5641,7 @@ function renderSettings(message = "") {
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
   const statusMessage = message || restoreSuccessMessage;
   restoreSuccessMessage = "";
-  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div><div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
+  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
 
 function readSettingsForm() {
@@ -5129,6 +5722,812 @@ function listItems(items, prefix = "") {
   return (items || []).map(x => `<div class="item">${prefix}${esc(x)}</div>`).join("") || `<div class="empty">À compléter</div>`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEOS V5.5 — Google Calendar Integration (OAuth 2.0, lecture seule)
+// ───────────────────────────────────────────────────────────────────────────────
+// Bibliothèque : Google Identity Services (https://accounts.google.com/gsi/client)
+// Méthode OAuth : initTokenClient (Token Request / Implicit-like Grant)
+//   → Aucun client secret requis côté navigateur
+//   → Aucun redirect URI nécessaire
+// Scopes demandés (2 scopes combinés) :
+//   1. https://www.googleapis.com/auth/calendar.readonly — lecture seule aux événements
+//   2. https://www.googleapis.com/auth/calendar.calendarlist.readonly — lecture seule à la liste des calendriers
+// Stockage du token : sessionStorage uniquement (deos_gc_token)
+//   → Jamais localStorage, jamais hardcodé dans le code source
+//   → Token effacé à la fermeture du navigateur
+// Client ID : configuré par l'utilisateur dans Paramètres > Agenda
+//   → Valeur publique, stockée dans deos_settings (localStorage)
+//   → JAMAIS de Client Secret dans DEOS
+// Configuration Google Cloud Console requise :
+//   1. Créer un projet Google Cloud
+//   2. Activer Google Calendar API
+//   3. Créer un identifiant OAuth — Type : Application Web
+//   4. Ajouter aux origines JavaScript autorisées :
+//      http://127.0.0.1:5500  (développement local VS Code Live Server)
+//      http://localhost:5500  (développement local alternatif)
+//      https://[votre-domaine]  (production GitHub Pages)
+//   5. NE PAS configurer d'URI de redirection (non requis avec initTokenClient)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getGoogleOAuthClientId() {
+  return (getCalendarConnectionSettings().googleClientId || "").trim();
+}
+
+function setGoogleAccessToken(token) {
+  googleAccessToken = token || null;
+  if (token) {
+    sessionStorage.setItem("deos_gc_token", token);
+  } else {
+    sessionStorage.removeItem("deos_gc_token");
+    sessionStorage.removeItem("deos_gc_email");
+    googleConnectedEmail = "";
+  }
+}
+
+function getGoogleAccessToken() {
+  if (googleAccessToken) return googleAccessToken;
+  const stored = sessionStorage.getItem("deos_gc_token");
+  if (stored) {
+    googleAccessToken = stored;
+    return stored;
+  }
+  return null;
+}
+
+function updateGoogleConnectionStatus(status, email) {
+  googleConnectionStatus = status;
+  if (email !== undefined) googleConnectedEmail = email;
+  if (state.settings && state.settings.calendarConnection) {
+    state.settings.calendarConnection.connectionStatus = status;
+  }
+}
+
+async function fetchGoogleUserInfo() {
+  const token = getGoogleAccessToken();
+  if (!token) return;
+  try {
+    const resp = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      googleConnectedEmail = data.email || "";
+      if (googleConnectedEmail) sessionStorage.setItem("deos_gc_email", googleConnectedEmail);
+    }
+  } catch (e) {
+    console.error("[DEOS] fetchGoogleUserInfo:", e);
+  }
+}
+
+function connectGoogleCalendar() {
+  const clientId = getGoogleOAuthClientId();
+  if (!clientId) {
+    renderSettings("Veuillez d'abord saisir et enregistrer votre Client ID Google OAuth dans le champ ci-dessus.");
+    return;
+  }
+  if (typeof google === "undefined" || !google?.accounts?.oauth2) {
+    renderSettings("La bibliotheque Google Identity Services n'est pas disponible. Verifiez votre connexion internet et rechargez la page.");
+    return;
+  }
+  updateGoogleConnectionStatus("connecting");
+  renderSettings("Connexion Google en cours...");
+  const tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: clientId,
+    scope: GOOGLE_SCOPES,
+    callback: async (tokenResponse) => {
+      if (tokenResponse.error) {
+        console.error("[DEOS] Google OAuth error:", tokenResponse.error, tokenResponse.error_description);
+        setGoogleAccessToken(null);
+        updateGoogleConnectionStatus("connection_error");
+        renderSettings("Erreur Google : " + (tokenResponse.error_description || tokenResponse.error));
+        return;
+      }
+      setGoogleAccessToken(tokenResponse.access_token);
+      updateGoogleConnectionStatus("connected");
+      await fetchGoogleUserInfo();
+      await fetchGoogleCalendars();
+      state.settings.calendarConnection.provider = "google";
+      persistSettings();
+      // V5.6 — Redémarrer auto-sync si configurée
+      const settings = getCalendarConnectionSettings();
+      if (settings.googleCalendarId && settings.syncFrequency !== "manual") {
+        googleLastSyncAt = null;
+        googleNextSyncAt = null;
+        scheduleNextGoogleSync();
+        restartGoogleCalendarAutoSync();
+      }
+      renderSettings("Connexion Google réussie !");
+    }
+  });
+  tokenClient.requestAccessToken({ prompt: "" });
+}
+
+function disconnectGoogleCalendar() {
+  if (!confirm("Déconnecter Google Calendar ? Les événements déjà importés seront supprimés de DEOS.")) return;
+  // V5.6 — Arrêter auto-sync
+  stopGoogleCalendarAutoSync();
+  const token = getGoogleAccessToken();
+  if (token && typeof google !== "undefined" && google?.accounts?.oauth2) {
+    try { google.accounts.oauth2.revoke(token, () => {}); } catch (e) { /* ignore */ }
+  }
+  setGoogleAccessToken(null);
+  googleConnectedEmail = "";
+  googleAvailableCalendars = [];
+  googleLastSyncAt = null;
+  googleNextSyncAt = null;
+  updateGoogleConnectionStatus("not_configured");
+  state.externalCalendarEvents = [];
+  localStorage.removeItem("deos_external_events");
+  if (state.settings && state.settings.calendarConnection) {
+    state.settings.calendarConnection.googleCalendarId = "";
+    state.settings.calendarConnection.googleCalendarName = "";
+    state.settings.calendarConnection.connectionStatus = "not_configured";
+    state.settings.calendarConnection.lastSyncAt = null;
+  }
+  persistSettings();
+  renderSettings("Déconnecté de Google Calendar. Données externes supprimées.");
+}
+
+async function fetchGoogleCalendars() {
+  const token = getGoogleAccessToken();
+  if (!token) { updateGoogleConnectionStatus("connection_required"); return []; }
+  try {
+    const resp = await fetch(`${GOOGLE_CALENDAR_API}/users/me/calendarList`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    if (resp.status === 401) {
+      handleGoogleTokenExpired();
+      return [];
+    }
+    if (!resp.ok) {
+      console.error("[DEOS] fetchGoogleCalendars HTTP", resp.status);
+      updateGoogleConnectionStatus("connection_error");
+      return [];
+    }
+    const data = await resp.json();
+    googleAvailableCalendars = (data.items || []).map(c => ({
+      id: c.id,
+      name: c.summary || c.id,
+      primary: c.primary || false,
+      accessRole: c.accessRole
+    }));
+    return googleAvailableCalendars;
+  } catch (e) {
+    console.error("[DEOS] fetchGoogleCalendars:", e);
+    updateGoogleConnectionStatus("connection_error");
+    return [];
+  }
+}
+
+async function renderGoogleCalendarsList() {
+  renderSettings("Chargement des calendriers...");
+  try {
+    const result = await fetchGoogleCalendars();
+    if (result && result.length > 0) {
+      renderSettings(`${result.length} calendrier(s) charge(s). Selectionnez celui a synchroniser.`);
+    } else if (googleConnectionStatus === "session_expired") {
+      renderSettings("Session Google expiree. Cliquez sur Reconnecter Google Calendar.");
+    } else if (googleConnectionStatus === "connection_error") {
+      renderSettings("Erreur lors du chargement des calendriers. Consultez la console pour details.");
+    } else {
+      renderSettings("Aucun calendrier accessible avec votre compte Google.");
+    }
+  } catch (e) {
+    console.error("[DEOS] Erreur inattendue lors du chargement des calendriers:", e);
+    renderSettings("Erreur inattendue. Consultez la console.");
+  }
+}
+
+function isGoogleEventPrivate(gcEvent) {
+  return gcEvent.visibility === "private" || gcEvent.visibility === "confidential";
+}
+
+function normalizeGoogleCalendarEvent(gcEvent, calendarId, calendarName) {
+  const allDay = !gcEvent.start?.dateTime;
+  const startRaw = gcEvent.start?.dateTime || gcEvent.start?.date || "";
+  const endRaw = gcEvent.end?.dateTime || gcEvent.end?.date || "";
+  const priv = isGoogleEventPrivate(gcEvent);
+  const settings = getCalendarConnectionSettings();
+  if (priv && !settings.maskPrivateEvents) return null;
+  const title = priv && settings.maskPrivateEvents ? "Prive" : (gcEvent.summary || "Sans titre");
+  const description = priv && settings.maskPrivateEvents ? "" : (gcEvent.description || "");
+  // [DEOS AGENDA TRACE] Generate deduplication key
+  const deduplicationKey = `google_${gcEvent.id}`;
+  
+  // [DEOS V5.6.5] DIAGNOSTIC: date conversion
+  let localDate;
+  if (allDay) {
+    // For all-day events, start.date is already in YYYY-MM-DD format
+    localDate = startRaw;
+  } else {
+    // For timed events, convert ISO string to local date
+    try {
+      const dateObj = new Date(startRaw);
+      localDate = dateObj.toISOString().slice(0, 10);  // ISO format date, which is UTC
+      // Better: use local timezone conversion
+      const year = dateObj.getFullYear();
+      const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const day = String(dateObj.getDate()).padStart(2, '0');
+      localDate = `${year}-${month}-${day}`;
+    } catch (e) {
+      localDate = startRaw.slice(0, 10);
+    }
+  }
+  
+  return {
+    _key: deduplicationKey,           // Clé de déduplication pour reconciliation
+    _calendarId: calendarId,          // ID du calendrier source (pour filtres)
+    _external: true,                  // Marqueur d'événement externe
+    externalId: gcEvent.id,
+    provider: "google",
+    id: `gc_${gcEvent.id}`,
+    title,
+    date: localDate,
+    startTime: allDay ? "" : startRaw.slice(11, 16),
+    endTime: allDay ? "" : endRaw.slice(11, 16),
+    allDay,
+    location: gcEvent.location || "",
+    description,
+    status: gcEvent.status || "confirmed",
+    isPrivate: priv,
+    calendarId,
+    calendarName,
+    importedAt: new Date().toISOString()
+  };
+}
+
+async function fetchGoogleCalendarEvents() {
+  const token = getGoogleAccessToken();
+  if (!token) { updateGoogleConnectionStatus("connection_required"); return []; }
+  const settings = getCalendarConnectionSettings();
+  const calendarId = settings.googleCalendarId;
+  if (!calendarId) { console.warn("[DEOS] Aucun calendrier selectionne."); return []; }
+  const now = new Date();
+  const past = new Date(now); past.setDate(past.getDate() - GOOGLE_SYNC_PAST_DAYS);
+  const future = new Date(now); future.setDate(future.getDate() + GOOGLE_SYNC_FUTURE_DAYS);
+  const params = new URLSearchParams({
+    timeMin: past.toISOString(),
+    timeMax: future.toISOString(),
+    singleEvents: "true",
+    orderBy: "startTime",
+    maxResults: "500"
+  });
+  try {
+    const resp = await fetch(
+      `${GOOGLE_CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events?${params}`,
+      { headers: { "Authorization": `Bearer ${token}` } }
+    );
+    if (resp.status === 401) {
+      setGoogleAccessToken(null);
+      updateGoogleConnectionStatus("session_expired");
+      return [];
+    }
+    if (!resp.ok) {
+      console.error("[DEOS] fetchGoogleCalendarEvents HTTP", resp.status);
+      updateGoogleConnectionStatus("connection_error");
+      return [];
+    }
+    const data = await resp.json();
+    const items = (data.items || []).filter(e => e.status !== "cancelled");
+    // [DEOS V5.6.5] DIAGNOSTIC: raw events sample
+    if (items.length > 0) {
+      const sample = items.slice(0, 20).map(e => ({
+        externalId: e.id,
+        summary: e.summary,
+        'start.dateTime': e.start?.dateTime,
+        'start.date': e.start?.date,
+        'end.dateTime': e.end?.dateTime,
+        'end.date': e.end?.date,
+        status: e.status
+      }));
+      console.log("[DEOS GOOGLE RAW SAMPLE] fetched items:", items.length);
+      console.table(sample);
+    }
+    return items;
+  } catch (e) {
+    console.error("[DEOS] fetchGoogleCalendarEvents:", e);
+    updateGoogleConnectionStatus("connection_error");
+    return [];
+  }
+}
+
+async function syncGoogleCalendarNow() {
+  console.log("[DEOS SYNC TRACE] syncGoogleCalendarNow entered");
+  console.log("[DEOS SYNC TRACE] lock state - googleSyncInProgress:", googleSyncInProgress);
+  if (googleSyncInProgress) {
+    console.warn("[DEOS SYNC TRACE] ❌ EXIT: Sync already in progress");
+    return;
+  }
+  const token = getGoogleAccessToken();
+  console.log("[DEOS SYNC TRACE] token present:", !!token);
+  if (!token) {
+    console.warn("[DEOS SYNC TRACE] ❌ EXIT: No token");
+    renderSettings("Session Google expirée, reconnectez-vous pour continuer.");
+    return;
+  }
+  const settings = getCalendarConnectionSettings();
+  console.log("[DEOS SYNC TRACE] calendarId present:", !!settings.googleCalendarId);
+  console.log("[DEOS SYNC TRACE] calendarId value:", settings.googleCalendarId || "(empty)");
+  if (!settings.googleCalendarId) {
+    console.warn("[DEOS SYNC TRACE] ❌ EXIT: No calendar selected");
+    renderSettings("Veuillez sélectionner un calendrier dans la liste avant de synchroniser.");
+    return;
+  }
+  console.log("[DEOS SYNC TRACE] ✓ All pre-checks passed, proceeding with sync");
+  googleSyncInProgress = true;
+  renderSettings("Synchronisation en cours...");
+  try {
+    console.log("[DEOS SYNC TRACE] Fetching events from Google Calendar...");
+    const rawEvents = await fetchGoogleCalendarEvents();
+    console.log("[DEOS SYNC TRACE] Fetched", rawEvents.length, "raw events");
+    // Vérifier si le token a expiré durant la récupération
+    if (googleConnectionStatus === "session_expired") {
+      googleSyncInProgress = false;
+      console.error("[DEOS SYNC TRACE] ❌ Token expired during fetch");
+      handleGoogleTokenExpired();
+      return;
+    }
+    if (googleConnectionStatus === "connection_error") {
+      googleSyncInProgress = false;
+      console.error("[DEOS SYNC TRACE] ❌ Network error during fetch");
+      renderSettings("Erreur réseau lors de la synchronisation. Vérifiez votre connexion.");
+      return;
+    }
+    const calId = settings.googleCalendarId;
+    const calName = settings.googleCalendarName || "";
+    const newEvents = rawEvents.map(e => normalizeGoogleCalendarEvent(e, calId, calName)).filter(Boolean);
+    console.log("[DEOS SYNC TRACE] Normalized", newEvents.length, "events");
+    // [DEOS V5.6.5] DIAGNOSTIC: normalized events sample
+    if (newEvents.length > 0) {
+      const sample = newEvents.slice(0, 20).map(e => ({
+        externalId: e.externalId,
+        title: e.title,
+        date: e.date,
+        startTime: e.startTime,
+        endTime: e.endTime,
+        allDay: e.allDay,
+        _key: e._key,
+        _calendarId: e._calendarId,
+        _external: e._external
+      }));
+      console.log("[DEOS GOOGLE NORMALIZED SAMPLE] normalized events:", newEvents.length);
+      console.table(sample);
+    }
+    // [DEOS V5.6.5] DIAGNOSTIC: date types analysis
+    const timedEvents = rawEvents.filter(e => !!e.start?.dateTime);
+    const allDayEvents = rawEvents.filter(e => !!e.start?.date && !e.start?.dateTime);
+    console.log("[DEOS DATE ANALYSIS] timed events:", timedEvents.length);
+    console.log("[DEOS DATE ANALYSIS] all-day events:", allDayEvents.length);
+    if (timedEvents.length > 0) {
+      const timedSample = timedEvents.slice(0, 5).map(e => ({
+        id: e.id,
+        summary: e.summary,
+        'start.dateTime': e.start?.dateTime,
+        'end.dateTime': e.end?.dateTime
+      }));
+      console.log("[DEOS DATE ANALYSIS] Timed events sample (first 5):");
+      console.table(timedSample);
+    }
+    if (allDayEvents.length > 0) {
+      const allDaySample = allDayEvents.slice(0, 5).map(e => ({
+        id: e.id,
+        summary: e.summary,
+        'start.date': e.start?.date,
+        'end.date': e.end?.date
+      }));
+      console.log("[DEOS DATE ANALYSIS] All-day events sample (first 5):");
+      console.table(allDaySample);
+    }
+    // Log sample event structure
+    if (newEvents.length > 0) {
+      console.log("[DEOS AGENDA TRACE] Sample normalized event keys:", Object.keys(newEvents[0]));
+      console.log("[DEOS AGENDA TRACE] Sample event _key:", newEvents[0]._key);
+      console.log("[DEOS AGENDA TRACE] Sample event _calendarId:", newEvents[0]._calendarId);
+      console.log("[DEOS AGENDA TRACE] Sample event date:", newEvents[0].date);
+      console.log("[DEOS AGENDA TRACE] Sample event title:", newEvents[0].title);
+    }
+    // V5.6 — Réconciliation : ajouter/mettre à jour/supprimer
+    const reconciliation = reconcileGoogleCalendarEvents(newEvents);
+    console.log("[DEOS SYNC TRACE] Reconciliation complete: +", reconciliation.added, "~", reconciliation.updated, "-", reconciliation.removed);
+    // [DEOS STATE TRACE] After reconciliation
+    console.log("[DEOS STATE TRACE] after reconciliation:", state.externalCalendarEvents.length);
+    // [DEOS V5.6.5] DIAGNOSTIC: storage statistics
+    if (state.externalCalendarEvents.length > 0) {
+      const dates = state.externalCalendarEvents.map(e => e.date).sort();
+      const minDate = dates[0];
+      const maxDate = dates[dates.length - 1];
+      const today = localIsoDate();
+      const weekEnd = localIsoAddDays(7);
+      const nextSevenDays = state.externalCalendarEvents.filter(e => e.date >= today && e.date <= weekEnd).length;
+      const firstFive = state.externalCalendarEvents.slice(0, 5).map(e => ({
+        date: e.date,
+        title: e.title,
+        _key: e._key
+      }));
+      console.log("[DEOS GOOGLE STORED] total:", state.externalCalendarEvents.length);
+      console.log("[DEOS GOOGLE STORED] min date:", minDate);
+      console.log("[DEOS GOOGLE STORED] max date:", maxDate);
+      console.log("[DEOS GOOGLE STORED] today:", today);
+      console.log("[DEOS GOOGLE STORED] next 7 days:", nextSevenDays);
+      console.log("[DEOS GOOGLE STORED] first 5 events:");
+      console.table(firstFive);
+    }
+    // [DEOS V5.6.5] DIAGNOSTIC: deduplication check
+    const allKeys = state.externalCalendarEvents.map(e => e._key);
+    const uniqueKeys = new Set(allKeys);
+    const duplicateCount = allKeys.length - uniqueKeys.size;
+    console.log("[DEOS DEDUP CHECK] total events:", state.externalCalendarEvents.length);
+    console.log("[DEOS DEDUP CHECK] unique keys:", uniqueKeys.size);
+    console.log("[DEOS DEDUP CHECK] duplicate keys:", duplicateCount);
+    // [DEOS V5.6.5] DIAGNOSTIC: [DEOS AGENDA TRACE] After reconciliation
+    console.log("[DEOS AGENDA TRACE] External events after reconciliation:", state.externalCalendarEvents.length);
+    // Nettoyer les événements hors fenêtre de synchronisation (optionnel)
+    removeMissingGoogleEventsInWindow();
+    // Mettre à jour l'état de synchronisation
+    googleLastSyncAt = Date.now();
+    scheduleNextGoogleSync();
+    state.settings.calendarConnection.lastSyncAt = googleLastSyncAt;
+    state.settings.calendarConnection.lastSyncAtIso = new Date(googleLastSyncAt).toISOString();
+    updateGoogleConnectionStatus("connected");
+    persistSettings();
+    persistExternalEvents();
+    // [DEOS STATE TRACE] After persistence
+    console.log("[DEOS STATE TRACE] after persistence:", state.externalCalendarEvents.length);
+    googleSyncInProgress = false;
+    const msg = `Synchronisation réussie : ${reconciliation.added} ajoutés, ${reconciliation.updated} mis à jour, ${reconciliation.removed} supprimés.`;
+    console.log("[DEOS SYNC TRACE] ✓ Sync completed successfully");
+    console.log("[DEOS SYNC TRACE] Message:", msg);
+    // [DEOS STATE TRACE] Before renderSettings
+    console.log("[DEOS STATE TRACE] before renderSettings:", state.externalCalendarEvents.length);
+    renderSettings(msg);
+    updateGoogleSyncUi();
+  } catch (e) {
+    console.error("[DEOS SYNC TRACE] ❌ Sync failed with exception:", e);
+    googleSyncInProgress = false;
+    renderSettings("Erreur inattendue lors de la synchronisation. Consultez la console pour plus de détails.");
+  }
+}
+
+// Fonction intermédiaire pour coordonner le clic du bouton "Synchroniser maintenant"
+// Appelle saveCalendarConnectionSettings() puis syncGoogleCalendarNow() avec timing approprié
+function onClickSyncGoogleNow() {
+  console.log("[DEOS SYNC TRACE] Button onclick handler fired");
+  saveCalendarConnectionSettings();
+  // Appeler syncGoogleCalendarNow() après une micro-pause pour laisser renderSettings() se terminer
+  setTimeout(() => {
+    console.log("[DEOS SYNC TRACE] setTimeout callback - now calling syncGoogleCalendarNow()");
+    syncGoogleCalendarNow().catch(e => console.error("[DEOS SYNC TRACE] Unhandled promise rejection:", e));
+  }, 100);
+}
+
+function persistExternalEvents() {
+  localStorage.setItem("deos_external_events", JSON.stringify(state.externalCalendarEvents || []));
+  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
+}
+
+function googleConnectionStatusLabel() {
+  return ({
+    not_configured: "Non configure",
+    client_id_missing: "Client ID manquant",
+    connection_required: "Connexion requise",
+    connecting: "Connexion en cours...",
+    connected: "Connecte",
+    connection_error: "Erreur de connexion",
+    session_expired: "Session expiree"
+  })[googleConnectionStatus] || "Non configure";
+}
+
+function googleConnectionStatusClass() {
+  if (googleConnectionStatus === "connected") return "green";
+  if (googleConnectionStatus === "connecting") return "orange";
+  if (["connection_error", "session_expired"].includes(googleConnectionStatus)) return "red";
+  return "orange";
+}
+
+// ── Redefinition de settingsCalendarConnectionCard() pour V5.5 ───────────────
+function settingsCalendarConnectionCard() {
+  const s = getCalendarConnectionSettings();
+  const connected = googleConnectionStatus === "connected";
+  const statusClass = googleConnectionStatusClass();
+  const statusLabel = googleConnectionStatusLabel();
+  // V5.6 — Utiliser updateGoogleSyncUi() pour l'état de sync
+  const syncUi = updateGoogleSyncUi();
+  const externalCount = (state.externalCalendarEvents || []).length;  // Total de tous les événements externes stockés
+
+  // Liste des calendriers disponibles (apres authentification)
+  const calendarOptions = googleAvailableCalendars.length > 0
+    ? googleAvailableCalendars.map(c =>
+        `<option value="${esc(c.id)}"${s.googleCalendarId === c.id ? " selected" : ""}>${esc(c.name)}${c.primary ? " (principal)" : ""}</option>`
+      ).join("")
+    : (s.googleCalendarId
+        ? `<option value="${esc(s.googleCalendarId)}" selected>${esc(s.googleCalendarName || s.googleCalendarId)}</option>`
+        : `<option value="">-- Connectez-vous d'abord --</option>`);
+
+  return `<div class="card settings-card settings-calendar-card">
+    <div class="settings-card-heading">
+      <h2>Agenda et connexions externes</h2>
+      <p class="muted">Connectez votre Google Calendar pour importer vos evenements dans DEOS.</p>
+      <div class="settings-info-box">
+        <strong>Configuration requise :</strong> Un Client ID Google OAuth est necessaire.
+        Creez un projet dans <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">Google Cloud Console</a>,
+        activez l'API Google Calendar, puis creez un identifiant OAuth de type <em>Application Web</em>.
+        Ajoutez <code>http://127.0.0.1:5500</code> dans les origines JavaScript autorisees.
+        Ne partagez jamais de Client Secret dans DEOS.
+      </div>
+    </div>
+    <div class="settings-card-grid">
+      <section class="settings-card-block">
+        <h3>Configuration Google OAuth</h3>
+        <div class="settings-card-control">
+          <label for="ccGoogleClientId">Google OAuth Client ID</label>
+          <input id="ccGoogleClientId" value="${esc(s.googleClientId || "")}" placeholder="xxxxxxxxxx.apps.googleusercontent.com" style="font-family:monospace;font-size:13px">
+          <small class="muted">Visible dans Google Cloud Console > Identifiants. Ne jamais saisir le Client Secret.</small>
+        </div>
+        <div class="settings-card-control" style="margin-top:12px">
+          <label>Statut de connexion</label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px">
+            <span class="badge ${statusClass}">${esc(statusLabel)}</span>
+            ${connected && googleConnectedEmail ? `<span style="color:#475569;font-size:13px">Compte : ${esc(googleConnectedEmail)}</span>` : ""}
+          </div>
+        </div>
+        <div class="row-actions" style="margin-top:12px">
+          ${!connected
+            ? `<button class="action" onclick="saveCalendarConnectionSettings();connectGoogleCalendar()">Connecter Google Calendar</button>`
+            : `<button class="secondary" onclick="renderGoogleCalendarsList()">Actualiser les calendriers</button><button class="danger" onclick="disconnectGoogleCalendar()">Deconnecter Google</button>`
+          }
+        </div>
+      </section>
+      <section class="settings-card-block">
+        <h3>Calendrier a synchroniser</h3>
+        <div class="settings-card-control">
+          <label for="ccGoogleCalendarId">Calendrier Google</label>
+          <select id="ccGoogleCalendarId" ${!connected && googleAvailableCalendars.length === 0 ? "disabled" : ""}>
+            ${calendarOptions}
+          </select>
+          <small class="muted">Selectionnez votre calendrier professionnel apres connexion.</small>
+        </div>
+        <div class="settings-card-control" style="margin-top:10px">
+          <label for="ccSyncFrequency">Frequence de synchronisation</label>
+          <select id="ccSyncFrequency">
+            <option value="manual"${s.syncFrequency === "manual" ? " selected" : ""}>Synchronisation manuelle</option>
+            <option value="15min"${s.syncFrequency === "15min" ? " selected" : ""}>Toutes les 15 minutes</option>
+            <option value="hourly"${s.syncFrequency === "hourly" ? " selected" : ""}>Toutes les heures</option>
+            <option value="daily"${s.syncFrequency === "daily" ? " selected" : ""}>Une fois par jour</option>
+          </select>
+        </div>
+      </section>
+      <section class="settings-card-block">
+        <h3>Affichage dans DEOS</h3>
+        <div class="settings-card-check">
+          <label><input id="ccShowInAgenda" type="checkbox" ${s.showInAgenda ? "checked" : ""}> Afficher les evenements externes dans la page Agenda</label>
+        </div>
+        <div class="settings-card-check">
+          <label><input id="ccShowTodayInCockpit" type="checkbox" ${s.showTodayInCockpit ? "checked" : ""}> Afficher les rendez-vous du jour dans le Cockpit</label>
+        </div>
+        <div class="settings-card-check">
+          <label><input id="ccMaskPrivateEvents" type="checkbox" ${s.maskPrivateEvents ? "checked" : ""}> Importer les evenements prives en masquant leur contenu</label>
+        </div>
+      </section>
+      <section class="settings-card-block">
+        <h3>Etat et synchronisation</h3>
+        <div class="settings-calendar-summary">
+          <div class="settings-calendar-summary-item"><strong>Derniere synchro</strong><span>${esc(syncUi.lastSync)}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Prochaine synchro</strong><span>${esc(syncUi.nextSync)}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Evenements importes</strong><span>${externalCount}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Calendrier selectionne</strong><span>${esc(s.googleCalendarName || s.googleCalendarId || "--")}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Frequence active</strong><span>${esc(s.syncFrequency === "manual" ? "Manuelle" : s.syncFrequency)}</span></div>
+          <div class="settings-calendar-summary-item"><strong>Fournisseur</strong><span>${esc(s.provider === "google" ? "Google Calendar" : "Aucun")}</span></div>
+        </div>
+        ${connected
+          ? `<div style="margin-top:14px"><button class="action" onclick="onClickSyncGoogleNow()" ${googleSyncInProgress ? "disabled" : ""}>Synchroniser maintenant</button></div>`
+          : ""
+        }
+      </section>
+    </div>
+    <div class="row-actions settings-calendar-buttons">
+      <button class="action" onclick="saveCalendarConnectionSettings()">Enregistrer la configuration</button>
+      <div class="settings-calendar-actions-right">
+        <button class="secondary" onclick="resetCalendarConnectionSettings()">Reinitialiser</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Redefinition de readCalendarConnectionSettingsForm() pour V5.5 ──────────
+function readCalendarConnectionSettingsForm() {
+  const googleClientId = document.getElementById("ccGoogleClientId")?.value.trim() || "";
+  const calendarSelect = document.getElementById("ccGoogleCalendarId");
+  const googleCalendarId = calendarSelect?.value || "";
+  const googleCalendarName = calendarSelect?.options[calendarSelect?.selectedIndex]?.text || "";
+  const syncFrequency = document.getElementById("ccSyncFrequency")?.value || "manual";
+  // [DEOS SYNC TRACE] Diagnostic
+  console.log("[DEOS SYNC TRACE] Form read - calendarSelect element exists:", !!calendarSelect);
+  console.log("[DEOS SYNC TRACE] Form read - googleCalendarId value:", googleCalendarId || "(empty)");
+  console.log("[DEOS SYNC TRACE] Form read - syncFrequency value:", syncFrequency);
+  const showInAgenda = document.getElementById("ccShowInAgenda")?.checked ?? true;
+  const showTodayInCockpit = document.getElementById("ccShowTodayInCockpit")?.checked ?? true;
+  const maskPrivateEvents = document.getElementById("ccMaskPrivateEvents")?.checked ?? false;
+  const current = getCalendarConnectionSettings();
+  return {
+    ...getDefaultCalendarConnectionSettings(),
+    ...current,
+    provider: googleClientId ? "google" : current.provider,
+    googleClientId,
+    googleCalendarId: googleCalendarId || current.googleCalendarId,
+    googleCalendarName: googleCalendarName || current.googleCalendarName,
+    syncFrequency,
+    showInAgenda,
+    showTodayInCockpit,
+    maskPrivateEvents,
+    connectionStatus: googleConnectionStatus
+  };
+}
+
+// ── prepareGoogleCalendarConnection() remplace l'ancienne version ────────────
+function prepareGoogleCalendarConnection() {
+  connectGoogleCalendar();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEOS V5.6 — Synchronisation Automatique et Gestion de l'Expiration du Token
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getGoogleSyncIntervalMs() {
+  const settings = getCalendarConnectionSettings();
+  const freq = settings.syncFrequency || "manual";
+  return GOOGLE_SYNC_INTERVALS[freq] || null;
+}
+
+function shouldRunGoogleSyncNow() {
+  const settings = getCalendarConnectionSettings();
+  if (googleConnectionStatus !== "connected" || !settings.googleCalendarId) return false;
+  if (!googleLastSyncAt) return true;
+  const interval = getGoogleSyncIntervalMs();
+  if (!interval) return false;
+  const now = Date.now();
+  return now - googleLastSyncAt >= interval;
+}
+
+function scheduleNextGoogleSync() {
+  const interval = getGoogleSyncIntervalMs();
+  if (!interval) {
+    googleNextSyncAt = null;
+    return;
+  }
+  const now = googleLastSyncAt || Date.now();
+  googleNextSyncAt = now + interval;
+}
+
+function handleGoogleTokenExpired() {
+  console.error("[DEOS Google Calendar] Token expiré. Session terminée.");
+  setGoogleAccessToken(null);
+  updateGoogleConnectionStatus("session_expired");
+  stopGoogleCalendarAutoSync();
+  renderSettings("Votre session Google a expiré. Reconnectez-vous pour reprendre la synchronisation.");
+}
+
+function startGoogleCalendarAutoSync() {
+  if (googleSyncTimerId !== null) return;
+  const interval = getGoogleSyncIntervalMs();
+  if (!interval) return;
+  googleSyncTimerId = setInterval(async () => {
+    if (googleConnectionStatus === "connected" && !googleSyncInProgress) {
+      await syncGoogleCalendarNow();
+    }
+  }, interval);
+  console.log("[DEOS Google Calendar] Auto-sync démarré, intervalle: " + interval + "ms");
+}
+
+function stopGoogleCalendarAutoSync() {
+  if (googleSyncTimerId !== null) {
+    clearInterval(googleSyncTimerId);
+    googleSyncTimerId = null;
+    console.log("[DEOS Google Calendar] Auto-sync arrêté");
+  }
+}
+
+function restartGoogleCalendarAutoSync() {
+  stopGoogleCalendarAutoSync();
+  startGoogleCalendarAutoSync();
+}
+
+function reconcileGoogleCalendarEvents(freshEvents) {
+  const now = Date.now();
+  let added = 0, updated = 0, removed = 0;
+  console.log("[DEOS AGENDA TRACE] Reconciliation - freshEvents:", freshEvents.length);
+  // V5.7 — IMPORTANT: Ne jamais écraser state.externalEventEnrichments
+  // Les enrichissements restent attachés grâce à la clé stable (_key)
+  
+  // [DEOS V5.6.5] DIAGNOSTIC: verify _key structure
+  const keyIssues = [];
+  for (let i = 0; i < Math.min(5, freshEvents.length); i++) {
+    const e = freshEvents[i];
+    if (!e._key) keyIssues.push(`Event ${i}: _key is missing`);
+    if (!e._calendarId) keyIssues.push(`Event ${i}: _calendarId is missing`);
+    if (e._key?.startsWith('undefined')) keyIssues.push(`Event ${i}: _key contains "undefined"`);
+  }
+  if (keyIssues.length > 0) {
+    console.error("[DEOS DEDUP CHECK] KEY ISSUES:", keyIssues);
+  }
+  // Log first event to debug structure
+  if (freshEvents.length > 0) {
+    console.log("[DEOS AGENDA TRACE] First freshEvent _key:", freshEvents[0]._key);
+    console.log("[DEOS AGENDA TRACE] First freshEvent _calendarId:", freshEvents[0]._calendarId);
+  }
+  const fresIds = new Set(freshEvents.map(e => e._key));
+  console.log("[DEOS AGENDA TRACE] Fresh IDs count:", fresIds.size);
+  console.log("[DEOS DEDUP CHECK] fresh unique keys:", fresIds.size);
+  // [DEOS V5.6.5] Check for undefined keys
+  if (fresIds.has(undefined)) console.error("[DEOS DEDUP CHECK] ⚠️ Fresh events contain undefined _key!");
+  const oldIds = state.externalCalendarEvents
+    .filter(e => e._calendarId === getCalendarConnectionSettings().googleCalendarId)
+    .map(e => e._key);
+  console.log("[DEOS AGENDA TRACE] Old events count:", oldIds.length);
+  console.log("[DEOS DEDUP CHECK] old events total:", state.externalCalendarEvents.length);
+  for (const oldId of oldIds) {
+    if (!fresIds.has(oldId)) {
+      const idx = state.externalCalendarEvents.findIndex(e => e._key === oldId);
+      if (idx >= 0) {
+        // V5.7 — Marquer l'enrichissement comme source indisponible
+        if (state.externalEventEnrichments[oldId]) {
+          state.externalEventEnrichments[oldId].sourceUnavailable = true;
+        }
+        state.externalCalendarEvents.splice(idx, 1);
+        removed++;
+      }
+    }
+  }
+  for (const fresh of freshEvents) {
+    const idx = state.externalCalendarEvents.findIndex(e => e._key === fresh._key);
+    if (idx >= 0) {
+      const old = state.externalCalendarEvents[idx];
+      if (old.title !== fresh.title || old.startTime !== fresh.startTime || old.date !== fresh.date || old.description !== fresh.description) {
+        state.externalCalendarEvents[idx] = fresh;
+        updated++;
+      }
+    } else {
+      state.externalCalendarEvents.push(fresh);
+      added++;
+    }
+  }
+  console.log(`[DEOS Google Calendar] Réconciliation: ${added} ajoutés, ${updated} mis à jour, ${removed} supprimés`);
+  console.log("[DEOS AGENDA TRACE] Total external events after reconciliation:", state.externalCalendarEvents.length);
+  return { added, updated, removed };
+}
+
+function removeMissingGoogleEventsInWindow() {
+  const settings = getCalendarConnectionSettings();
+  const calendarId = settings.googleCalendarId;
+  if (!calendarId) return;
+  const now = new Date();
+  const past = new Date(now); past.setDate(past.getDate() - GOOGLE_SYNC_PAST_DAYS);
+  const future = new Date(now); future.setDate(future.getDate() + GOOGLE_SYNC_FUTURE_DAYS);
+  const pastIso = localIsoDate(past);
+  const futureIso = localIsoDate(future);
+  console.log("[DEOS STATE TRACE] removeMissingGoogleEventsInWindow: before filter:", state.externalCalendarEvents.length);
+  console.log("[DEOS STATE TRACE] window range:", pastIso, "→", futureIso);
+  state.externalCalendarEvents = state.externalCalendarEvents.filter(e => {
+    if (e._calendarId !== calendarId) return true; // Garder les événements d'autres calendriers
+    const eDate = String(e.date || "").substring(0, 10);
+    // GARDER les événements DANS la fenêtre de sync, SUPPRIMER les événements OUTSIDE
+    const keep = eDate >= pastIso && eDate <= futureIso;
+    if (!keep) {
+      console.log("[DEOS STATE TRACE] Removing event outside window:", e.title, "date:", e.date);
+    }
+    return keep;
+  });
+  console.log("[DEOS STATE TRACE] removeMissingGoogleEventsInWindow: after filter:", state.externalCalendarEvents.length);
+}
+
+function updateGoogleSyncUi() {
+  const settings = getCalendarConnectionSettings();
+  const freq = settings.syncFrequency || "manual";
+  const lastSync = googleLastSyncAt ? new Date(googleLastSyncAt).toLocaleString("fr-FR") : "Jamais";
+  const nextSync = googleNextSyncAt ? new Date(googleNextSyncAt).toLocaleString("fr-FR") : (freq === "manual" ? "Manuelle" : "Non planifiée");
+  const eventCount = state.externalCalendarEvents.filter(e => e._calendarId === settings.googleCalendarId).length;
+  return { lastSync, nextSync, eventCount };
+}
+
 init();
 
 
@@ -5145,4 +6544,314 @@ init();
 
 
 
+
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// V5.7 â€” ENRICHISSEMENT LOCAL DES Ã‰VÃ‰NEMENTS GOOGLE CALENDAR
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+/**
+ * Initialise la structure d'enrichissements si elle n'existe pas
+ * S'exÃ©cute au dÃ©marrage pour garantir une structure cohÃ©rente
+ */
+function ensureExternalEventEnrichments() {
+  if (!state.externalEventEnrichments) {
+    state.externalEventEnrichments = {};
+  }
+  console.log("[DEOS V5.7] ensureExternalEventEnrichments: structure initialized with", Object.keys(state.externalEventEnrichments).length, "enrichments");
+}
+
+/**
+ * Obtient ou crÃ©e un enrichissement pour un Ã©vÃ©nement externe
+ * @param {string} eventKey - ClÃ© stable de l'Ã©vÃ©nement (google_<externalId>)
+ * @returns {object} Enrichissement (existant ou nouvellement crÃ©Ã©)
+ */
+function getExternalEventEnrichment(eventKey) {
+  if (!state.externalEventEnrichments[eventKey]) {
+    state.externalEventEnrichments[eventKey] = {
+      eventKey: eventKey,
+      subjects: [],
+      preparation: "",
+      notes: "",
+      report: "",
+      linkedActionIds: [],
+      linkedDecisionIds: [],
+      linkedDocumentIds: [],
+      links: [],
+      preparationStatus: "not_started",
+      sourceUnavailable: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    console.log("[DEOS V5.7] getExternalEventEnrichment: created new enrichment for", eventKey);
+  }
+  return state.externalEventEnrichments[eventKey];
+}
+
+/**
+ * Sauvegarde un enrichissement dans l'Ã©tat global
+ * @param {string} eventKey - ClÃ© stable de l'Ã©vÃ©nement
+ * @param {object} enrichment - DonnÃ©es d'enrichissement
+ */
+function saveExternalEventEnrichment(eventKey, enrichment) {
+  enrichment.updatedAt = new Date().toISOString();
+  state.externalEventEnrichments[eventKey] = enrichment;
+  persistExternalEvents();
+  console.log("[DEOS V5.7] saveExternalEventEnrichment: saved for", eventKey);
+}
+
+/**
+ * Sauvegarde les donnÃ©es de la modale d'enrichissement
+ * AppelÃ©e par le bouton "Enregistrer" de la modale
+ */
+function saveExternalEventEnrichmentFromModal(eventKey) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  
+  // RÃ©cupÃ©rer les valeurs du formulaire
+  enrichment.preparationStatus = document.getElementById("enrichStatus")?.value || "not_started";
+  enrichment.preparation = document.getElementById("enrichPrep")?.value || "";
+  enrichment.notes = document.getElementById("enrichNotes")?.value || "";
+  enrichment.report = document.getElementById("enrichReport")?.value || "";
+  
+  saveExternalEventEnrichment(eventKey, enrichment);
+  
+  // Afficher une confirmation discrÃ¨te
+  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+  if (ev) {
+    addActivity("âœ… Enrichissement rendez-vous", ev.title, "Informations mises Ã  jour", ev._key);
+  }
+  
+  // Garder la modale ouverte pour que l'utilisateur voie la confirmation
+  setTimeout(() => {
+    // Notification discrÃ¨te - le titre de la modale pourrait changer
+    console.log("[DEOS V5.7] Enrichissement enregistrÃ© pour", eventKey);
+  }, 100);
+}
+
+/**
+ * Ajoute un sujet Ã  traiter pour un Ã©vÃ©nement externe
+ */
+function addExternalEventSubject(eventKey) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const subjectText = prompt("Ajouter un sujet Ã  traiter:");
+  
+  if (subjectText && subjectText.trim()) {
+    const newSubject = {
+      id: newId("subject"),
+      title: subjectText.trim(),
+      notes: "",
+      completed: false,
+      order: (enrichment.subjects || []).length
+    };
+    
+    if (!enrichment.subjects) enrichment.subjects = [];
+    enrichment.subjects.push(newSubject);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Met Ã  jour un sujet existant
+ */
+function updateExternalEventSubject(eventKey, subjectId, title, notes, completed) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const subject = (enrichment.subjects || []).find(s => s.id === subjectId);
+  
+  if (subject) {
+    if (title !== undefined) subject.title = title;
+    if (notes !== undefined) subject.notes = notes;
+    if (completed !== undefined) subject.completed = !!completed;
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Supprime un sujet
+ */
+function deleteExternalEventSubject(eventKey, subjectId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const idx = (enrichment.subjects || []).findIndex(s => s.id === subjectId);
+  
+  if (idx >= 0) {
+    enrichment.subjects.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Ajoute un lien utile
+ */
+function addExternalEventLink(eventKey) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const linkName = prompt("Nom du lien:");
+  
+  if (linkName && linkName.trim()) {
+    const linkUrl = prompt("URL du lien:");
+    
+    if (linkUrl && linkUrl.trim()) {
+      const newLink = {
+        id: newId("link"),
+        name: linkName.trim(),
+        url: linkUrl.trim(),
+        createdAt: new Date().toISOString()
+      };
+      
+      if (!enrichment.links) enrichment.links = [];
+      enrichment.links.push(newLink);
+      saveExternalEventEnrichment(eventKey, enrichment);
+      renderCockpit();
+    }
+  }
+}
+
+/**
+ * Supprime un lien
+ */
+function deleteExternalEventLink(eventKey, linkId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const idx = (enrichment.links || []).findIndex(l => l.id === linkId);
+  
+  if (idx >= 0) {
+    enrichment.links.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * Lie une action existante Ã  un Ã©vÃ©nement externe
+ */
+function linkActionToExternalEvent(eventKey, actionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const action = byId("actions", actionId);
+  
+  if (!action) return;
+  if (!enrichment.linkedActionIds) enrichment.linkedActionIds = [];
+  
+  // Ã‰viter les doublons
+  if (enrichment.linkedActionIds.includes(actionId)) return;
+  
+  enrichment.linkedActionIds.push(actionId);
+  saveExternalEventEnrichment(eventKey, enrichment);
+  console.log("[DEOS V5.7] Action", actionId, "linked to external event", eventKey);
+}
+
+/**
+ * DÃ©tache une action d'un Ã©vÃ©nement externe (sans supprimer l'action)
+ */
+function unlinkActionFromExternalEvent(eventKey, actionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  if (!enrichment.linkedActionIds) enrichment.linkedActionIds = [];
+  
+  const idx = enrichment.linkedActionIds.indexOf(actionId);
+  if (idx >= 0) {
+    enrichment.linkedActionIds.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * CrÃ©e une nouvelle action DEOS liÃ©e Ã  un Ã©vÃ©nement externe
+ */
+function createActionFromExternalEvent(eventKey, eventTitle) {
+  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+  if (!ev) return;
+  
+  const actionTitle = prompt("Titre de la nouvelle action:", `Ã€ propos de: ${eventTitle}`);
+  if (!actionTitle || !actionTitle.trim()) return;
+  
+  const newAction = {
+    id: newId("action"),
+    title: actionTitle.trim(),
+    link: eventTitle,
+    done: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  state.actions.push(newAction);
+  persist("actions");
+  linkActionToExternalEvent(eventKey, newAction.id);
+  addActivity("ðŸ“Œ Action crÃ©Ã©e", actionTitle, `LiÃ©e au rendez-vous: ${eventTitle}`, newAction.id);
+  renderCockpit();
+}
+
+/**
+ * Lie une dÃ©cision existante Ã  un Ã©vÃ©nement externe
+ */
+function linkDecisionToExternalEvent(eventKey, decisionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  const decision = byId("decisions", decisionId);
+  
+  if (!decision) return;
+  if (!enrichment.linkedDecisionIds) enrichment.linkedDecisionIds = [];
+  
+  // Ã‰viter les doublons
+  if (enrichment.linkedDecisionIds.includes(decisionId)) return;
+  
+  enrichment.linkedDecisionIds.push(decisionId);
+  saveExternalEventEnrichment(eventKey, enrichment);
+  console.log("[DEOS V5.7] Decision", decisionId, "linked to external event", eventKey);
+}
+
+/**
+ * DÃ©tache une dÃ©cision d'un Ã©vÃ©nement externe (sans supprimer la dÃ©cision)
+ */
+function unlinkDecisionFromExternalEvent(eventKey, decisionId) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  if (!enrichment.linkedDecisionIds) enrichment.linkedDecisionIds = [];
+  
+  const idx = enrichment.linkedDecisionIds.indexOf(decisionId);
+  if (idx >= 0) {
+    enrichment.linkedDecisionIds.splice(idx, 1);
+    saveExternalEventEnrichment(eventKey, enrichment);
+    renderCockpit();
+  }
+}
+
+/**
+ * CrÃ©e une nouvelle dÃ©cision DEOS liÃ©e Ã  un Ã©vÃ©nement externe
+ */
+function createDecisionFromExternalEvent(eventKey, eventTitle) {
+  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+  if (!ev) return;
+  
+  const decisionTitle = prompt("Titre de la nouvelle dÃ©cision:", `Ã€ propos de: ${eventTitle}`);
+  if (!decisionTitle || !decisionTitle.trim()) return;
+  
+  const newDecision = {
+    id: newId("decision"),
+    title: decisionTitle.trim(),
+    context: eventTitle,
+    status: "Ã€ valider",
+    priority: "normale",
+    owner: identityName(),
+    deadline: ev.date,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  state.decisions.push(newDecision);
+  persist("decisions");
+  linkDecisionToExternalEvent(eventKey, newDecision.id);
+  addActivity("âš–ï¸ DÃ©cision crÃ©Ã©e", decisionTitle, `LiÃ©e au rendez-vous: ${eventTitle}`, newDecision.id);
+  renderCockpit();
+}
+
+/**
+ * Marque un Ã©vÃ©nement comme source indisponible
+ * AppelÃ©e automatiquement lors d'une sync si l'Ã©vÃ©nement Google est supprimÃ©
+ */
+function markExternalEventSourceMissing(eventKey, missing = true) {
+  const enrichment = getExternalEventEnrichment(eventKey);
+  enrichment.sourceUnavailable = !!missing;
+  saveExternalEventEnrichment(eventKey, enrichment);
+  console.log("[DEOS V5.7] Event", eventKey, "marked as source unavailable:", missing);
+}
+
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
