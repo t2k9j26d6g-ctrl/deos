@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.8";
+﻿const DEOS_VERSION = "V5.10.1";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -80,9 +80,10 @@ let backupPreviewPayload = null;
 let backupPreviewSummary = null;
 let backupPreviewOpen = false;
 let agendaFormError = "";
+let currentView = "cockpit";
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
-const icons = { green: "??", orange: "??", red: "??" };
+const icons = { green: "🟢", orange: "🟠", red: "🔴" };
 
 const defaults = {
   performance_imports: [],
@@ -546,6 +547,18 @@ function ensureArray(value) {
   return String(value).split("\n").map(x => x.trim()).filter(Boolean);
 }
 
+function normalizeLinkedManagerIds(value) {
+  return [...new Set((value || []).map(String).map(x => x.trim()).filter(Boolean))];
+}
+
+function normalizeLinkedIdArray(value) {
+  return [...new Set(ensureArray(value).map(String).map(x => x.trim()).filter(Boolean))];
+}
+
+function sameId(a, b) {
+  return String(a) === String(b);
+}
+
 function ensureTimeline(value) {
   return ensureArray(value).map(item => typeof item === "string" ? { id: newId("event"), date: today(), title: item, detail: "" } : { id: item.id || newId("event"), date: item.date || today(), title: item.title || "Événement", detail: item.detail || "" });
 }
@@ -596,27 +609,27 @@ function normalizeMeetingPreparation(item) {
 
 function suggestLinkIcon(value = "") {
   const text = String(value || "").toLowerCase();
-  if (/gmail|mail|email|courriel/.test(text)) return "??";
-  if (/google drive|drive/.test(text)) return "??";
-  if (/\brh\b|ressources humaines|portail rh/.test(text)) return "??";
-  if (/tableau de bord|dashboard|kpi|performance/.test(text)) return "??";
-  if (/planning|agenda|calendrier/.test(text)) return "??";
-  if (/\bcse\b|social|dialogue/.test(text)) return "??";
-  if (/blink/.test(text)) return "??";
-  if (/appollo|apollo/.test(text)) return "??";
-  if (/temptation/.test(text)) return "??";
-  if (/signature/.test(text)) return "??";
-  if (/document|docs|pdf|fichier/.test(text)) return "??";
-  return "??";
+  if (/gmail|mail|email|courriel/.test(text)) return "📧";
+  if (/google drive|drive/.test(text)) return "📁";
+  if (/\brh\b|ressources humaines|portail rh/.test(text)) return "👥";
+  if (/tableau de bord|dashboard|kpi|performance/.test(text)) return "📊";
+  if (/planning|agenda|calendrier/.test(text)) return "📅";
+  if (/\bcse\b|social|dialogue/.test(text)) return "🤝";
+  if (/blink/.test(text)) return "💬";
+  if (/appollo|apollo/.test(text)) return "🧭";
+  if (/temptation/.test(text)) return "⏱️";
+  if (/signature/.test(text)) return "✍️";
+  if (/document|docs|pdf|fichier/.test(text)) return "📄";
+  return "🔗";
 }
 
 function repairEncodingText(value) {
   const fixes = [
-    ["\\u00f0\\u0178\\u0178\\u00a0", "??"], ["\\u00f0\\u0178\\u0178\\u00a2", "??"], ["\\u00f0\\u0178\\u0178", "??"],
-    ["\\u00f0\\u0178\\u017d\\u00af", "??"], ["\\u00f0\\u0178\\u201c\\u2026", "??"], ["\\u00f0\\u0178\\u2018\\u00a4", "??"],
-    ["\\u00f0\\u0178\\u201c\\u009d", "??"], ["\\u00f0\\u0178\\u201c\\u008d", "??"], ["\\u00f0\\u0178\\u201c\\u00a6", "??"],
-    ["\\u00f0\\u0178\\u201c\\u02c6", "??"], ["\\u00f0\\u0178\\u0161\\u00a9", "??"], ["\\u00f0\\u0178\\u201c\\u0152", "??"],
-    ["\\u00f0\\u0178\\u201c\\u201e", "??"], ["\\u00f0\\u0178\\u2022\\u02dc", "??"],
+    ["\\u00f0\\u0178\\u0178\\u00a0", "🟠"], ["\\u00f0\\u0178\\u0178\\u00a2", "🟢"], ["\\u00f0\\u0178\\u0178", "🟠"],
+    ["\\u00f0\\u0178\\u017d\\u00af", "🎯"], ["\\u00f0\\u0178\\u201c\\u2026", "📅"], ["\\u00f0\\u0178\\u2018\\u00a4", "👤"],
+    ["\\u00f0\\u0178\\u201c\\u009d", "📝"], ["\\u00f0\\u0178\\u201c\\u008d", "📍"], ["\\u00f0\\u0178\\u201c\\u00a6", "📦"],
+    ["\\u00f0\\u0178\\u201c\\u02c6", "📈"], ["\\u00f0\\u0178\\u0161\\u00a9", "🚩"], ["\\u00f0\\u0178\\u201c\\u0152", "📌"],
+    ["\\u00f0\\u0178\\u201c\\u201e", "📄"], ["\\u00f0\\u0178\\u2022\\u02dc", "🕘"],
     ["\\u00c3\\u20ac", "À"], ["\\u00c3\\u2030", "É"], ["\\u00c3\\u00a9", "é"], ["\\u00c3\\u00a8", "è"],
     ["\\u00c3\\u00aa", "ê"], ["\\u00c3\\u00ab", "ë"], ["\\u00c3\\u00a2", "â"], ["\\u00c3\\u00b4", "ô"],
     ["\\u00c3\\u00bb", "û"], ["\\u00c3\\u00b9", "ù"], ["\\u00c3\\u00a7", "ç"], ["\\u00c3\\u00ae", "î"],
@@ -669,6 +682,7 @@ function normalizeEntity(name, item) {
     const hasTime = Object.prototype.hasOwnProperty.call(raw, "time") && String(raw.time || "").trim() !== "";
     const allDay = raw.allDay === true || (!hasStartTime && !hasTime && raw.allDay !== false);
     const description = String(raw.description || raw.notes || raw.detail || "").trim();
+    const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(raw.linkedManagerIds).length ? ensureArray(raw.linkedManagerIds) : ensureArray(raw.linkedManagers));
     const merged = {
       ...raw,
       date: raw.date || localIsoDate(),
@@ -689,7 +703,8 @@ function normalizeEntity(name, item) {
       lastSyncedAt: raw.lastSyncedAt || "",
       createdAt: raw.createdAt || localIsoDate(),
       updatedAt: raw.updatedAt || localIsoDate(),
-      linkedManagers: ensureArray(raw.linkedManagers),
+      linkedManagerIds,
+      linkedManagers: linkedManagerIds,
       linkedProjects: ensureArray(raw.linkedProjects),
       linkedFolders: ensureArray(raw.linkedFolders)
     };
@@ -719,11 +734,11 @@ function normalizeCollection(name, data) {
 }
 
 function byId(name, id) {
-  return state[name].find(x => x.id === id);
+  return state[name].find(x => sameId(x.id, id));
 }
 
 function indexById(name, id) {
-  return state[name].findIndex(x => x.id === id);
+  return state[name].findIndex(x => sameId(x.id, id));
 }
 
 function addActivity(type, title, detail = "", entityId = "") {
@@ -776,6 +791,7 @@ async function init() {
   }
   document.getElementById("today").textContent = cockpitDateLabel(new Date());
   document.querySelectorAll(".nav").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
+  document.addEventListener("change", onAgendaFormSelectionChange);
   document.getElementById("searchInput").oninput = e => runSearch(e.target.value);
   if (restoreSuccessMessage) {
     setView("settings");
@@ -785,8 +801,9 @@ async function init() {
 }
 
 function setView(view) {
+  currentView = view;
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
-  const titles = { cockpit: "Cockpit décisionnel", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Activité", settings: "Paramètres" };
+  const titles = { cockpit: "Cockpit décisionnel", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
   document.getElementById("viewTitle").textContent = titles[view] || identity.appName;
   const views = { cockpit: renderCockpit, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
   if (views[view]) views[view]();
@@ -1151,7 +1168,7 @@ function completeCockpitPriority(id) {
   if (!p) return;
   p.done = true;
   persist("priorities");
-  addActivity("?? Priorité terminée", p.title, p.link || "", p.id);
+  addActivity("🎯 Priorité terminée", p.title, p.link || "", p.id);
   renderCockpit();
 }
 
@@ -1160,35 +1177,35 @@ function completeCockpitAction(id) {
   if (!a) return;
   a.done = true;
   persist("actions");
-  addActivity("? Action terminée", a.title, a.link || "", a.id);
+  addActivity("✅ Action terminée", a.title, a.link || "", a.id);
   renderCockpit();
 }
 
 function cockpitPriorityItem(p) {
-  return `<div class="item row"><div><strong>${icons[p.level] || "??"} ${esc(p.title)}</strong><span class="muted">${esc(p.due || "Pas d'échéance")}${p.link ? " · " + esc(p.link) : ""}${p.owner ? " · " + esc(p.owner) : ""}</span></div><div class="row-actions"><button class="secondary" onclick="completeCockpitPriority('${p.id}')">Terminer</button><button class="secondary" onclick="openLinkedFromPriority('${p.id}')">Ouvrir</button></div></div>`;
+  return `<div class="item row"><div><strong>${icons[p.level] || "🟠"} ${esc(p.title)}</strong><span class="muted">${esc(p.due || "Pas d'échéance")}${p.link ? " · " + esc(p.link) : ""}${p.owner ? " · " + esc(p.owner) : ""}</span></div><div class="row-actions"><button class="secondary" onclick="completeCockpitPriority('${p.id}')">Terminer</button><button class="secondary" onclick="openLinkedFromPriority('${p.id}')">Ouvrir</button></div></div>`;
 }
 
 function cockpitActionItem(a) {
   const due = daysUntil(a.due);
   const label = due === null ? "Critique sans échéance" : due < 0 ? `En retard de ${Math.abs(due)} j` : due === 0 ? "Aujourd'hui" : `Dans ${due} j`;
-  return `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(label)}${a.link ? " · " + esc(a.link) : ""}</span></div><div class="row-actions"><button class="secondary" onclick="completeCockpitAction('${a.id}')">Terminer</button><button class="secondary" onclick="openCockpitEntity('actions','${a.id}')">Ouvrir</button></div></div>`;
+  return `<div class="item row"><div><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(label)}${a.link ? " · " + esc(a.link) : ""}</span></div><div class="row-actions"><button class="secondary" onclick="completeCockpitAction('${a.id}')">Terminer</button><button class="secondary" onclick="openCockpitEntity('actions','${a.id}')">Ouvrir</button></div></div>`;
 }
 
 function cockpitAlertItem(a) {
-  return `<div class="item clickable alert-${esc(a.level)}" onclick="openCockpitEntity('${a.type}','${a.id}')"><strong>${a.level === "red" ? "??" : "??"} ${esc(a.title)}</strong><span class="muted">${esc(a.detail)}</span><span class="meta">${esc(a.type)}</span></div>`;
+  return `<div class="item clickable alert-${esc(a.level)}" onclick="openCockpitEntity('${a.type}','${a.id}')"><strong>${a.level === "red" ? "🔴" : "🟠"} ${esc(a.title)}</strong><span class="muted">${esc(a.detail)}</span><span class="meta">${esc(a.type)}</span></div>`;
 }
 
 function cockpitProjectItem(p) {
-  return `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${icons[p.status] || "??"} ${esc(p.name)}</strong><span class="muted">${Number(p.progress || 0)}% ? Prochaine étape : ${esc(p.next || "À définir")}</span><span class="meta">Échéance ${esc(p.deadline || "Non définie")} · Responsable ${esc(projectOwnerName(p) || "Non défini")}</span></div>`;
+  return `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${icons[p.status] || "🟠"} ${esc(p.name)}</strong><span class="muted">${Number(p.progress || 0)}% ? Prochaine étape : ${esc(p.next || "À définir")}</span><span class="meta">Échéance ${esc(p.deadline || "Non définie")} · Responsable ${esc(projectOwnerName(p) || "Non défini")}</span></div>`;
 }
 
 function cockpitDecisionItem(d) {
-  return `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${d.importance === "red" ? "??" : "??"} ${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}${d.reviewDate ? " ? Réexamen " + esc(d.reviewDate) : ""}</span></div>`;
+  return `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${d.importance === "red" ? "🔴" : "🟠"} ${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}${d.reviewDate ? " ? Réexamen " + esc(d.reviewDate) : ""}</span></div>`;
 }
 
 function cockpitFolderItem(f) {
   const stats = folderStats(f);
-  return `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${f.status === "red" || f.priorityLevel === "red" ? "??" : "??"} ${esc(f.name)}</strong><span class="muted">${esc(f.category)} · ${stats.openActions} action(s) ouverte(s) · ${stats.overdueActions} retard(s)</span><span class="meta">Échéance ${esc(stats.nextDue || f.deadline || "Non définie")}</span></div>`;
+  return `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${f.status === "red" || f.priorityLevel === "red" ? "🔴" : "🟠"} ${esc(f.name)}</strong><span class="muted">${esc(f.category)} · ${stats.openActions} action(s) ouverte(s) · ${stats.overdueActions} retard(s)</span><span class="meta">Échéance ${esc(stats.nextDue || f.deadline || "Non définie")}</span></div>`;
 }
 
 function openActivityTarget(id) {
@@ -1252,7 +1269,7 @@ function cockpitFavoriteLinks() {
   if (!favorites.length) {
     return `<div class="favorite-strip"><span class="empty compact-empty">Aucun favori — ajoutez-en depuis Liens utiles.</span><button class="secondary quick-link" onclick="setView('links')">Voir tous les liens</button></div>`;
   }
-  return `<div class="favorite-strip">${visible.map(link => `<button class="secondary quick-link" onclick="openExternalLink('${esc(link.id)}')"><span>${esc(link.icon || "??")}</span>${esc(link.name || "Lien")}</button>`).join("")}<button class="secondary quick-link" onclick="setView('links')">${hidden ? `Voir les ${hidden} autres` : "Voir tous les liens"}</button></div>`;
+  return `<div class="favorite-strip">${visible.map(link => `<button class="secondary quick-link" onclick="openExternalLink('${esc(link.id)}')"><span>${esc(link.icon || "🔗")}</span>${esc(link.name || "Lien")}</button>`).join("")}<button class="secondary quick-link" onclick="setView('links')">${hidden ? `Voir les ${hidden} autres` : "Voir tous les liens"}</button></div>`;
 }
 
 function futureMeetings() {
@@ -1303,7 +1320,7 @@ function agendaItems() {
   // [DEOS V5.6.5] DIAGNOSTIC: check for invalid dates
   const withInvalidDate = externalStored.filter(e => !e.date || typeof e.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.date));
   if (withInvalidDate.length > 0) {
-    console.warn("[DEOS AGENDA TRACE] ?? Events with invalid dates:", withInvalidDate.length);
+    console.warn("[DEOS AGENDA TRACE] [WARN] Events with invalid dates:", withInvalidDate.length);
     console.log("[DEOS AGENDA TRACE] Sample invalid:", withInvalidDate.slice(0, 3));
   }
   
@@ -1352,10 +1369,62 @@ function setAgendaFilter(filter) {
 }
 
 function agendaLinkedNames(a) {
-  const managers = state.managers.filter(m => (a.linkedManagers || []).includes(m.id)).map(m => m.name);
+  const managerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
+  const managers = state.managers.filter(m => managerIds.includes(String(m.id))).map(m => m.name);
   const projects = state.projects.filter(p => (a.linkedProjects || []).includes(p.id)).map(p => p.name);
   const folders = state.folders.filter(f => (a.linkedFolders || []).includes(f.id)).map(f => f.name);
   return [...managers, ...projects, ...folders].filter(Boolean).join(" · ");
+}
+
+function deosLinkBadge(type, name) {
+  const meta = {
+    folder: { icon: "📁", label: "Dossier" },
+    project: { icon: "🚀", label: "Projet" },
+    action: { icon: "✅", label: "Action" },
+    decision: { icon: "⚖️", label: "Décision" },
+    manager: { icon: "👤", label: "Manager" }
+  }[type] || { icon: "🔗", label: "Objet" };
+  return `<span class="deos-link-badge deos-link-badge--${type}"><span class="deos-link-badge__icon">${meta.icon}</span><span class="deos-link-badge__type">${meta.label}</span><span class="deos-link-badge__sep">·</span><span class="deos-link-badge__name">${esc(name || "Sans titre")}</span></span>`;
+}
+
+function deosLinkBadgesHtml(items) {
+  if (!items.length) return `<span class="muted">Aucun objet DEOS lié.</span>`;
+  return `<div class="deos-link-badge-list">${items.join("")}</div>`;
+}
+
+function agendaLinkedBadges(a) {
+  const item = a || {};
+  const managerIds = normalizeLinkedManagerIds(ensureArray(item.linkedManagerIds).length ? item.linkedManagerIds : ensureArray(item.linkedManagers));
+  const badges = [];
+  state.folders.filter(f => ensureArray(item.linkedFolders).includes(f.id)).forEach(f => badges.push(deosLinkBadge("folder", f.name)));
+  state.projects.filter(p => ensureArray(item.linkedProjects).includes(p.id)).forEach(p => badges.push(deosLinkBadge("project", p.name)));
+  state.managers.filter(m => managerIds.includes(String(m.id))).forEach(m => badges.push(deosLinkBadge("manager", m.name)));
+  return badges.length ? `<div class="deos-link-summary">${deosLinkBadgesHtml(badges)}</div>` : "";
+}
+
+function externalEventLinkedBadges(enrichment) {
+  const badges = [];
+  ensureArray(enrichment.linkedFolderIds).forEach(id => {
+    const item = byId("folders", id);
+    if (item) badges.push(deosLinkBadge("folder", item.name));
+  });
+  ensureArray(enrichment.linkedProjectIds).forEach(id => {
+    const item = byId("projects", id);
+    if (item) badges.push(deosLinkBadge("project", item.name));
+  });
+  ensureArray(enrichment.linkedActionIds).forEach(id => {
+    const item = byId("actions", id);
+    if (item) badges.push(deosLinkBadge("action", item.title));
+  });
+  ensureArray(enrichment.linkedDecisionIds).forEach(id => {
+    const item = byId("decisions", id);
+    if (item) badges.push(deosLinkBadge("decision", item.title));
+  });
+  normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)).forEach(id => {
+    const item = byId("managers", id);
+    if (item) badges.push(deosLinkBadge("manager", item.name));
+  });
+  return deosLinkBadgesHtml(badges);
 }
 
 function agendaItem(a) {
@@ -1375,7 +1444,7 @@ function agendaItem(a) {
   const subjectCount = ensureArray(prep?.ideas).length + ensureArray(prep?.agendaTopics).length;
   const subjectBadge = subjectCount ? ` · <span class="subject-count">📋 ${subjectCount}</span>` : "";
   const alert = daysUntil(a.date) !== null && daysUntil(a.date) >= 0 && daysUntil(a.date) <= 2 && status === "À préparer" ? `<small class="prep-alert">Réunion à préparer sous 48 h</small>` : "";
-  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${agendaLinkedBadges(a)}${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function agendaCompact() {
@@ -1394,11 +1463,18 @@ function agendaLinkedList(items) {
 }
 
 function managerAgendaList(m) {
-  return agendaLinkedList(state.agenda.filter(a => (a.linkedManagers || []).includes(m.id)));
+  return agendaLinkedList(state.agenda.filter(a => {
+    const managerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
+    return managerIds.includes(String(m.id));
+  }));
 }
 
 function managerMeetingPreparationsList(m) {
-  const linked = state.meetingPreparations.filter(p => (p.linkedManagers || []).includes(m.id) || (byId("agenda", p.agendaId)?.linkedManagers || []).includes(m.id));
+  const linked = state.meetingPreparations.filter(p => {
+    const agenda = byId("agenda", p.agendaId);
+    const agendaManagerIds = normalizeLinkedManagerIds(ensureArray(agenda?.linkedManagerIds).length ? agenda.linkedManagerIds : ensureArray(agenda?.linkedManagers));
+    return (p.linkedManagers || []).includes(m.id) || agendaManagerIds.includes(String(m.id));
+  });
   return linked.map(p => {
     const a = byId("agenda", p.agendaId) || {};
     const start = agendaStartTime(a);
@@ -1424,8 +1500,12 @@ function projectMeetingPreparationsList(project) {
 function openAgendaModal(id = "") {
   agendaEditId = id;
   agendaModalOpen = true;
+  const selected = id ? byId("agenda", id) : null;
+  console.log("[DEOS MANAGER DEBUG] manual open modal managers list", state.managers.map(m => ({ id: m.id, idType: typeof m.id, name: m.name })));
+  console.log("[DEOS MANAGER DEBUG] manual open modal event manager ids", normalizeLinkedManagerIds(ensureArray(selected?.linkedManagerIds).length ? selected.linkedManagerIds : ensureArray(selected?.linkedManagers)));
   renderCockpit();
   toggleAgendaTimeFields();
+  renderAgendaFormSelectedBadges();
 }
 
 function closeAgendaModal() {
@@ -1437,6 +1517,7 @@ function closeAgendaModal() {
 
 function agendaForm() {
   const a = agendaEditId ? byId("agenda", agendaEditId) : null;
+  const selectedManagerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
   const dateValue = esc(a?.date || localIsoDate());
   const allDayChecked = agendaIsAllDay(a) ? "checked" : "";
   const startValue = esc(a?.startTime || a?.time || "");
@@ -1451,9 +1532,30 @@ function agendaForm() {
       <input id="agLocation" value="${esc(a?.location || "")}" placeholder="Lieu">
       <textarea id="agNotes" class="full" placeholder="Notes">${esc(a?.notes || a?.detail || "")}</textarea>
     </div>
-    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, a?.linkedManagers || [], m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
+    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, selectedManagerIds, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
+    <div class="deos-link-summary"><strong>Objets DEOS sélectionnés</strong><div id="agLinkedSummary">${deosLinkBadgesHtml([])}</div></div>
     <div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div>
   </div>`;
+}
+
+function agendaFormSelectedBadgeItems() {
+  const folders = state.folders.filter(f => checkedValues("agFolders").includes(f.id)).map(f => deosLinkBadge("folder", f.name));
+  const projects = state.projects.filter(p => checkedValues("agProjects").includes(p.id)).map(p => deosLinkBadge("project", p.name));
+  const selectedManagerIds = normalizeLinkedManagerIds(checkedValues("agManagers"));
+  const managers = state.managers.filter(m => selectedManagerIds.includes(String(m.id))).map(m => deosLinkBadge("manager", m.name));
+  return [...folders, ...projects, ...managers];
+}
+
+function renderAgendaFormSelectedBadges() {
+  const root = document.getElementById("agLinkedSummary");
+  if (!root) return;
+  root.innerHTML = deosLinkBadgesHtml(agendaFormSelectedBadgeItems());
+}
+
+function onAgendaFormSelectionChange(event) {
+  if (!agendaModalOpen) return;
+  const checkList = event.target?.closest?.("#agManagers, #agProjects, #agFolders");
+  if (checkList) renderAgendaFormSelectedBadges();
 }
 
 function agendaModal() {
@@ -1464,6 +1566,9 @@ function agendaModal() {
 
 function openExternalEventModal(externalId) {
   googleExternalEventModalId = externalId || "";
+  const enrichment = getExternalEventEnrichment(googleExternalEventModalId);
+  console.log("[DEOS MANAGER DEBUG] google open modal managers list", state.managers.map(m => ({ id: m.id, idType: typeof m.id, name: m.name })));
+  console.log("[DEOS MANAGER DEBUG] google open modal linkedManagerIds before render", normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)));
   renderCockpit();
 }
 
@@ -1606,6 +1711,7 @@ function externalEventModal() {
           <label style="font-size:12px;color:#64748b;font-weight:500">🔗 Éléments DEOS liés</label>
         </div>
         <div style="font-size:11px;color:#94a3b8;margin-bottom:12px">Reliez ce rendez-vous aux dossiers, projets, actions, décisions et managers concernés.</div>
+        <div class="deos-link-summary"><strong>Objets DEOS liés</strong>${externalEventLinkedBadges(enrichment)}</div>
         
         <!-- Dossiers -->
         <div style="margin-bottom:12px">
@@ -1615,7 +1721,7 @@ function externalEventModal() {
           <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
             <select id="folderSelect" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;flex:1;font-size:13px">
               <option value="">Sélectionner un dossier...</option>
-              ${state.folders.filter(f => !(enrichment.linkedFolderIds || []).includes(f.id)).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("")}
+              ${state.folders.filter(f => !normalizeLinkedIdArray(enrichment.linkedFolderIds).includes(String(f.id))).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("")}
             </select>
             <button class="icon-btn" type="button" onclick="linkObjectToExternalEvent('folder', document.getElementById('folderSelect').value)" style="padding:6px 12px;font-size:12px;white-space:nowrap">Ajouter</button>
           </div>
@@ -1638,7 +1744,7 @@ function externalEventModal() {
           <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
             <select id="projectSelect" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;flex:1;font-size:13px">
               <option value="">Sélectionner un projet...</option>
-              ${state.projects.filter(p => !(enrichment.linkedProjectIds || []).includes(p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}
+              ${state.projects.filter(p => !normalizeLinkedIdArray(enrichment.linkedProjectIds).includes(String(p.id))).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}
             </select>
             <button class="icon-btn" type="button" onclick="linkObjectToExternalEvent('project', document.getElementById('projectSelect').value)" style="padding:6px 12px;font-size:12px;white-space:nowrap">Ajouter</button>
           </div>
@@ -1661,7 +1767,7 @@ function externalEventModal() {
           <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
             <select id="managerSelect" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;flex:1;font-size:13px">
               <option value="">Sélectionner un manager...</option>
-              ${state.managers.filter(m => !(enrichment.linkedManagerIds || []).includes(m.id)).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}
+              ${state.managers.filter(m => !normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)).includes(String(m.id))).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}
             </select>
             <button class="icon-btn" type="button" onclick="linkObjectToExternalEvent('manager', document.getElementById('managerSelect').value)" style="padding:6px 12px;font-size:12px;white-space:nowrap">Ajouter</button>
           </div>
@@ -1732,7 +1838,7 @@ function saveMeetingSubjectQuick() {
   p.ideas.push({ id: newId("idea"), text, createdAt: new Date().toLocaleString("fr-FR"), author: identityName(), category: document.getElementById("msCategory")?.value || "Sujet", importance: document.getElementById("msImportance")?.value || "normale", confidentiality: "partageable", status: "À traiter", conclusion: "" });
   p.status = p.status === "À préparer" ? "Préparation en cours" : p.status;
   persist("meetingPreparations");
-  addActivity("?? Sujet réunion", a.title, text, p.id);
+  addActivity("📝 Sujet réunion", a.title, text, p.id);
   meetingSubjectModalAgendaId = null;
   renderCockpit();
 }
@@ -1772,6 +1878,9 @@ function readAgendaForm(existing = {}) {
       }
     }
   }
+  const linkedManagerIds = normalizeLinkedManagerIds(checkedValues("agManagers"));
+  console.log("[DEOS MANAGER DEBUG] manual selected manager ids before save", linkedManagerIds, linkedManagerIds.map(id => typeof id));
+  console.log("[DEOS MANAGER DEBUG] manual event object before save", existing);
   const data = {
     ...existing,
     date: date || localIsoDate(),
@@ -1784,10 +1893,12 @@ function readAgendaForm(existing = {}) {
     notes: document.getElementById("agNotes").value.trim(),
     detail: document.getElementById("agNotes").value.trim(),
     allDay,
-    linkedManagers: checkedValues("agManagers"),
+    linkedManagerIds,
+    linkedManagers: linkedManagerIds,
     linkedProjects: checkedValues("agProjects"),
     linkedFolders: checkedValues("agFolders")
   };
+  console.log("[DEOS MANAGER DEBUG] manual event payload to save", data);
   agendaFormError = "";
   return data;
 }
@@ -1796,9 +1907,10 @@ function addAgenda() {
   const data = readAgendaForm({ id: newId("agenda"), createdAt: localIsoDate(), source: "manual", externalId: "", calendarId: "", syncStatus: "local", lastSyncedAt: "" });
   if (!data) return;
   state.agenda.push(data);
+  console.log("[DEOS MANAGER DEBUG] manual stored new event", data);
   persist("agenda");
   ensureMeetingPreparation(data.id);
-  addActivity("?? Agenda", data.title, `${data.date} ${agendaStartTime(data)}`, data.id);
+  addActivity("📅 Agenda", data.title, `${data.date} ${agendaStartTime(data)}`, data.id);
   agendaFilter = data.date === localIsoDate() ? "today" : agendaFilter;
   agendaModalOpen = false;
   agendaEditId = "";
@@ -1815,10 +1927,11 @@ function saveAgenda() {
   const data = readAgendaForm(a);
   if (!data) return;
   Object.assign(a, data);
+  console.log("[DEOS MANAGER DEBUG] manual stored updated event", a);
   a.updatedAt = localIsoDate();
   persist("agenda");
   syncMeetingPreparationLinks(a.id);
-  addActivity("?? Agenda modifié", a.title, `${a.date} ${a.startTime}`, a.id);
+  addActivity("📅 Agenda modifié", a.title, `${a.date} ${a.startTime}`, a.id);
   agendaEditId = "";
   agendaModalOpen = false;
   renderCockpit();
@@ -1836,7 +1949,7 @@ function deleteAgenda(id) {
   state.agenda.splice(i, 1);
   persist("agenda");
   persist("meetingPreparations");
-  addActivity("?? Agenda supprimé", title);
+  addActivity("📅 Agenda supprimé", title);
   renderCockpit();
 }
 
@@ -1851,7 +1964,8 @@ function syncMeetingPreparationLinks(agendaId) {
   const a = byId("agenda", agendaId);
   const p = meetingPrepForAgenda(agendaId);
   if (!a || !p) return;
-  p.linkedManagers = [...new Set([...(p.linkedManagers || []), ...(a.linkedManagers || [])])];
+  const agendaManagerIds = normalizeLinkedManagerIds(ensureArray(a.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a.linkedManagers));
+  p.linkedManagers = [...new Set([...(p.linkedManagers || []), ...agendaManagerIds])];
   p.linkedProjects = [...new Set([...(p.linkedProjects || []), ...(a.linkedProjects || [])])];
   p.linkedFolders = [...new Set([...(p.linkedFolders || []), ...(a.linkedFolders || [])])];
   persist("meetingPreparations");
@@ -1860,6 +1974,7 @@ function syncMeetingPreparationLinks(agendaId) {
 function ensureMeetingPreparation(agendaId) {
   const a = byId("agenda", agendaId);
   if (!a) return null;
+  const agendaManagerIds = normalizeLinkedManagerIds(ensureArray(a.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a.linkedManagers));
   let p = meetingPrepForAgenda(agendaId);
   if (!p) {
     p = normalizeMeetingPreparation({
@@ -1867,7 +1982,7 @@ function ensureMeetingPreparation(agendaId) {
       agendaId,
       status: "À préparer",
       template: a.type || "",
-      linkedManagers: a.linkedManagers || [],
+      linkedManagers: agendaManagerIds,
       linkedProjects: a.linkedProjects || [],
       linkedFolders: a.linkedFolders || []
     });
@@ -2015,7 +2130,7 @@ function addPrepIdea(id) {
   if (!p || !text) return;
   p.ideas.push({ id: newId("idea"), text, createdAt: new Date().toLocaleString("fr-FR"), author: identityName(), category: document.getElementById("piCategory").value, importance: document.getElementById("piImportance").value, confidentiality: document.getElementById("piConf").value, managerId: document.getElementById("piManager").value, projectId: document.getElementById("piProject").value, folderId: document.getElementById("piFolder").value });
   p.status = p.status === "À préparer" ? "Préparation en cours" : p.status;
-  addActivity("?? Sujet réunion", byId("agenda", p.agendaId)?.title || "Réunion", text, p.id);
+  addActivity("📝 Sujet réunion", byId("agenda", p.agendaId)?.title || "Réunion", text, p.id);
   savePrepAndOpen(p);
 }
 
@@ -2394,11 +2509,11 @@ function renderCockpit() {
 
 function priorityItem(p) {
   const folders = state.folders.filter(f => ensureArray(p.linkedFolders).includes(f.id)).map(f => f.name).join(" · ");
-  return `<div class="item row"><div><strong>${icons[p.level] || "??"} ${esc(p.title)}</strong><span class="muted">${esc(p.due || "Pas d'échéance")}${p.link ? " · " + esc(p.link) : ""}${p.owner ? " · " + esc(p.owner) : ""}${folders ? " · " + esc(folders) : ""}</span><span class="meta">ID ${esc(p.id)}</span></div><div class="row-actions"><button class="secondary" onclick="completePriority('${p.id}')">Terminer</button><button class="danger" onclick="deletePriority('${p.id}')">Supprimer</button></div></div>`;
+  return `<div class="item row"><div><strong>${icons[p.level] || "🟠"} ${esc(p.title)}</strong><span class="muted">${esc(p.due || "Pas d'échéance")}${p.link ? " · " + esc(p.link) : ""}${p.owner ? " · " + esc(p.owner) : ""}${folders ? " · " + esc(folders) : ""}</span><span class="meta">ID ${esc(p.id)}</span></div><div class="row-actions"><button class="secondary" onclick="completePriority('${p.id}')">Terminer</button><button class="danger" onclick="deletePriority('${p.id}')">Supprimer</button></div></div>`;
 }
 
 function renderPriorities() {
-  appHtml(`<div class="card hero"><h2>?? Priorités V5</h2><p class="muted">La priorité focalise : identifiez ici les sujets qui nécessitent votre attention immédiate.</p></div><div class="card"><h2>Nouvelle priorité</h2><div class="form-grid"><input id="pTitle" placeholder="Titre" class="full"><input id="pDue" placeholder="Échéance"><input id="pLink" placeholder="Lien"><input id="pOwner" placeholder="Responsable"><select id="pLevel"><option value="green">?? Normal</option><option value="orange" selected>?? Important</option><option value="red">?? Urgent</option></select><textarea id="pImpact" class="full" placeholder="Impact attendu"></textarea></div><div class="manager-links"><label>Dossiers liés</label>${folderSelect("pFolders")}</div><button class="action" onclick="addPriority()">Ajouter</button></div><div class="grid two"><div class="card"><h2>Actives</h2>${state.priorities.filter(p => !p.done).map(priorityItem).join("") || `<div class="empty">Aucune priorité active.</div>`}</div><div class="card"><h2>Terminées</h2>${state.priorities.filter(p => p.done).map(priorityItem).join("") || `<div class="empty">Aucune priorité terminée.</div>`}</div></div>`);
+  appHtml(`<div class="card hero"><h2>🎯 Priorités V5</h2><p class="muted">La priorité focalise : identifiez ici les sujets qui nécessitent votre attention immédiate.</p></div><div class="card"><h2>Nouvelle priorité</h2><div class="form-grid"><input id="pTitle" placeholder="Titre" class="full"><input id="pDue" placeholder="Échéance"><input id="pLink" placeholder="Lien"><input id="pOwner" placeholder="Responsable"><select id="pLevel"><option value="green">🟢 Normal</option><option value="orange" selected>🟠 Important</option><option value="red">🔴 Urgent</option></select><textarea id="pImpact" class="full" placeholder="Impact attendu"></textarea></div><div class="manager-links"><label>Dossiers liés</label>${folderSelect("pFolders")}</div><button class="action" onclick="addPriority()">Ajouter</button></div><div class="grid two"><div class="card"><h2>Actives</h2>${state.priorities.filter(p => !p.done).map(priorityItem).join("") || `<div class="empty">Aucune priorité active.</div>`}</div><div class="card"><h2>Terminées</h2>${state.priorities.filter(p => p.done).map(priorityItem).join("") || `<div class="empty">Aucune priorité terminée.</div>`}</div></div>`);
 }
 
 function addPriority() {
@@ -2407,7 +2522,7 @@ function addPriority() {
   const p = { id: newId("priority"), title, due: document.getElementById("pDue").value.trim(), link: document.getElementById("pLink").value.trim(), owner: document.getElementById("pOwner").value.trim(), impact: document.getElementById("pImpact").value.trim(), level: document.getElementById("pLevel").value, done: false, linkedFolders: checkedValues("pFolders") };
   state.priorities.unshift(p);
   persist("priorities");
-  addActivity("?? Priorité", p.title, p.due || p.link, p.id);
+  addActivity("🎯 Priorité", p.title, p.due || p.link, p.id);
   renderPriorities();
 }
 
@@ -2416,7 +2531,7 @@ function completePriority(id) {
   if (!p) return;
   p.done = true;
   persist("priorities");
-  addActivity("?? Priorité terminée", p.title, p.link || "", p.id);
+  addActivity("🎯 Priorité terminée", p.title, p.link || "", p.id);
   renderPriorities();
 }
 
@@ -2426,7 +2541,7 @@ function deletePriority(id) {
   const t = state.priorities[i].title;
   state.priorities.splice(i, 1);
   persist("priorities");
-  addActivity("?? Priorité supprimée", t);
+  addActivity("🎯 Priorité supprimée", t);
   renderPriorities();
 }
 
@@ -2965,7 +3080,7 @@ function folderManagersList(items, folder) {
 
 function folderActionsList(items, folderId) {
   const sorted = [...items].sort((a, b) => Number(Boolean(a.done)) - Number(Boolean(b.done)) || (daysUntil(a.due) ?? 9999) - (daysUntil(b.due) ?? 9999) || levelRank(a.level || "orange") - levelRank(b.level || "orange"));
-  return sorted.map(a => `<div class="item row"><div class="clickable" onclick="setView('actions')"><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.priorityLevel || a.level || "À suivre")} · ${esc(a.owner || "")}</span><span class="meta">Échéance ${esc(a.due || "Non définie")}</span></div><button class="secondary" onclick="completeFolderAction('${a.id}','${folderId}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || folderEmpty(folderId, "action", "action");
+  return sorted.map(a => `<div class="item row"><div class="clickable" onclick="setView('actions')"><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.priorityLevel || a.level || "À suivre")} · ${esc(a.owner || "")}</span><span class="meta">Échéance ${esc(a.due || "Non définie")}</span></div><button class="secondary" onclick="completeFolderAction('${a.id}','${folderId}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || folderEmpty(folderId, "action", "action");
 }
 
 function completeFolderAction(actionId, folderId) {
@@ -3015,7 +3130,7 @@ function actionItem(a) {
   const folders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id)).map(f => f.name).join(" · ");
   const projects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
   const decisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
-  return `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="item row"><div><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function addAction() {
@@ -3073,7 +3188,7 @@ function optionLines(items, currentIds, labelFn) {
 
 function linkedActionsList(m) {
   const linked = state.actions.filter(a => (m.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedManagerAction('${m.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedManagerAction('${m.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
 }
 
 function linkedProjectsList(m) {
@@ -3159,7 +3274,7 @@ function addManager() {
   const m = { id: newId("manager"), name, role: document.getElementById("mRole").value.trim(), status: document.getElementById("mStatus").value, note: document.getElementById("mNote").value.trim(), priority: document.getElementById("mPriority").value.trim(), lastInterview: "", nextMeeting: document.getElementById("mNext").value.trim(), objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedProjects: [], linkedDecisions: [], events: [], directorNotes: [] };
   state.managers.push(m);
   persist("managers");
-  addActivity("?? Manager", m.name, m.role, m.id);
+  addActivity("👤 Manager", m.name, m.role, m.id);
   renderManagers();
 }
 
@@ -3189,7 +3304,7 @@ function saveManager(id) {
   if (i < 0) return;
   state.managers[i] = { ...state.managers[i], name: document.getElementById("emName").value.trim(), role: document.getElementById("emRole").value.trim(), status: document.getElementById("emStatus").value, note: document.getElementById("emNote").value.trim(), priority: document.getElementById("emPriority").value.trim(), lastInterview: document.getElementById("emLast").value.trim(), nextMeeting: document.getElementById("emNext").value.trim(), objectives: lines("emObjectives"), strengths: lines("emStrengths"), watchPoints: lines("emWatch"), actions: lines("emActions"), linkedActions: idsFromTextarea("emLinkedActions").filter(actionId => byId("actions", actionId)), linkedProjects: idsFromTextarea("emLinkedProjects").filter(projectId => byId("projects", projectId)), linkedDecisions: idsFromTextarea("emLinkedDecisions").filter(decisionId => byId("decisions", decisionId)), linkedFolders: checkedValues("emFolders") };
   persist("managers");
-  addActivity("?? Manager modifié", state.managers[i].name, state.managers[i].role, id);
+  addActivity("👤 Manager modifié", state.managers[i].name, state.managers[i].role, id);
   openManager(id);
 }
 
@@ -3200,7 +3315,7 @@ function saveManagerNote(id) {
   if (!content || !content.trim()) return;
   m.directorNotes.unshift({ id: newId("note"), date: new Date().toLocaleString("fr-FR"), content: content.trim() });
   persist("managers");
-  addActivity("?? Note manager", m.name, content.trim(), id);
+  addActivity("📝 Note manager", m.name, content.trim(), id);
   openManager(id);
 }
 
@@ -3213,7 +3328,7 @@ function saveManagerEvent(id) {
   const date = document.getElementById("meDate").value.trim() || new Date().toLocaleString("fr-FR");
   m.events.unshift({ id: newId("event"), date, title: title.trim(), detail: detail.trim() });
   persist("managers");
-  addActivity("?? Événement manager", m.name, title.trim(), id);
+  addActivity("📍 Événement manager", m.name, title.trim(), id);
   openManager(id);
 }
 
@@ -3233,7 +3348,7 @@ function deleteManager(id) {
   const t = state.managers[i].name;
   state.managers.splice(i, 1);
   persist("managers");
-  addActivity("?? Manager supprimé", t);
+  addActivity("👤 Manager supprimé", t);
   renderManagers();
 }
 
@@ -3260,13 +3375,13 @@ function addProject() {
   const p = { id: newId("project"), name, next: document.getElementById("prNext").value.trim(), owner, ownerId, deadline: document.getElementById("prDeadline").value.trim(), progress: Number(document.getElementById("prProgress").value || 0), status: document.getElementById("prStatus").value, objective: "", linkedManagers: [], linkedFolders: checkedValues("prFolders"), launchDate: "", priorityLevel: "orange", context: "", decisions: "", actions: "", risks: "", milestones: [], linkedActions: [], linkedDecisions: [], linkedDocuments: [], events: [], directorNotes: [] };
   state.projects.push(p);
   persist("projects");
-  addActivity("?? Projet", p.name, p.next, p.id);
+  addActivity("📦 Projet", p.name, p.next, p.id);
   renderProjects();
 }
 
 function checkboxList(id, items, selectedIds, labelFn) {
-  const selected = new Set(selectedIds || []);
-  return `<div id="${id}" class="check-list">${items.map(item => `<label class="check-row"><input type="checkbox" value="${esc(item.id)}" ${selected.has(item.id) ? "checked" : ""}> <span>${esc(cleanDisplayLabel(labelFn(item)))}</span></label>`).join("") || `<div class="empty">Aucune donnée disponible.</div>`}</div>`;
+  const selected = new Set((selectedIds || []).map(x => String(x)));
+  return `<div id="${id}" class="check-list">${items.map(item => `<label class="check-row"><input type="checkbox" value="${esc(String(item.id))}" ${selected.has(String(item.id)) ? "checked" : ""}> <span>${esc(cleanDisplayLabel(labelFn(item)))}</span></label>`).join("") || `<div class="empty">Aucune donnée disponible.</div>`}</div>`;
 }
 
 function checkedValues(id) {
@@ -3282,7 +3397,7 @@ function projectManagersList(p) {
 
 function projectActionsList(p) {
   const linked = state.actions.filter(a => (p.linkedActions || []).includes(a.id) || ensureArray(a.linkedProjects).includes(p.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedProjectAction('${p.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedProjectAction('${p.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
 }
 
 function projectDecisionsList(p) {
@@ -3343,7 +3458,7 @@ function saveProject(id) {
   const owner = byId("managers", ownerId)?.name || "";
   state.projects[i] = { ...state.projects[i], name: document.getElementById("epName").value.trim(), status: document.getElementById("epStatus").value, progress: Number(document.getElementById("epProgress").value || 0), owner, ownerId, launchDate: document.getElementById("epLaunch").value.trim(), deadline: document.getElementById("epDeadline").value.trim(), priorityLevel: document.getElementById("epPriority").value, next: document.getElementById("epNext").value.trim(), objective: document.getElementById("epObjective").value.trim(), context: document.getElementById("epContext").value.trim(), risks: document.getElementById("epRisks").value.trim(), decisions: document.getElementById("epDecisionsNote").value.trim(), actions: document.getElementById("epActionsNote").value.trim(), linkedManagers: checkedValues("epManagers"), linkedActions: checkedValues("epActionsLinked"), linkedDecisions: checkedValues("epDecisionsLinked"), linkedDocuments: checkedValues("epDocumentsLinked"), linkedFolders: checkedValues("epFolders") };
   persist("projects");
-  addActivity("?? Projet modifié", state.projects[i].name, state.projects[i].next, id);
+  addActivity("📦 Projet modifié", state.projects[i].name, state.projects[i].next, id);
   openProject(id);
 }
 
@@ -3352,7 +3467,7 @@ function updateProjectProgress(id) {
   if (!p) return;
   p.progress = Math.max(0, Math.min(100, Number(document.getElementById("quickProgress").value || 0)));
   persist("projects");
-  addActivity("?? Avancement projet", p.name, `${p.progress}%`, id);
+  addActivity("📈 Avancement projet", p.name, `${p.progress}%`, id);
   openProject(id);
 }
 
@@ -3363,7 +3478,7 @@ function saveProjectMilestone(id) {
   if (!title) return;
   p.milestones.unshift({ id: newId("mile"), title, date: document.getElementById("pmDate").value.trim(), status: document.getElementById("pmStatus").value.trim() || "À suivre" });
   persist("projects");
-  addActivity("?? Jalon projet", p.name, title, id);
+  addActivity("🚩 Jalon projet", p.name, title, id);
   openProject(id);
 }
 
@@ -3374,7 +3489,7 @@ function saveProjectNote(id) {
   if (!content) return;
   p.directorNotes.unshift({ id: newId("note"), date: new Date().toLocaleString("fr-FR"), content });
   persist("projects");
-  addActivity("?? Note projet", p.name, content, id);
+  addActivity("📝 Note projet", p.name, content, id);
   openProject(id);
 }
 
@@ -3385,7 +3500,7 @@ function saveProjectEvent(id) {
   if (!title) return;
   p.events.unshift({ id: newId("event"), date: document.getElementById("peDate").value.trim() || new Date().toLocaleString("fr-FR"), title, detail: document.getElementById("peDetail").value.trim() });
   persist("projects");
-  addActivity("?? Événement projet", p.name, title, id);
+  addActivity("📍 Événement projet", p.name, title, id);
   openProject(id);
 }
 
@@ -3405,7 +3520,7 @@ function deleteProject(id) {
   const t = state.projects[i].name;
   state.projects.splice(i, 1);
   persist("projects");
-  addActivity("?? Projet supprimé", t);
+  addActivity("📦 Projet supprimé", t);
   renderProjects();
 }
 
@@ -3427,7 +3542,7 @@ function decisionProjectsList(d) {
 
 function decisionActionsList(d) {
   const linked = state.actions.filter(a => (d.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedDecisionAction('${d.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedDecisionAction('${d.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
 }
 
 function decisionDocumentsList(d) {
@@ -3474,7 +3589,7 @@ function addDecision() {
   state.decisions.unshift(d);
   syncDecisionBacklinks(d);
   persist("decisions");
-  addActivity("?? Décision", d.title, d.context, d.id);
+  addActivity("📌 Décision", d.title, d.context, d.id);
   renderDecisions();
 }
 
@@ -3515,7 +3630,7 @@ function saveDecision(id) {
   state.decisions[i] = { ...state.decisions[i], title: document.getElementById("edTitle").value.trim(), date: document.getElementById("edDate").value.trim(), status: document.getElementById("edStatus").value, importance: document.getElementById("edImportance").value, owner: document.getElementById("edOwner").value.trim(), reviewDate: document.getElementById("edReview").value.trim(), tags: splitTags(document.getElementById("edTags").value), context: document.getElementById("edContext").value.trim(), problem: document.getElementById("edProblem").value.trim(), decision: document.getElementById("edDecisionText").value.trim(), rationale: document.getElementById("edRationale").value.trim(), alternatives: document.getElementById("edAlternatives").value.trim(), impacts: document.getElementById("edImpacts").value.trim(), impact: document.getElementById("edImpacts").value.trim(), risks: document.getElementById("edRisks").value.trim(), nextStep: document.getElementById("edNext").value.trim(), linkedManagers: checkedValues("edManagers"), linkedProjects: checkedValues("edProjects"), linkedActions: checkedValues("edActions"), linkedDocuments: checkedValues("edDocuments"), linkedFolders: checkedValues("edFolders") };
   persist("decisions");
   syncDecisionBacklinks(state.decisions[i]);
-  addActivity("?? Décision modifiée", state.decisions[i].title, state.decisions[i].nextStep, id);
+  addActivity("📌 Décision modifiée", state.decisions[i].title, state.decisions[i].nextStep, id);
   openDecision(id);
 }
 
@@ -3526,7 +3641,7 @@ function saveDecisionNote(id) {
   if (!content) return;
   d.directorNotes.unshift({ id: newId("note"), date: new Date().toLocaleString("fr-FR"), content });
   persist("decisions");
-  addActivity("?? Note décision", d.title, content, id);
+  addActivity("📝 Note décision", d.title, content, id);
   openDecision(id);
 }
 
@@ -3537,7 +3652,7 @@ function saveDecisionEvent(id) {
   if (!title) return;
   d.events.unshift({ id: newId("event"), date: document.getElementById("deDate").value.trim() || new Date().toLocaleString("fr-FR"), title, detail: document.getElementById("deDetail").value.trim() });
   persist("decisions");
-  addActivity("?? Événement décision", d.title, title, id);
+  addActivity("📍 Événement décision", d.title, title, id);
   openDecision(id);
 }
 
@@ -3591,7 +3706,7 @@ function deleteDecision(id) {
   persist("decisions");
   persist("managers");
   persist("projects");
-  addActivity("?? Décision supprimée", t);
+  addActivity("📌 Décision supprimée", t);
   renderDecisions();
 }
 
@@ -3612,7 +3727,7 @@ function addJournal() {
   const j = { id: newId("journal"), title, date: document.getElementById("jDate").value.trim() || today(), entryType: document.getElementById("jType").value, summary: document.getElementById("jSummary").value.trim(), content: document.getElementById("jSummary").value.trim(), facts: "", analysis: "", decisionsText: "", actionsText: "", linkedManagers: [], linkedProjects: checkedValues("jProjects"), linkedDecisions: [], linkedActions: [], linkedDocuments: [], watchPoints: "", nextSteps: "", notes: "", events: [], tags: splitTags(document.getElementById("jTags").value), linkedFolders: checkedValues("jFolders"), mood: "", links: "" };
   state.journal.unshift(j);
   persist("journal");
-  addActivity("?? Journal", j.title, j.summary, j.id);
+  addActivity("📝 Journal", j.title, j.summary, j.id);
   openJournal(j.id);
 }
 
@@ -3633,7 +3748,7 @@ function journalDecisionsList(j) {
 
 function journalActionsList(j) {
   const linked = state.actions.filter(a => (j.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item"><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
+  return linked.map(a => `<div class="item"><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
 }
 
 function journalDocumentsList(j) {
@@ -3673,7 +3788,7 @@ function saveJournal(id) {
   if (i < 0) return;
   state.journal[i] = { ...state.journal[i], title: document.getElementById("ejTitle").value.trim(), date: document.getElementById("ejDate").value.trim(), entryType: document.getElementById("ejType").value, summary: document.getElementById("ejSummary").value.trim(), content: document.getElementById("ejSummary").value.trim(), facts: document.getElementById("ejFacts").value.trim(), analysis: document.getElementById("ejAnalysis").value.trim(), decisionsText: document.getElementById("ejDecisionsText").value.trim(), actionsText: document.getElementById("ejActionsText").value.trim(), watchPoints: document.getElementById("ejWatch").value.trim(), nextSteps: document.getElementById("ejNext").value.trim(), notes: document.getElementById("ejNotes").value.trim(), tags: splitTags(document.getElementById("ejTags").value), linkedManagers: checkedValues("ejManagers"), linkedProjects: checkedValues("ejProjects"), linkedDecisions: checkedValues("ejDecisions"), linkedActions: checkedValues("ejActions"), linkedDocuments: checkedValues("ejDocuments"), linkedFolders: checkedValues("ejFolders") };
   persist("journal");
-  addActivity("?? Journal modifié", state.journal[i].title, state.journal[i].summary, id);
+  addActivity("📝 Journal modifié", state.journal[i].title, state.journal[i].summary, id);
   openJournal(id);
 }
 
@@ -3724,7 +3839,7 @@ function saveJournalDecision(id) {
   persist("decisions");
   syncDecisionBacklinks(decision);
   persist("journal");
-  addActivity("?? Décision créée depuis Journal", decision.title, j.title, id);
+  addActivity("📌 Décision créée depuis Journal", decision.title, j.title, id);
   openJournal(id);
 }
 
@@ -3735,7 +3850,7 @@ function saveJournalEvent(id) {
   if (!title) return;
   j.events.unshift({ id: newId("event"), date: document.getElementById("jeDate").value.trim() || new Date().toLocaleString("fr-FR"), title, detail: document.getElementById("jeDetail").value.trim() });
   persist("journal");
-  addActivity("?? Événement Journal", j.title, title, id);
+  addActivity("📍 Événement Journal", j.title, title, id);
   openJournal(id);
 }
 
@@ -3745,7 +3860,7 @@ function deleteJournal(id) {
   const t = state.journal[i].title;
   state.journal.splice(i, 1);
   persist("journal");
-  addActivity("?? Journal supprimé", t);
+  addActivity("📝 Journal supprimé", t);
   renderJournal();
 }
 
@@ -5390,7 +5505,7 @@ function addDocument() {
   const d = { id: newId("document"), title, type: document.getElementById("docType").value.trim(), owner: document.getElementById("docOwner").value.trim(), status: document.getElementById("docStatus").value.trim(), tags: splitTags(document.getElementById("docTags").value), content: document.getElementById("docContent").value.trim(), linkedFolders: checkedValues("docFolders"), linkedManagers: [], linkedProjects: checkedValues("docProjects"), linkedDecisions: [], linkedJournal: [], linkedActions: [], updatedAt: isoToday() };
   state.documents.unshift(d);
   persist("documents");
-  addActivity("?? Document", d.title, d.type, d.id);
+  addActivity("📄 Document", d.title, d.type, d.id);
   renderDocuments();
 }
 
@@ -5405,7 +5520,7 @@ function saveDocument(id) {
   if (i < 0) return;
   state.documents[i] = { ...state.documents[i], title: document.getElementById("edocTitle").value.trim(), type: document.getElementById("edocType").value.trim(), owner: document.getElementById("edocOwner").value.trim(), status: document.getElementById("edocStatus").value.trim(), tags: splitTags(document.getElementById("edocTags").value), content: document.getElementById("edocContent").value.trim(), linkedFolders: checkedValues("edocFolders"), linkedProjects: checkedValues("edocProjects"), updatedAt: isoToday() };
   persist("documents");
-  addActivity("?? Document modifié", state.documents[i].title, state.documents[i].type, id);
+  addActivity("📄 Document modifié", state.documents[i].title, state.documents[i].type, id);
   renderDocuments();
 }
 
@@ -5415,7 +5530,7 @@ function deleteDocument(id) {
   const t = state.documents[i].title;
   state.documents.splice(i, 1);
   persist("documents");
-  addActivity("?? Document supprimé", t);
+  addActivity("📄 Document supprimé", t);
   renderDocuments();
 }
 
@@ -5449,14 +5564,14 @@ function linkCategoryOptions() {
 
 function linkCategoryIcon(category = "") {
   const text = category.toLowerCase();
-  if (/pilotage|tableau|dashboard/.test(text)) return "??";
-  if (/performance|kpi/.test(text)) return "??";
-  if (/\brh\b|social/.test(text)) return "??";
-  if (/communication|mail/.test(text)) return "??";
-  if (/document|drive/.test(text)) return "??";
-  if (/sécurité|securite|crise/.test(text)) return "??";
-  if (/carrefour|outil|exploitation/.test(text)) return "??";
-  return "??";
+  if (/pilotage|tableau|dashboard/.test(text)) return "📊";
+  if (/performance|kpi/.test(text)) return "📈";
+  if (/\brh\b|social/.test(text)) return "👥";
+  if (/communication|mail/.test(text)) return "💬";
+  if (/document|drive/.test(text)) return "📁";
+  if (/sécurité|securite|crise/.test(text)) return "🚩";
+  if (/carrefour|outil|exploitation/.test(text)) return "🧭";
+  return "🔗";
 }
 
 function linkFilteredItems() {
@@ -5484,7 +5599,7 @@ function linkCard(link) {
   const url = linkUrl(link.url);
   const domain = linkDomain(link.url);
   const disabled = !url;
-  return `<div class="card link-card link-tile ${link.status === "archivé" ? "link-archived" : ""}"><button class="link-tile-main" onclick="${disabled ? "" : `openExternalLink('${esc(link.id)}')`}" aria-label="Ouvrir ${esc(link.name || "lien")}"><span class="link-icon" aria-hidden="true">${esc(link.icon || suggestLinkIcon(`${link.name} ${link.url}`))}</span><span class="link-tile-text"><strong>${esc(link.name || "Lien")}</strong><small>${esc(link.category || "Autre")}${domain ? " · " + esc(domain) : ""}</small></span></button><p>${esc(link.description || "Ressource professionnelle")}</p><div class="link-tile-footer"><div>${linkStatusBadge(link.status)}${link.favorite ? `<span class="badge orange">? Favori</span>` : ""}</div><button class="icon-button ${link.favorite ? "is-favorite" : ""}" onclick="toggleLinkFavorite('${esc(link.id)}')" title="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-label="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}">${link.favorite ? "?" : "?"}</button></div><div class="link-actions"><a class="action link-action" href="${esc(url || "#")}" target="_blank" rel="noopener noreferrer" aria-disabled="${disabled}">Ouvrir</a><button class="secondary" onclick="editLink('${esc(link.id)}')">Modifier</button><button class="secondary" onclick="archiveLink('${esc(link.id)}')">${link.status === "archivé" ? "Réactiver" : "Archiver"}</button><button class="secondary" onclick="moveLink('${esc(link.id)}',-1)">Monter</button><button class="secondary" onclick="moveLink('${esc(link.id)}',1)">Descendre</button><button class="danger" onclick="deleteLink('${esc(link.id)}')">Supprimer</button></div></div>`;
+  return `<div class="card link-card link-tile ${link.status === "archivé" ? "link-archived" : ""}"><button class="link-tile-main" onclick="${disabled ? "" : `openExternalLink('${esc(link.id)}')`}" aria-label="Ouvrir ${esc(link.name || "lien")}"><span class="link-icon" aria-hidden="true">${esc(link.icon || suggestLinkIcon(`${link.name} ${link.url}`))}</span><span class="link-tile-text"><strong>${esc(link.name || "Lien")}</strong><small>${esc(link.category || "Autre")}${domain ? " · " + esc(domain) : ""}</small></span></button><p>${esc(link.description || "Ressource professionnelle")}</p><div class="link-tile-footer"><div>${linkStatusBadge(link.status)}${link.favorite ? `<span class="badge orange">★ Favori</span>` : ""}</div><button class="icon-button ${link.favorite ? "is-favorite" : ""}" onclick="toggleLinkFavorite('${esc(link.id)}')" title="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-label="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}">${link.favorite ? "★" : "☆"}</button></div><div class="link-actions"><a class="action link-action" href="${esc(url || "#")}" target="_blank" rel="noopener noreferrer" aria-disabled="${disabled}">Ouvrir</a><button class="secondary" onclick="editLink('${esc(link.id)}')">Modifier</button><button class="secondary" onclick="archiveLink('${esc(link.id)}')">${link.status === "archivé" ? "Réactiver" : "Archiver"}</button><button class="secondary" onclick="moveLink('${esc(link.id)}',-1)">Monter</button><button class="secondary" onclick="moveLink('${esc(link.id)}',1)">Descendre</button><button class="danger" onclick="deleteLink('${esc(link.id)}')">Supprimer</button></div></div>`;
 }
 
 function renderLinks() {
@@ -5495,7 +5610,7 @@ function renderLinks() {
   const categories = ["all", ...linkCategoryOptions()];
   const activeCategories = categories.filter(c => c === "all" || state.links.some(l => l.category === c));
   const grouped = activeCategories.filter(c => c !== "all").map(c => ({ category: c, count: state.links.filter(l => l.category === c).length }));
-  appHtml(`<div class="card hero links-hero"><div class="row"><div><h2>?? Liens utiles</h2><p class="muted">Lanceur visuel des ressources professionnelles du quotidien.</p></div><button class="action" onclick="newLink()">+ Nouveau lien</button></div></div>${linkEditId !== "" ? linkForm(linkEditId ? byId("links", linkEditId) : {}) : ""}<div class="links-layout"><aside class="card link-categories"><button class="secondary ${linkCategoryFilter === "all" && !linkFavoriteFilter ? "active-filter" : ""}" onclick="setLinkCategoryFilter('all')">Tous les liens</button><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">? Favoris</button>${grouped.map(g => `<button class="secondary ${linkCategoryFilter === g.category ? "active-filter" : ""}" onclick="setLinkCategoryFilter('${esc(g.category)}')"><span>${linkCategoryIcon(g.category)}</span>${esc(g.category)} <small>${g.count}</small></button>`).join("")}</aside><section><div class="card link-toolbar"><input value="${esc(linkSearch)}" placeholder="Rechercher un lien, une catégorie ou un domaine" oninput="setLinkSearch(this.value)"><select onchange="setLinkCategoryFilter(this.value)">${categories.map(c => `<option value="${esc(c)}" ${linkCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">Favoris</button></div><div class="card links-favorites"><div class="row"><h2>Favoris</h2><span class="muted">${favorites.length} lien(s)</span></div><div class="links-grid links-grid-compact">${favorites.map(linkCard).join("") || `<div class="empty">Aucun favori — ajoutez-en avec l'étoile sur une tuile.</div>`}</div></div><div class="card links-results-head"><div><h2>Catalogue</h2><p class="muted">${items.length} ressource(s) affichée(s)</p></div></div><div id="linkResults" class="links-grid">${items.map(linkCard).join("") || `<div class="card empty">Aucun lien ne correspond aux filtres.<br><button class="secondary" onclick="newLink()">+ Ajouter mon premier lien</button></div>`}</div></section></div>`);
+  appHtml(`<div class="card hero links-hero"><div class="row"><div><h2>🔗 Liens utiles</h2><p class="muted">Lanceur visuel des ressources professionnelles du quotidien.</p></div><button class="action" onclick="newLink()">+ Nouveau lien</button></div></div>${linkEditId !== "" ? linkForm(linkEditId ? byId("links", linkEditId) : {}) : ""}<div class="links-layout"><aside class="card link-categories"><button class="secondary ${linkCategoryFilter === "all" && !linkFavoriteFilter ? "active-filter" : ""}" onclick="setLinkCategoryFilter('all')">Tous les liens</button><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">★ Favoris</button>${grouped.map(g => `<button class="secondary ${linkCategoryFilter === g.category ? "active-filter" : ""}" onclick="setLinkCategoryFilter('${esc(g.category)}')"><span>${linkCategoryIcon(g.category)}</span>${esc(g.category)} <small>${g.count}</small></button>`).join("")}</aside><section><div class="card link-toolbar"><input value="${esc(linkSearch)}" placeholder="Rechercher un lien, une catégorie ou un domaine" oninput="setLinkSearch(this.value)"><select onchange="setLinkCategoryFilter(this.value)">${categories.map(c => `<option value="${esc(c)}" ${linkCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">Favoris</button></div><div class="card links-favorites"><div class="row"><h2>Favoris</h2><span class="muted">${favorites.length} lien(s)</span></div><div class="links-grid links-grid-compact">${favorites.map(linkCard).join("") || `<div class="empty">Aucun favori — ajoutez-en avec l'étoile sur une tuile.</div>`}</div></div><div class="card links-results-head"><div><h2>Catalogue</h2><p class="muted">${items.length} ressource(s) affichée(s)</p></div></div><div id="linkResults" class="links-grid">${items.map(linkCard).join("") || `<div class="card empty">Aucun lien ne correspond aux filtres.<br><button class="secondary" onclick="newLink()">+ Ajouter mon premier lien</button></div>`}</div></section></div>`);
 }
 
 function newLink() {
@@ -5531,7 +5646,7 @@ function addLink() {
   if (!link) return;
   state.links.push(normalizeEntity("links", link));
   persist("links");
-  addActivity("?? Lien utile", link.name, link.url, link.id);
+  addActivity("🔗 Lien utile", link.name, link.url, link.id);
   linkEditId = "";
   renderLinks();
 }
@@ -5543,7 +5658,7 @@ function saveLink(id) {
   if (!link) return;
   state.links[i] = normalizeEntity("links", link);
   persist("links");
-  addActivity("?? Lien modifié", state.links[i].name, state.links[i].url, id);
+  addActivity("🔗 Lien modifié", state.links[i].name, state.links[i].url, id);
   linkEditId = "";
   renderLinks();
 }
@@ -5554,7 +5669,7 @@ function deleteLink(id) {
   const title = state.links[i].name;
   state.links.splice(i, 1);
   persist("links");
-  addActivity("?? Lien supprimé", title);
+  addActivity("🔗 Lien supprimé", title);
   renderLinks();
 }
 
@@ -5563,7 +5678,7 @@ function archiveLink(id) {
   if (!link) return;
   link.status = link.status === "archivé" ? "actif" : "archivé";
   persist("links");
-  addActivity("?? Lien archivé", link.name, link.status, id);
+  addActivity("🔗 Lien archivé", link.name, link.status, id);
   renderLinks();
 }
 
@@ -5572,7 +5687,7 @@ function toggleLinkFavorite(id) {
   if (!link) return;
   link.favorite = !link.favorite;
   persist("links");
-  addActivity("?? Favori", link.name, link.favorite ? "Ajouté aux favoris" : "Retiré des favoris", id);
+  addActivity("🔗 Favori", link.name, link.favorite ? "Ajouté aux favoris" : "Retiré des favoris", id);
   renderLinks();
 }
 
@@ -5718,7 +5833,7 @@ function renderSettings(message = "") {
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
   const statusMessage = message || restoreSuccessMessage;
   restoreSuccessMessage = "";
-  appHtml(`<div class="card hero settings-hero"><h2>?? Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
+  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
 
 function readSettingsForm() {
@@ -5762,7 +5877,7 @@ function activityItem(a) {
 }
 
 function renderActivity() {
-  appHtml(`<div class="card hero"><h2>?? Activité</h2><p class="muted">Trace chronologique des créations, modifications et suppressions.</p></div>${state.activity.map(activityItem).join("") || `<div class="card empty">Aucune activité.</div>`}`);
+  appHtml(`<div class="card hero"><h2>Agenda / Réunions</h2><p class="muted">Trace chronologique des créations, modifications et suppressions.</p></div>${state.activity.map(activityItem).join("") || `<div class="card empty">Aucune activité.</div>`}`);
 }
 
 function runSearch(query) {
@@ -6134,6 +6249,9 @@ async function syncGoogleCalendarNow() {
   googleSyncInProgress = true;
   renderSettings("Synchronisation en cours...");
   try {
+    const beforeKeys = Object.keys(state.externalEventEnrichments || {});
+    const beforeManagers = beforeKeys.map(k => ({ key: k, linkedManagerIds: normalizeLinkedManagerIds(ensureArray(state.externalEventEnrichments[k]?.linkedManagerIds || [])) }));
+    console.log("[DEOS MANAGER DEBUG] google sync before enrichments", beforeManagers);
     console.log("[DEOS SYNC TRACE] Fetching events from Google Calendar...");
     const rawEvents = await fetchGoogleCalendarEvents();
     console.log("[DEOS SYNC TRACE] Fetched", rawEvents.length, "raw events");
@@ -6248,6 +6366,9 @@ async function syncGoogleCalendarNow() {
     updateGoogleConnectionStatus("connected");
     persistSettings();
     persistExternalEvents();
+    const afterKeys = Object.keys(state.externalEventEnrichments || {});
+    const afterManagers = afterKeys.map(k => ({ key: k, linkedManagerIds: normalizeLinkedManagerIds(ensureArray(state.externalEventEnrichments[k]?.linkedManagerIds || [])) }));
+    console.log("[DEOS MANAGER DEBUG] google sync after enrichments", afterManagers);
     // [DEOS STATE TRACE] After persistence
     console.log("[DEOS STATE TRACE] after persistence:", state.externalCalendarEvents.length);
     googleSyncInProgress = false;
@@ -6535,7 +6656,7 @@ function reconcileGoogleCalendarEvents(freshEvents) {
   console.log("[DEOS AGENDA TRACE] Fresh IDs count:", fresIds.size);
   console.log("[DEOS DEDUP CHECK] fresh unique keys:", fresIds.size);
   // [DEOS V5.6.5] Check for undefined keys
-  if (fresIds.has(undefined)) console.error("[DEOS DEDUP CHECK] ?? Fresh events contain undefined _key!");
+  if (fresIds.has(undefined)) console.error("[DEOS DEDUP CHECK] [WARN] Fresh events contain undefined _key!");
   const oldIds = state.externalCalendarEvents
     .filter(e => e._calendarId === getCalendarConnectionSettings().googleCalendarId)
     .map(e => e._key);
@@ -6703,6 +6824,8 @@ function saveExternalEventEnrichmentFromModal(eventKey) {
   enrichment.preparation = document.getElementById("enrichPrep")?.value || "";
   enrichment.notes = document.getElementById("enrichNotes")?.value || "";
   enrichment.report = document.getElementById("enrichReport")?.value || "";
+  enrichment.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds));
+  console.log("[DEOS MANAGER DEBUG] google enrichment before save", eventKey, enrichment);
   
   saveExternalEventEnrichment(eventKey, enrichment);
   
@@ -6941,15 +7064,21 @@ function linkObjectToExternalEvent(objectType, objectId) {
   }
   
   if (!Array.isArray(enrichment[arrayName])) enrichment[arrayName] = [];
-  
-  const obj = byId(collectionName, objectId);
+  const normalizedObjectId = String(objectId);
+
+  const obj = byId(collectionName, normalizedObjectId);
   if (!obj) { console.error("[DEOS V5.8 INLINE] Object not found:", objectType, objectId); return; }
-  
-  if (enrichment[arrayName].includes(objectId)) { console.log("[DEOS V5.8 INLINE] Object already linked, skipping duplicate"); return; }
-  
-  console.log("[DEOS V5.8 INLINE] link count before:", enrichment[arrayName].length);
-  enrichment[arrayName].push(objectId);
+
+  const normalizedIds = normalizeLinkedIdArray(enrichment[arrayName]);
+  if (normalizedIds.includes(normalizedObjectId)) { console.log("[DEOS V5.8 INLINE] Object already linked, skipping duplicate"); return; }
+
+  console.log("[DEOS MANAGER DEBUG] google selected id before link", { objectType, objectId: normalizedObjectId, type: typeof normalizedObjectId });
+  console.log("[DEOS V5.8 INLINE] link count before:", normalizedIds.length);
+  enrichment[arrayName] = [...normalizedIds, normalizedObjectId];
   console.log("[DEOS V5.8 INLINE] link count after:", enrichment[arrayName].length);
+  if (objectType === "manager") {
+    console.log("[DEOS MANAGER DEBUG] google linkedManagerIds after link", enrichment[arrayName]);
+  }
   
   enrichment.updatedAt = new Date().toISOString();
   saveExternalEventEnrichment(eventKey, enrichment);
@@ -6980,10 +7109,14 @@ function unlinkObjectFromExternalEvent(objectType, objectId) {
   }
   
   if (!Array.isArray(enrichment[arrayName])) enrichment[arrayName] = [];
-  
-  const idx = enrichment[arrayName].indexOf(objectId);
-  if (idx >= 0) {
-    enrichment[arrayName].splice(idx, 1);
+  const normalizedObjectId = String(objectId);
+  const before = normalizeLinkedIdArray(enrichment[arrayName]);
+  const after = before.filter(id => !sameId(id, normalizedObjectId));
+  if (after.length !== before.length) {
+    enrichment[arrayName] = after;
+    if (objectType === "manager") {
+      console.log("[DEOS MANAGER DEBUG] google linkedManagerIds after unlink", enrichment[arrayName]);
+    }
     enrichment.updatedAt = new Date().toISOString();
     saveExternalEventEnrichment(eventKey, enrichment);
     console.log("[DEOS V5.8 INLINE] local rerender completed");
