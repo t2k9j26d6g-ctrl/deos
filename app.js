@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.10.1";
+﻿const DEOS_VERSION = "V5.11";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -555,6 +555,63 @@ function normalizeLinkedIdArray(value) {
   return [...new Set(ensureArray(value).map(String).map(x => x.trim()).filter(Boolean))];
 }
 
+const MEETING_CONFIDENTIALITY_VALUES = ["normal", "restricted", "confidential"];
+
+function normalizeMeetingConfidentiality(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return MEETING_CONFIDENTIALITY_VALUES.includes(normalized) ? normalized : "normal";
+}
+
+function meetingConfidentialityLabel(value) {
+  return ({ normal: "Normal", restricted: "Restreint", confidential: "Confidentiel" })[normalizeMeetingConfidentiality(value)] || "Normal";
+}
+
+function meetingConfidentialityBadge(value) {
+  const level = normalizeMeetingConfidentiality(value);
+  const css = level === "confidential" ? "red" : level === "restricted" ? "orange" : "green";
+  return `<span class="badge ${css}">🔒 ${meetingConfidentialityLabel(level)}</span>`;
+}
+
+function normalizeMeetingEnrichment(value = {}, options = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const legacyNotes = options.external === true ? source.notes : "";
+  const legacyReport = options.external === true ? source.report : "";
+  const normalized = {
+    ...source,
+    preparation: String(source.preparation ?? ""),
+    meetingNotes: String(source.meetingNotes ?? legacyNotes ?? ""),
+    meetingReport: String(source.meetingReport ?? legacyReport ?? ""),
+    nextSteps: String(source.nextSteps ?? ""),
+    confidentiality: normalizeMeetingConfidentiality(source.confidentiality)
+  };
+  if (options.external === true) {
+    normalized.linkedFolderIds = normalizeLinkedIdArray(source.linkedFolderIds ?? source.linkedFolders ?? []);
+    normalized.linkedProjectIds = normalizeLinkedIdArray(source.linkedProjectIds ?? source.linkedProjects ?? []);
+    normalized.linkedActionIds = normalizeLinkedIdArray(source.linkedActionIds ?? source.linkedActions ?? []);
+    normalized.linkedDecisionIds = normalizeLinkedIdArray(source.linkedDecisionIds ?? source.linkedDecisions ?? []);
+    normalized.linkedDocumentIds = normalizeLinkedIdArray(source.linkedDocumentIds ?? source.linkedDocuments ?? []);
+    const managerSource = ensureArray(source.linkedManagerIds).length ? source.linkedManagerIds : source.linkedManagers;
+    normalized.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(managerSource));
+  }
+  return normalized;
+}
+
+function meetingFollowUpSummaryHtml(value, options = {}) {
+  const meeting = normalizeMeetingEnrichment(value);
+  const restricted = ["restricted", "confidential"].includes(meeting.confidentiality);
+  const rows = [];
+  if (meeting.preparation) rows.push(`<div><strong>Préparation</strong><p>${esc(meeting.preparation)}</p></div>`);
+  if (meeting.meetingNotes) rows.push(`<div><strong>Notes</strong><p>${esc(meeting.meetingNotes)}</p></div>`);
+  if (meeting.meetingReport) rows.push(`<div><strong>Compte rendu</strong><p>${esc(meeting.meetingReport)}</p></div>`);
+  if (meeting.nextSteps) rows.push(`<div><strong>Prochaines étapes</strong><p>${esc(meeting.nextSteps)}</p></div>`);
+  const badge = meetingConfidentialityBadge(meeting.confidentiality);
+  if (!rows.length && meeting.confidentiality === "normal") return "";
+  if (restricted && options.maskSensitive === true) {
+    return `<div class="deos-link-summary"><strong>Suivi du rendez-vous</strong>${badge}<p class="muted">Le contenu détaillé est masqué dans ce contexte.</p></div>`;
+  }
+  return `<div class="deos-link-summary"><strong>Suivi du rendez-vous</strong>${badge}<div class="meeting-followup-summary">${rows.join("")}</div></div>`;
+}
+
 function sameId(a, b) {
   return String(a) === String(b);
 }
@@ -683,6 +740,7 @@ function normalizeEntity(name, item) {
     const allDay = raw.allDay === true || (!hasStartTime && !hasTime && raw.allDay !== false);
     const description = String(raw.description || raw.notes || raw.detail || "").trim();
     const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(raw.linkedManagerIds).length ? ensureArray(raw.linkedManagerIds) : ensureArray(raw.linkedManagers));
+    const followUp = normalizeMeetingEnrichment(raw);
     const merged = {
       ...raw,
       date: raw.date || localIsoDate(),
@@ -706,7 +764,12 @@ function normalizeEntity(name, item) {
       linkedManagerIds,
       linkedManagers: linkedManagerIds,
       linkedProjects: ensureArray(raw.linkedProjects),
-      linkedFolders: ensureArray(raw.linkedFolders)
+      linkedFolders: ensureArray(raw.linkedFolders),
+      preparation: followUp.preparation,
+      meetingNotes: followUp.meetingNotes,
+      meetingReport: followUp.meetingReport,
+      nextSteps: followUp.nextSteps,
+      confidentiality: followUp.confidentiality
     };
     return merged;
   }
@@ -1433,7 +1496,9 @@ function agendaItem(a) {
     const start = agendaStartTime(a);
     const time = a.allDay ? "Journée entière" : (start ? `${esc(start)}${a.endTime ? " - " + esc(a.endTime) : ""}` : "Heure à confirmer");
     const providerBadge = `<span class="gc-badge" title="Importé depuis Google Calendar">📅 Google</span>`;
-    return `<div class="agenda-line agenda-line-external"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}${providerBadge}<small>${esc(a.calendarName || "Google Calendar")}${a.location ? " · " + esc(a.location) : ""}</small></span><div class="row-actions"><button class="secondary" onclick="openExternalEventModal('${esc(a.externalId)}')">Détails</button></div></div>`;
+    const enrichment = getExternalEventEnrichment(a._key || `google_${a.externalId}`);
+    const confidentiality = meetingConfidentialityBadge(enrichment.confidentiality || "normal");
+    return `<div class="agenda-line agenda-line-external"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}${providerBadge}<small>${esc(a.calendarName || "Google Calendar")}${a.location ? " · " + esc(a.location) : ""}</small>${confidentiality}</span><div class="row-actions"><button class="secondary" onclick="openExternalEventModal('${esc(a._key || a.externalId)}')">Détails</button></div></div>`;
   }
   // Événement manuel DEOS
   const start = agendaStartTime(a);
@@ -1444,7 +1509,8 @@ function agendaItem(a) {
   const subjectCount = ensureArray(prep?.ideas).length + ensureArray(prep?.agendaTopics).length;
   const subjectBadge = subjectCount ? ` · <span class="subject-count">📋 ${subjectCount}</span>` : "";
   const alert = daysUntil(a.date) !== null && daysUntil(a.date) >= 0 && daysUntil(a.date) <= 2 && status === "À préparer" ? `<small class="prep-alert">Réunion à préparer sous 48 h</small>` : "";
-  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${agendaLinkedBadges(a)}${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
+  const confidentiality = meetingConfidentialityBadge(a.confidentiality || "normal");
+  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${confidentiality}${agendaLinkedBadges(a)}${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function agendaCompact() {
@@ -1517,6 +1583,7 @@ function closeAgendaModal() {
 
 function agendaForm() {
   const a = agendaEditId ? byId("agenda", agendaEditId) : null;
+  const followUp = normalizeMeetingEnrichment(a || {});
   const selectedManagerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
   const dateValue = esc(a?.date || localIsoDate());
   const allDayChecked = agendaIsAllDay(a) ? "checked" : "";
@@ -1534,6 +1601,25 @@ function agendaForm() {
     </div>
     <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, selectedManagerIds, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
     <div class="deos-link-summary"><strong>Objets DEOS sélectionnés</strong><div id="agLinkedSummary">${deosLinkBadgesHtml([])}</div></div>
+    <div class="card" style="margin:10px 0 0 0;padding:14px;border-radius:14px">
+      <h3 style="margin:0 0 10px 0">Suivi du rendez-vous</h3>
+      <p class="muted" style="margin:0 0 10px 0">Ces informations sont enregistrées uniquement dans DEOS.</p>
+      <div class="form-grid">
+        <textarea id="agPreparation" class="full" placeholder="Préparation : points à préparer, documents, questions...">${esc(followUp.preparation)}</textarea>
+        <textarea id="agMeetingNotes" class="full" placeholder="Notes : éléments factuels, constats, informations importantes...">${esc(followUp.meetingNotes)}</textarea>
+        <textarea id="agMeetingReport" class="full" placeholder="Compte rendu : synthèse, conclusions, éléments à partager...">${esc(followUp.meetingReport)}</textarea>
+        <textarea id="agNextSteps" class="full" placeholder="Prochaines étapes : suites à donner, échéances, relances...">${esc(followUp.nextSteps)}</textarea>
+        <div class="full">
+          <label for="agConfidentiality">Confidentialité</label>
+          <select id="agConfidentiality">
+            <option value="normal" ${followUp.confidentiality === "normal" ? "selected" : ""}>Normal</option>
+            <option value="restricted" ${followUp.confidentiality === "restricted" ? "selected" : ""}>Restreint</option>
+            <option value="confidential" ${followUp.confidentiality === "confidential" ? "selected" : ""}>Confidentiel</option>
+          </select>
+        </div>
+      </div>
+      ${a ? meetingFollowUpSummaryHtml(followUp) : ""}
+    </div>
     <div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div>
   </div>`;
 }
@@ -1564,8 +1650,9 @@ function agendaModal() {
   return `<div class="modal-backdrop" onclick="closeAgendaModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>${isEdit ? "Modifier rendez-vous" : "Nouveau rendez-vous"}</h2><button class="icon-close" onclick="closeAgendaModal()" aria-label="Fermer">×</button></div>${agendaForm()}</div></div>`;
 }
 
-function openExternalEventModal(externalId) {
-  googleExternalEventModalId = externalId || "";
+function openExternalEventModal(eventRef) {
+  const event = (state.externalCalendarEvents || []).find(e => e._key === eventRef || e.externalId === eventRef);
+  googleExternalEventModalId = event?._key || eventRef || "";
   const enrichment = getExternalEventEnrichment(googleExternalEventModalId);
   console.log("[DEOS MANAGER DEBUG] google open modal managers list", state.managers.map(m => ({ id: m.id, idType: typeof m.id, name: m.name })));
   console.log("[DEOS MANAGER DEBUG] google open modal linkedManagerIds before render", normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)));
@@ -1579,7 +1666,7 @@ function closeExternalEventModal() {
 
 function externalEventModal() {
   if (!googleExternalEventModalId) return "";
-  const ev = (state.externalCalendarEvents || []).find(e => e.externalId === googleExternalEventModalId);
+  const ev = (state.externalCalendarEvents || []).find(e => e._key === googleExternalEventModalId);
   if (!ev) return "";
   const enrichment = getExternalEventEnrichment(googleExternalEventModalId);
   const time = ev.allDay ? "Journée entière" : `${esc(ev.startTime || "")}${ev.endTime ? " - " + esc(ev.endTime) : ""}`;
@@ -1601,29 +1688,14 @@ function externalEventModal() {
     </div>` : ""}
   </div>`;
   
-  // Zone Préparation DEOS (modifiable)
-  const preparationStatuses = ["not_started", "to_prepare", "in_progress", "ready", "completed", "cancelled"];
-  const preparationLabels = {
-    "not_started": "Non commencé",
-    "to_prepare": "À préparer",
-    "in_progress": "En cours",
-    "ready": "Prêt",
-    "completed": "Réalisé",
-    "cancelled": "Annulé"
-  };
+  // Zone Suivi DEOS (modifiable)
+  const externalFollowUp = normalizeMeetingEnrichment(enrichment, { external: true });
   
   const deosSectionHTML = `<div>
-    <h3 style="margin:0 0 12px 0;color:#1e293b">✏️ Préparation et suivi DEOS</h3>
+    <h3 style="margin:0 0 12px 0;color:#1e293b">✏️ Suivi du rendez-vous</h3>
+    <p class="muted" style="margin:0 0 10px 0;font-size:12px">Ces informations sont enregistrées uniquement dans DEOS et ne modifient pas Google Calendar.</p>
     
     <div style="display:grid;gap:12px">
-      <!-- Statut -->
-      <div>
-        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Statut de préparation</label>
-        <select id="enrichStatus" style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;font-size:14px">
-          ${preparationStatuses.map(s => `<option value="${s}" ${enrichment.preparationStatus === s ? "selected" : ""}>${preparationLabels[s]}</option>`).join("")}
-        </select>
-      </div>
-      
       <!-- Sujets à traiter -->
       <div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -1642,19 +1714,36 @@ function externalEventModal() {
       <!-- Préparation -->
       <div>
         <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Préparation</label>
-        <textarea id="enrichPrep" placeholder="Objectif, messages clés, points de vigilance..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.preparation)}</textarea>
+        <textarea id="enrichPreparation" placeholder="Points à préparer, documents à réunir, questions à poser..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:80px;font-size:13px;font-family:inherit;resize:vertical">${esc(externalFollowUp.preparation)}</textarea>
       </div>
       
       <!-- Notes -->
       <div>
         <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Notes</label>
-        <textarea id="enrichNotes" placeholder="Notes libres utilisables pendant la réunion..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.notes)}</textarea>
+        <textarea id="enrichMeetingNotes" placeholder="Notes prises pendant le rendez-vous, constats, informations importantes..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:80px;font-size:13px;font-family:inherit;resize:vertical">${esc(externalFollowUp.meetingNotes)}</textarea>
       </div>
       
       <!-- Compte rendu -->
       <div>
         <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Compte rendu</label>
-        <textarea id="enrichReport" placeholder="Résumé, décisions prises, actions décidées..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:60px;font-size:13px;font-family:inherit;resize:vertical">${esc(enrichment.report)}</textarea>
+        <textarea id="enrichMeetingReport" placeholder="Synthèse structurée, conclusions, éléments à partager..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:80px;font-size:13px;font-family:inherit;resize:vertical">${esc(externalFollowUp.meetingReport)}</textarea>
+      </div>
+
+      <!-- Prochaines étapes -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Prochaines étapes</label>
+        <textarea id="enrichNextSteps" placeholder="Suites à donner, échéances, relances..." style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;min-height:80px;font-size:13px;font-family:inherit;resize:vertical">${esc(externalFollowUp.nextSteps)}</textarea>
+      </div>
+
+      <!-- Confidentialité -->
+      <div>
+        <label style="display:block;font-size:12px;color:#64748b;margin-bottom:4px;font-weight:500">Confidentialité</label>
+        <select id="enrichConfidentiality" style="padding:8px;border:1px solid #e2e8f0;border-radius:6px;width:100%;font-size:14px">
+          <option value="normal" ${externalFollowUp.confidentiality === "normal" ? "selected" : ""}>Normal</option>
+          <option value="restricted" ${externalFollowUp.confidentiality === "restricted" ? "selected" : ""}>Restreint</option>
+          <option value="confidential" ${externalFollowUp.confidentiality === "confidential" ? "selected" : ""}>Confidentiel</option>
+        </select>
+        ${meetingFollowUpSummaryHtml(externalFollowUp)}
       </div>
       
       <!-- Liens utiles -->
@@ -1675,7 +1764,6 @@ function externalEventModal() {
       <div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <label style="font-size:12px;color:#64748b;font-weight:500">Actions liées</label>
-          <button class="icon-btn" onclick="createActionFromExternalEvent('${esc(googleExternalEventModalId)}', '${esc(ev.title)}')" title="Créer une action" style="padding:4px 8px;font-size:11px">+ Action</button>
         </div>
         <div id="actionsList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
           ${enrichment.linkedActionIds && enrichment.linkedActionIds.length > 0 ? enrichment.linkedActionIds.map(actionId => {
@@ -1692,7 +1780,6 @@ function externalEventModal() {
       <div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <label style="font-size:12px;color:#64748b;font-weight:500">Décisions liées</label>
-          <button class="icon-btn" onclick="createDecisionFromExternalEvent('${esc(googleExternalEventModalId)}', '${esc(ev.title)}')" title="Créer une décision" style="padding:4px 8px;font-size:11px">+ Décision</button>
         </div>
         <div id="decisionsList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
           ${enrichment.linkedDecisionIds && enrichment.linkedDecisionIds.length > 0 ? enrichment.linkedDecisionIds.map(decisionId => {
@@ -1879,6 +1966,13 @@ function readAgendaForm(existing = {}) {
     }
   }
   const linkedManagerIds = normalizeLinkedManagerIds(checkedValues("agManagers"));
+  const followUp = normalizeMeetingEnrichment({
+    preparation: document.getElementById("agPreparation")?.value,
+    meetingNotes: document.getElementById("agMeetingNotes")?.value,
+    meetingReport: document.getElementById("agMeetingReport")?.value,
+    nextSteps: document.getElementById("agNextSteps")?.value,
+    confidentiality: document.getElementById("agConfidentiality")?.value
+  });
   console.log("[DEOS MANAGER DEBUG] manual selected manager ids before save", linkedManagerIds, linkedManagerIds.map(id => typeof id));
   console.log("[DEOS MANAGER DEBUG] manual event object before save", existing);
   const data = {
@@ -1896,7 +1990,12 @@ function readAgendaForm(existing = {}) {
     linkedManagerIds,
     linkedManagers: linkedManagerIds,
     linkedProjects: checkedValues("agProjects"),
-    linkedFolders: checkedValues("agFolders")
+    linkedFolders: checkedValues("agFolders"),
+    preparation: followUp.preparation,
+    meetingNotes: followUp.meetingNotes,
+    meetingReport: followUp.meetingReport,
+    nextSteps: followUp.nextSteps,
+    confidentiality: followUp.confidentiality
   };
   console.log("[DEOS MANAGER DEBUG] manual event payload to save", data);
   agendaFormError = "";
@@ -6756,6 +6855,12 @@ function ensureExternalEventEnrichments() {
   if (!state.externalEventEnrichments) {
     state.externalEventEnrichments = {};
   }
+  state.externalEventEnrichments = Object.fromEntries(
+    Object.entries(state.externalEventEnrichments).map(([eventKey, enrichment]) => [
+      eventKey,
+      normalizeMeetingEnrichment({ eventKey, ...enrichment }, { external: true })
+    ])
+  );
   console.log("[DEOS V5.7] ensureExternalEventEnrichments: structure initialized with", Object.keys(state.externalEventEnrichments).length, "enrichments");
 }
 
@@ -6765,13 +6870,22 @@ function ensureExternalEventEnrichments() {
  * @returns {object} Enrichissement (existant ou nouvellement crÃ©Ã©)
  */
 function getExternalEventEnrichment(eventKey) {
+  if (!state.externalEventEnrichments[eventKey] && String(eventKey || "").startsWith("google_")) {
+    const legacyKey = String(eventKey).slice(7);
+    if (state.externalEventEnrichments[legacyKey]) {
+      state.externalEventEnrichments[eventKey] = state.externalEventEnrichments[legacyKey];
+      delete state.externalEventEnrichments[legacyKey];
+    }
+  }
   if (!state.externalEventEnrichments[eventKey]) {
-    state.externalEventEnrichments[eventKey] = {
+    state.externalEventEnrichments[eventKey] = normalizeMeetingEnrichment({
       eventKey: eventKey,
       subjects: [],
       preparation: "",
-      notes: "",
-      report: "",
+      meetingNotes: "",
+      meetingReport: "",
+      nextSteps: "",
+      confidentiality: "normal",
       linkedActionIds: [],
       linkedDecisionIds: [],
       linkedDocumentIds: [],
@@ -6783,19 +6897,10 @@ function getExternalEventEnrichment(eventKey) {
       sourceUnavailable: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    };
+    }, { external: true });
     console.log("[DEOS V5.8] getExternalEventEnrichment: created new enrichment for", eventKey);
   } else {
-    // Migrate existing enrichments from V5.7 to V5.8
-    if (!Array.isArray(state.externalEventEnrichments[eventKey].linkedFolderIds)) {
-      state.externalEventEnrichments[eventKey].linkedFolderIds = [];
-    }
-    if (!Array.isArray(state.externalEventEnrichments[eventKey].linkedProjectIds)) {
-      state.externalEventEnrichments[eventKey].linkedProjectIds = [];
-    }
-    if (!Array.isArray(state.externalEventEnrichments[eventKey].linkedManagerIds)) {
-      state.externalEventEnrichments[eventKey].linkedManagerIds = [];
-    }
+    state.externalEventEnrichments[eventKey] = normalizeMeetingEnrichment({ eventKey, ...state.externalEventEnrichments[eventKey] }, { external: true });
   }
   return state.externalEventEnrichments[eventKey];
 }
@@ -6806,8 +6911,9 @@ function getExternalEventEnrichment(eventKey) {
  * @param {object} enrichment - DonnÃ©es d'enrichissement
  */
 function saveExternalEventEnrichment(eventKey, enrichment) {
-  enrichment.updatedAt = new Date().toISOString();
-  state.externalEventEnrichments[eventKey] = enrichment;
+  const normalized = normalizeMeetingEnrichment({ eventKey, ...enrichment }, { external: true });
+  normalized.updatedAt = new Date().toISOString();
+  state.externalEventEnrichments[eventKey] = normalized;
   persistExternalEvents();
   console.log("[DEOS V5.7] saveExternalEventEnrichment: saved for", eventKey);
 }
@@ -6820,10 +6926,11 @@ function saveExternalEventEnrichmentFromModal(eventKey) {
   const enrichment = getExternalEventEnrichment(eventKey);
   
   // RÃ©cupÃ©rer les valeurs du formulaire
-  enrichment.preparationStatus = document.getElementById("enrichStatus")?.value || "not_started";
-  enrichment.preparation = document.getElementById("enrichPrep")?.value || "";
-  enrichment.notes = document.getElementById("enrichNotes")?.value || "";
-  enrichment.report = document.getElementById("enrichReport")?.value || "";
+  enrichment.preparation = document.getElementById("enrichPreparation")?.value || "";
+  enrichment.meetingNotes = document.getElementById("enrichMeetingNotes")?.value || "";
+  enrichment.meetingReport = document.getElementById("enrichMeetingReport")?.value || "";
+  enrichment.nextSteps = document.getElementById("enrichNextSteps")?.value || "";
+  enrichment.confidentiality = normalizeMeetingConfidentiality(document.getElementById("enrichConfidentiality")?.value || "normal");
   enrichment.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds));
   console.log("[DEOS MANAGER DEBUG] google enrichment before save", eventKey, enrichment);
   
