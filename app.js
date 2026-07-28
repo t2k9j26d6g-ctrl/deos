@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.8";
+﻿const DEOS_VERSION = "V5.9";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -80,6 +80,7 @@ let backupPreviewPayload = null;
 let backupPreviewSummary = null;
 let backupPreviewOpen = false;
 let agendaFormError = "";
+let currentView = "cockpit";
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "??", orange: "??", red: "??" };
@@ -546,6 +547,18 @@ function ensureArray(value) {
   return String(value).split("\n").map(x => x.trim()).filter(Boolean);
 }
 
+function normalizeLinkedManagerIds(value) {
+  return [...new Set((value || []).map(String).map(x => x.trim()).filter(Boolean))];
+}
+
+function normalizeLinkedIdArray(value) {
+  return [...new Set(ensureArray(value).map(String).map(x => x.trim()).filter(Boolean))];
+}
+
+function sameId(a, b) {
+  return String(a) === String(b);
+}
+
 function ensureTimeline(value) {
   return ensureArray(value).map(item => typeof item === "string" ? { id: newId("event"), date: today(), title: item, detail: "" } : { id: item.id || newId("event"), date: item.date || today(), title: item.title || "Événement", detail: item.detail || "" });
 }
@@ -669,6 +682,7 @@ function normalizeEntity(name, item) {
     const hasTime = Object.prototype.hasOwnProperty.call(raw, "time") && String(raw.time || "").trim() !== "";
     const allDay = raw.allDay === true || (!hasStartTime && !hasTime && raw.allDay !== false);
     const description = String(raw.description || raw.notes || raw.detail || "").trim();
+    const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(raw.linkedManagerIds).length ? ensureArray(raw.linkedManagerIds) : ensureArray(raw.linkedManagers));
     const merged = {
       ...raw,
       date: raw.date || localIsoDate(),
@@ -689,7 +703,8 @@ function normalizeEntity(name, item) {
       lastSyncedAt: raw.lastSyncedAt || "",
       createdAt: raw.createdAt || localIsoDate(),
       updatedAt: raw.updatedAt || localIsoDate(),
-      linkedManagers: ensureArray(raw.linkedManagers),
+      linkedManagerIds,
+      linkedManagers: linkedManagerIds,
       linkedProjects: ensureArray(raw.linkedProjects),
       linkedFolders: ensureArray(raw.linkedFolders)
     };
@@ -719,11 +734,11 @@ function normalizeCollection(name, data) {
 }
 
 function byId(name, id) {
-  return state[name].find(x => x.id === id);
+  return state[name].find(x => sameId(x.id, id));
 }
 
 function indexById(name, id) {
-  return state[name].findIndex(x => x.id === id);
+  return state[name].findIndex(x => sameId(x.id, id));
 }
 
 function addActivity(type, title, detail = "", entityId = "") {
@@ -776,6 +791,7 @@ async function init() {
   }
   document.getElementById("today").textContent = cockpitDateLabel(new Date());
   document.querySelectorAll(".nav").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
+  document.addEventListener("change", onAgendaFormSelectionChange);
   document.getElementById("searchInput").oninput = e => runSearch(e.target.value);
   if (restoreSuccessMessage) {
     setView("settings");
@@ -785,8 +801,9 @@ async function init() {
 }
 
 function setView(view) {
+  currentView = view;
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
-  const titles = { cockpit: "Cockpit décisionnel", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Activité", settings: "Paramètres" };
+  const titles = { cockpit: "Cockpit décisionnel", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
   document.getElementById("viewTitle").textContent = titles[view] || identity.appName;
   const views = { cockpit: renderCockpit, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
   if (views[view]) views[view]();
@@ -1352,10 +1369,62 @@ function setAgendaFilter(filter) {
 }
 
 function agendaLinkedNames(a) {
-  const managers = state.managers.filter(m => (a.linkedManagers || []).includes(m.id)).map(m => m.name);
+  const managerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
+  const managers = state.managers.filter(m => managerIds.includes(String(m.id))).map(m => m.name);
   const projects = state.projects.filter(p => (a.linkedProjects || []).includes(p.id)).map(p => p.name);
   const folders = state.folders.filter(f => (a.linkedFolders || []).includes(f.id)).map(f => f.name);
   return [...managers, ...projects, ...folders].filter(Boolean).join(" · ");
+}
+
+function deosLinkBadge(type, name) {
+  const meta = {
+    folder: { icon: "📁", label: "Dossier" },
+    project: { icon: "🚀", label: "Projet" },
+    action: { icon: "✅", label: "Action" },
+    decision: { icon: "⚖️", label: "Décision" },
+    manager: { icon: "👤", label: "Manager" }
+  }[type] || { icon: "🔗", label: "Objet" };
+  return `<span class="deos-link-badge deos-link-badge--${type}"><span class="deos-link-badge__icon">${meta.icon}</span><span class="deos-link-badge__type">${meta.label}</span><span class="deos-link-badge__sep">·</span><span class="deos-link-badge__name">${esc(name || "Sans titre")}</span></span>`;
+}
+
+function deosLinkBadgesHtml(items) {
+  if (!items.length) return `<span class="muted">Aucun objet DEOS lié.</span>`;
+  return `<div class="deos-link-badge-list">${items.join("")}</div>`;
+}
+
+function agendaLinkedBadges(a) {
+  const item = a || {};
+  const managerIds = normalizeLinkedManagerIds(ensureArray(item.linkedManagerIds).length ? item.linkedManagerIds : ensureArray(item.linkedManagers));
+  const badges = [];
+  state.folders.filter(f => ensureArray(item.linkedFolders).includes(f.id)).forEach(f => badges.push(deosLinkBadge("folder", f.name)));
+  state.projects.filter(p => ensureArray(item.linkedProjects).includes(p.id)).forEach(p => badges.push(deosLinkBadge("project", p.name)));
+  state.managers.filter(m => managerIds.includes(String(m.id))).forEach(m => badges.push(deosLinkBadge("manager", m.name)));
+  return badges.length ? `<div class="deos-link-summary">${deosLinkBadgesHtml(badges)}</div>` : "";
+}
+
+function externalEventLinkedBadges(enrichment) {
+  const badges = [];
+  ensureArray(enrichment.linkedFolderIds).forEach(id => {
+    const item = byId("folders", id);
+    if (item) badges.push(deosLinkBadge("folder", item.name));
+  });
+  ensureArray(enrichment.linkedProjectIds).forEach(id => {
+    const item = byId("projects", id);
+    if (item) badges.push(deosLinkBadge("project", item.name));
+  });
+  ensureArray(enrichment.linkedActionIds).forEach(id => {
+    const item = byId("actions", id);
+    if (item) badges.push(deosLinkBadge("action", item.title));
+  });
+  ensureArray(enrichment.linkedDecisionIds).forEach(id => {
+    const item = byId("decisions", id);
+    if (item) badges.push(deosLinkBadge("decision", item.title));
+  });
+  normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)).forEach(id => {
+    const item = byId("managers", id);
+    if (item) badges.push(deosLinkBadge("manager", item.name));
+  });
+  return deosLinkBadgesHtml(badges);
 }
 
 function agendaItem(a) {
@@ -1375,7 +1444,7 @@ function agendaItem(a) {
   const subjectCount = ensureArray(prep?.ideas).length + ensureArray(prep?.agendaTopics).length;
   const subjectBadge = subjectCount ? ` · <span class="subject-count">📋 ${subjectCount}</span>` : "";
   const alert = daysUntil(a.date) !== null && daysUntil(a.date) >= 0 && daysUntil(a.date) <= 2 && status === "À préparer" ? `<small class="prep-alert">Réunion à préparer sous 48 h</small>` : "";
-  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="agenda-line"><strong>${time}</strong><span>${a.date !== localIsoDate() ? `<em>${esc(a.date)}</em>` : ""}${esc(a.title)}<small>${esc(a.type || "Autre")}${a.location ? " · " + esc(a.location) : ""}${links ? " · " + esc(links) : ""} · ${esc(status)}${subjectBadge}</small>${agendaLinkedBadges(a)}${alert}</span><div class="row-actions"><button class="secondary" onclick="openMeetingSubjectModal('${a.id}')">+ Sujet</button><button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer</button><button class="secondary" onclick="editAgenda('${a.id}')">Modifier</button><button class="secondary" onclick="startReport('agenda','${a.id}')">Compte rendu</button><button class="danger" onclick="deleteAgenda('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function agendaCompact() {
@@ -1394,11 +1463,18 @@ function agendaLinkedList(items) {
 }
 
 function managerAgendaList(m) {
-  return agendaLinkedList(state.agenda.filter(a => (a.linkedManagers || []).includes(m.id)));
+  return agendaLinkedList(state.agenda.filter(a => {
+    const managerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
+    return managerIds.includes(String(m.id));
+  }));
 }
 
 function managerMeetingPreparationsList(m) {
-  const linked = state.meetingPreparations.filter(p => (p.linkedManagers || []).includes(m.id) || (byId("agenda", p.agendaId)?.linkedManagers || []).includes(m.id));
+  const linked = state.meetingPreparations.filter(p => {
+    const agenda = byId("agenda", p.agendaId);
+    const agendaManagerIds = normalizeLinkedManagerIds(ensureArray(agenda?.linkedManagerIds).length ? agenda.linkedManagerIds : ensureArray(agenda?.linkedManagers));
+    return (p.linkedManagers || []).includes(m.id) || agendaManagerIds.includes(String(m.id));
+  });
   return linked.map(p => {
     const a = byId("agenda", p.agendaId) || {};
     const start = agendaStartTime(a);
@@ -1424,8 +1500,12 @@ function projectMeetingPreparationsList(project) {
 function openAgendaModal(id = "") {
   agendaEditId = id;
   agendaModalOpen = true;
+  const selected = id ? byId("agenda", id) : null;
+  console.log("[DEOS MANAGER DEBUG] manual open modal managers list", state.managers.map(m => ({ id: m.id, idType: typeof m.id, name: m.name })));
+  console.log("[DEOS MANAGER DEBUG] manual open modal event manager ids", normalizeLinkedManagerIds(ensureArray(selected?.linkedManagerIds).length ? selected.linkedManagerIds : ensureArray(selected?.linkedManagers)));
   renderCockpit();
   toggleAgendaTimeFields();
+  renderAgendaFormSelectedBadges();
 }
 
 function closeAgendaModal() {
@@ -1437,6 +1517,7 @@ function closeAgendaModal() {
 
 function agendaForm() {
   const a = agendaEditId ? byId("agenda", agendaEditId) : null;
+  const selectedManagerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
   const dateValue = esc(a?.date || localIsoDate());
   const allDayChecked = agendaIsAllDay(a) ? "checked" : "";
   const startValue = esc(a?.startTime || a?.time || "");
@@ -1451,9 +1532,30 @@ function agendaForm() {
       <input id="agLocation" value="${esc(a?.location || "")}" placeholder="Lieu">
       <textarea id="agNotes" class="full" placeholder="Notes">${esc(a?.notes || a?.detail || "")}</textarea>
     </div>
-    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, a?.linkedManagers || [], m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
+    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, selectedManagerIds, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
+    <div class="deos-link-summary"><strong>Objets DEOS sélectionnés</strong><div id="agLinkedSummary">${deosLinkBadgesHtml([])}</div></div>
     <div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div>
   </div>`;
+}
+
+function agendaFormSelectedBadgeItems() {
+  const folders = state.folders.filter(f => checkedValues("agFolders").includes(f.id)).map(f => deosLinkBadge("folder", f.name));
+  const projects = state.projects.filter(p => checkedValues("agProjects").includes(p.id)).map(p => deosLinkBadge("project", p.name));
+  const selectedManagerIds = normalizeLinkedManagerIds(checkedValues("agManagers"));
+  const managers = state.managers.filter(m => selectedManagerIds.includes(String(m.id))).map(m => deosLinkBadge("manager", m.name));
+  return [...folders, ...projects, ...managers];
+}
+
+function renderAgendaFormSelectedBadges() {
+  const root = document.getElementById("agLinkedSummary");
+  if (!root) return;
+  root.innerHTML = deosLinkBadgesHtml(agendaFormSelectedBadgeItems());
+}
+
+function onAgendaFormSelectionChange(event) {
+  if (!agendaModalOpen) return;
+  const checkList = event.target?.closest?.("#agManagers, #agProjects, #agFolders");
+  if (checkList) renderAgendaFormSelectedBadges();
 }
 
 function agendaModal() {
@@ -1464,6 +1566,9 @@ function agendaModal() {
 
 function openExternalEventModal(externalId) {
   googleExternalEventModalId = externalId || "";
+  const enrichment = getExternalEventEnrichment(googleExternalEventModalId);
+  console.log("[DEOS MANAGER DEBUG] google open modal managers list", state.managers.map(m => ({ id: m.id, idType: typeof m.id, name: m.name })));
+  console.log("[DEOS MANAGER DEBUG] google open modal linkedManagerIds before render", normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)));
   renderCockpit();
 }
 
@@ -1606,6 +1711,7 @@ function externalEventModal() {
           <label style="font-size:12px;color:#64748b;font-weight:500">🔗 Éléments DEOS liés</label>
         </div>
         <div style="font-size:11px;color:#94a3b8;margin-bottom:12px">Reliez ce rendez-vous aux dossiers, projets, actions, décisions et managers concernés.</div>
+        <div class="deos-link-summary"><strong>Objets DEOS liés</strong>${externalEventLinkedBadges(enrichment)}</div>
         
         <!-- Dossiers -->
         <div style="margin-bottom:12px">
@@ -1615,7 +1721,7 @@ function externalEventModal() {
           <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
             <select id="folderSelect" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;flex:1;font-size:13px">
               <option value="">Sélectionner un dossier...</option>
-              ${state.folders.filter(f => !(enrichment.linkedFolderIds || []).includes(f.id)).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("")}
+              ${state.folders.filter(f => !normalizeLinkedIdArray(enrichment.linkedFolderIds).includes(String(f.id))).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("")}
             </select>
             <button class="icon-btn" type="button" onclick="linkObjectToExternalEvent('folder', document.getElementById('folderSelect').value)" style="padding:6px 12px;font-size:12px;white-space:nowrap">Ajouter</button>
           </div>
@@ -1638,7 +1744,7 @@ function externalEventModal() {
           <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
             <select id="projectSelect" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;flex:1;font-size:13px">
               <option value="">Sélectionner un projet...</option>
-              ${state.projects.filter(p => !(enrichment.linkedProjectIds || []).includes(p.id)).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}
+              ${state.projects.filter(p => !normalizeLinkedIdArray(enrichment.linkedProjectIds).includes(String(p.id))).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}
             </select>
             <button class="icon-btn" type="button" onclick="linkObjectToExternalEvent('project', document.getElementById('projectSelect').value)" style="padding:6px 12px;font-size:12px;white-space:nowrap">Ajouter</button>
           </div>
@@ -1661,7 +1767,7 @@ function externalEventModal() {
           <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
             <select id="managerSelect" style="padding:6px 8px;border:1px solid #e2e8f0;border-radius:6px;flex:1;font-size:13px">
               <option value="">Sélectionner un manager...</option>
-              ${state.managers.filter(m => !(enrichment.linkedManagerIds || []).includes(m.id)).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}
+              ${state.managers.filter(m => !normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)).includes(String(m.id))).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("")}
             </select>
             <button class="icon-btn" type="button" onclick="linkObjectToExternalEvent('manager', document.getElementById('managerSelect').value)" style="padding:6px 12px;font-size:12px;white-space:nowrap">Ajouter</button>
           </div>
@@ -1772,6 +1878,9 @@ function readAgendaForm(existing = {}) {
       }
     }
   }
+  const linkedManagerIds = normalizeLinkedManagerIds(checkedValues("agManagers"));
+  console.log("[DEOS MANAGER DEBUG] manual selected manager ids before save", linkedManagerIds, linkedManagerIds.map(id => typeof id));
+  console.log("[DEOS MANAGER DEBUG] manual event object before save", existing);
   const data = {
     ...existing,
     date: date || localIsoDate(),
@@ -1784,10 +1893,12 @@ function readAgendaForm(existing = {}) {
     notes: document.getElementById("agNotes").value.trim(),
     detail: document.getElementById("agNotes").value.trim(),
     allDay,
-    linkedManagers: checkedValues("agManagers"),
+    linkedManagerIds,
+    linkedManagers: linkedManagerIds,
     linkedProjects: checkedValues("agProjects"),
     linkedFolders: checkedValues("agFolders")
   };
+  console.log("[DEOS MANAGER DEBUG] manual event payload to save", data);
   agendaFormError = "";
   return data;
 }
@@ -1796,6 +1907,7 @@ function addAgenda() {
   const data = readAgendaForm({ id: newId("agenda"), createdAt: localIsoDate(), source: "manual", externalId: "", calendarId: "", syncStatus: "local", lastSyncedAt: "" });
   if (!data) return;
   state.agenda.push(data);
+  console.log("[DEOS MANAGER DEBUG] manual stored new event", data);
   persist("agenda");
   ensureMeetingPreparation(data.id);
   addActivity("?? Agenda", data.title, `${data.date} ${agendaStartTime(data)}`, data.id);
@@ -1815,6 +1927,7 @@ function saveAgenda() {
   const data = readAgendaForm(a);
   if (!data) return;
   Object.assign(a, data);
+  console.log("[DEOS MANAGER DEBUG] manual stored updated event", a);
   a.updatedAt = localIsoDate();
   persist("agenda");
   syncMeetingPreparationLinks(a.id);
@@ -1851,7 +1964,8 @@ function syncMeetingPreparationLinks(agendaId) {
   const a = byId("agenda", agendaId);
   const p = meetingPrepForAgenda(agendaId);
   if (!a || !p) return;
-  p.linkedManagers = [...new Set([...(p.linkedManagers || []), ...(a.linkedManagers || [])])];
+  const agendaManagerIds = normalizeLinkedManagerIds(ensureArray(a.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a.linkedManagers));
+  p.linkedManagers = [...new Set([...(p.linkedManagers || []), ...agendaManagerIds])];
   p.linkedProjects = [...new Set([...(p.linkedProjects || []), ...(a.linkedProjects || [])])];
   p.linkedFolders = [...new Set([...(p.linkedFolders || []), ...(a.linkedFolders || [])])];
   persist("meetingPreparations");
@@ -1860,6 +1974,7 @@ function syncMeetingPreparationLinks(agendaId) {
 function ensureMeetingPreparation(agendaId) {
   const a = byId("agenda", agendaId);
   if (!a) return null;
+  const agendaManagerIds = normalizeLinkedManagerIds(ensureArray(a.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a.linkedManagers));
   let p = meetingPrepForAgenda(agendaId);
   if (!p) {
     p = normalizeMeetingPreparation({
@@ -1867,7 +1982,7 @@ function ensureMeetingPreparation(agendaId) {
       agendaId,
       status: "À préparer",
       template: a.type || "",
-      linkedManagers: a.linkedManagers || [],
+      linkedManagers: agendaManagerIds,
       linkedProjects: a.linkedProjects || [],
       linkedFolders: a.linkedFolders || []
     });
@@ -3265,8 +3380,8 @@ function addProject() {
 }
 
 function checkboxList(id, items, selectedIds, labelFn) {
-  const selected = new Set(selectedIds || []);
-  return `<div id="${id}" class="check-list">${items.map(item => `<label class="check-row"><input type="checkbox" value="${esc(item.id)}" ${selected.has(item.id) ? "checked" : ""}> <span>${esc(cleanDisplayLabel(labelFn(item)))}</span></label>`).join("") || `<div class="empty">Aucune donnée disponible.</div>`}</div>`;
+  const selected = new Set((selectedIds || []).map(x => String(x)));
+  return `<div id="${id}" class="check-list">${items.map(item => `<label class="check-row"><input type="checkbox" value="${esc(String(item.id))}" ${selected.has(String(item.id)) ? "checked" : ""}> <span>${esc(cleanDisplayLabel(labelFn(item)))}</span></label>`).join("") || `<div class="empty">Aucune donnée disponible.</div>`}</div>`;
 }
 
 function checkedValues(id) {
@@ -5762,7 +5877,7 @@ function activityItem(a) {
 }
 
 function renderActivity() {
-  appHtml(`<div class="card hero"><h2>?? Activité</h2><p class="muted">Trace chronologique des créations, modifications et suppressions.</p></div>${state.activity.map(activityItem).join("") || `<div class="card empty">Aucune activité.</div>`}`);
+  appHtml(`<div class="card hero"><h2>Agenda / Réunions</h2><p class="muted">Trace chronologique des créations, modifications et suppressions.</p></div>${state.activity.map(activityItem).join("") || `<div class="card empty">Aucune activité.</div>`}`);
 }
 
 function runSearch(query) {
@@ -6134,6 +6249,9 @@ async function syncGoogleCalendarNow() {
   googleSyncInProgress = true;
   renderSettings("Synchronisation en cours...");
   try {
+    const beforeKeys = Object.keys(state.externalEventEnrichments || {});
+    const beforeManagers = beforeKeys.map(k => ({ key: k, linkedManagerIds: normalizeLinkedManagerIds(ensureArray(state.externalEventEnrichments[k]?.linkedManagerIds || [])) }));
+    console.log("[DEOS MANAGER DEBUG] google sync before enrichments", beforeManagers);
     console.log("[DEOS SYNC TRACE] Fetching events from Google Calendar...");
     const rawEvents = await fetchGoogleCalendarEvents();
     console.log("[DEOS SYNC TRACE] Fetched", rawEvents.length, "raw events");
@@ -6248,6 +6366,9 @@ async function syncGoogleCalendarNow() {
     updateGoogleConnectionStatus("connected");
     persistSettings();
     persistExternalEvents();
+    const afterKeys = Object.keys(state.externalEventEnrichments || {});
+    const afterManagers = afterKeys.map(k => ({ key: k, linkedManagerIds: normalizeLinkedManagerIds(ensureArray(state.externalEventEnrichments[k]?.linkedManagerIds || [])) }));
+    console.log("[DEOS MANAGER DEBUG] google sync after enrichments", afterManagers);
     // [DEOS STATE TRACE] After persistence
     console.log("[DEOS STATE TRACE] after persistence:", state.externalCalendarEvents.length);
     googleSyncInProgress = false;
@@ -6703,6 +6824,8 @@ function saveExternalEventEnrichmentFromModal(eventKey) {
   enrichment.preparation = document.getElementById("enrichPrep")?.value || "";
   enrichment.notes = document.getElementById("enrichNotes")?.value || "";
   enrichment.report = document.getElementById("enrichReport")?.value || "";
+  enrichment.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds));
+  console.log("[DEOS MANAGER DEBUG] google enrichment before save", eventKey, enrichment);
   
   saveExternalEventEnrichment(eventKey, enrichment);
   
@@ -6941,15 +7064,21 @@ function linkObjectToExternalEvent(objectType, objectId) {
   }
   
   if (!Array.isArray(enrichment[arrayName])) enrichment[arrayName] = [];
-  
-  const obj = byId(collectionName, objectId);
+  const normalizedObjectId = String(objectId);
+
+  const obj = byId(collectionName, normalizedObjectId);
   if (!obj) { console.error("[DEOS V5.8 INLINE] Object not found:", objectType, objectId); return; }
-  
-  if (enrichment[arrayName].includes(objectId)) { console.log("[DEOS V5.8 INLINE] Object already linked, skipping duplicate"); return; }
-  
-  console.log("[DEOS V5.8 INLINE] link count before:", enrichment[arrayName].length);
-  enrichment[arrayName].push(objectId);
+
+  const normalizedIds = normalizeLinkedIdArray(enrichment[arrayName]);
+  if (normalizedIds.includes(normalizedObjectId)) { console.log("[DEOS V5.8 INLINE] Object already linked, skipping duplicate"); return; }
+
+  console.log("[DEOS MANAGER DEBUG] google selected id before link", { objectType, objectId: normalizedObjectId, type: typeof normalizedObjectId });
+  console.log("[DEOS V5.8 INLINE] link count before:", normalizedIds.length);
+  enrichment[arrayName] = [...normalizedIds, normalizedObjectId];
   console.log("[DEOS V5.8 INLINE] link count after:", enrichment[arrayName].length);
+  if (objectType === "manager") {
+    console.log("[DEOS MANAGER DEBUG] google linkedManagerIds after link", enrichment[arrayName]);
+  }
   
   enrichment.updatedAt = new Date().toISOString();
   saveExternalEventEnrichment(eventKey, enrichment);
@@ -6980,10 +7109,14 @@ function unlinkObjectFromExternalEvent(objectType, objectId) {
   }
   
   if (!Array.isArray(enrichment[arrayName])) enrichment[arrayName] = [];
-  
-  const idx = enrichment[arrayName].indexOf(objectId);
-  if (idx >= 0) {
-    enrichment[arrayName].splice(idx, 1);
+  const normalizedObjectId = String(objectId);
+  const before = normalizeLinkedIdArray(enrichment[arrayName]);
+  const after = before.filter(id => !sameId(id, normalizedObjectId));
+  if (after.length !== before.length) {
+    enrichment[arrayName] = after;
+    if (objectType === "manager") {
+      console.log("[DEOS MANAGER DEBUG] google linkedManagerIds after unlink", enrichment[arrayName]);
+    }
     enrichment.updatedAt = new Date().toISOString();
     saveExternalEventEnrichment(eventKey, enrichment);
     console.log("[DEOS V5.8 INLINE] local rerender completed");
