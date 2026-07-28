@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.9";
+﻿const DEOS_VERSION = "V5.10";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
