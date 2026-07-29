@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.15.1";
+﻿const DEOS_VERSION = "V5.16";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -112,6 +112,15 @@ let graphRafId = 0;
 let graphDataSignature = "";
 let graphReturnContext = null;
 let graphNavigationLock = false;
+let a5SummaryDialog = {
+  open: false,
+  type: "",
+  sourceId: "",
+  orientation: "portrait",
+  model: null,
+  error: ""
+};
+let a5PrintCleanupBound = false;
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -274,6 +283,8 @@ function appHtml(html) {
     ? `<div class="card graph-return-banner"><div><strong>Vue graphique</strong><p class="muted">Contexte conservé (filtres, zoom, sélection).</p></div><div class="row-actions"><button class="secondary" onclick="returnToGraph()">Retour à la vue graphique</button></div></div>`
     : "";
   document.getElementById("app").innerHTML = hideVisibleTechnicalIds(`${graphReturnBanner}${html}`);
+  injectA5SummaryButtons();
+  renderA5SummaryOverlay();
 }
 
 function badge(status) {
@@ -1679,6 +1690,649 @@ function renderLinkedMeetingsSection(type, objectId) {
   const meetings = getMeetingsLinkedToObject(type, objectId);
   if (!meetings.length) return `<div class="empty">Aucun rendez-vous lié.</div>`;
   return meetings.map(m => linkedMeetingItem(m, type, objectId)).join("");
+}
+
+function parseEntityIdFromCall(source, fnName) {
+  const match = String(source || "").match(new RegExp(`${fnName}\\('([^']+)'\\)`));
+  return match ? String(match[1]) : "";
+}
+
+function injectA5SummaryButtons() {
+  const actions = document.querySelector(".manager-hero .row-actions");
+  if (!actions) return;
+  const buttons = [...actions.querySelectorAll("button")];
+  if (!buttons.length) return;
+  if (!actions.querySelector("button[data-a5-summary='folder']")) {
+    const folderBtn = buttons.find(btn => String(btn.getAttribute("onclick") || "").includes("editFolder('"));
+    const folderId = parseEntityIdFromCall(folderBtn?.getAttribute("onclick"), "editFolder");
+    if (folderBtn && folderId) {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "secondary";
+      node.setAttribute("data-a5-summary", "folder");
+      node.setAttribute("onclick", `openA5SummaryPreview('folder','${esc(folderId)}')`);
+      node.textContent = "🖨️ Synthèse A5";
+      folderBtn.insertAdjacentElement("afterend", node);
+    }
+  }
+  if (!actions.querySelector("button[data-a5-summary='project']")) {
+    const projectBtn = buttons.find(btn => String(btn.getAttribute("onclick") || "").includes("editProject('"));
+    const projectId = parseEntityIdFromCall(projectBtn?.getAttribute("onclick"), "editProject");
+    if (projectBtn && projectId) {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "secondary";
+      node.setAttribute("data-a5-summary", "project");
+      node.setAttribute("onclick", `openA5SummaryPreview('project','${esc(projectId)}')`);
+      node.textContent = "🖨️ Synthèse A5";
+      projectBtn.insertAdjacentElement("afterend", node);
+    }
+  }
+}
+
+function ensureA5PrintHooks() {
+  if (a5PrintCleanupBound) return;
+  window.addEventListener("afterprint", cleanupA5PrintClasses);
+  a5PrintCleanupBound = true;
+}
+
+function cleanupA5PrintClasses() {
+  document.body.classList.remove("a5-print-active", "a5-print-portrait", "a5-print-landscape");
+}
+
+function a5SafeText(value, max = 140) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1)).trim()}…` : text;
+}
+
+function a5LevelLabel(level) {
+  return level === "red" ? "Critique" : level === "orange" ? "Important" : level === "green" ? "Normal" : (level || "A suivre");
+}
+
+function a5MeetingTime(meeting) {
+  if (!meeting) return "Heure a confirmer";
+  if (meeting.allDay) return "Journee entiere";
+  const start = String(meeting.startTime || "").trim();
+  const end = String(meeting.endTime || "").trim();
+  if (!start) return "Heure a confirmer";
+  return end ? `${start} - ${end}` : start;
+}
+
+function a5Date(value) {
+  const d = parseDateValue(value);
+  if (!d) return "";
+  return d.toLocaleDateString("fr-FR");
+}
+
+function a5DateTimeNow() {
+  return new Date().toLocaleString("fr-FR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function a5IsUpcoming(value) {
+  const days = daysUntil(value);
+  return days !== null && days >= 0;
+}
+
+function a5ActionSort(a, b) {
+  const ad = daysUntil(a.due);
+  const bd = daysUntil(b.due);
+  const aOver = ad !== null && ad < 0 ? 0 : 1;
+  const bOver = bd !== null && bd < 0 ? 0 : 1;
+  if (aOver !== bOver) return aOver - bOver;
+  const byDue = dateRank(a.due) - dateRank(b.due);
+  if (byDue !== 0) return byDue;
+  return levelRank(a.level || a.priorityLevel || "orange") - levelRank(b.level || b.priorityLevel || "orange");
+}
+
+function a5DecisionSort(a, b) {
+  const byLevel = levelRank(a.importance || "orange") - levelRank(b.importance || "orange");
+  if (byLevel !== 0) return byLevel;
+  return dateRank(a.reviewDate || a.date) - dateRank(b.reviewDate || b.date);
+}
+
+function a5MeetingDisplay(meeting) {
+  const confidentiality = normalizeMeetingConfidentiality(meeting.confidentiality || "normal");
+  const restricted = confidentiality === "restricted" || confidentiality === "confidential";
+  const label = restricted ? "Rendez-vous restreint ou confidentiel" : (meeting.title || "Rendez-vous");
+  return {
+    label,
+    date: a5Date(meeting.date) || String(meeting.date || ""),
+    time: a5MeetingTime(meeting),
+    confidentiality,
+    restricted
+  };
+}
+
+function a5Section(title, body) {
+  if (!body) return "";
+  return `<section class="a5-section"><h3>${esc(title)}</h3>${body}</section>`;
+}
+
+function a5List(items, renderItem, emptyText = "") {
+  const rows = ensureArray(items).map(renderItem).filter(Boolean);
+  if (!rows.length) return emptyText ? `<p class="muted">${esc(emptyText)}</p>` : "";
+  return `<div class="a5-list">${rows.join("")}</div>`;
+}
+
+function projectRelationsForA5(project) {
+  const projectId = String(project?.id || "");
+  const linkedManagers = new Map();
+  ensureArray(project.linkedManagers).forEach(id => {
+    const manager = byId("managers", id);
+    if (manager) linkedManagers.set(String(manager.id), manager);
+  });
+  const owner = byId("managers", project.ownerId);
+  if (owner) linkedManagers.set(String(owner.id), owner);
+  const actions = state.actions.filter(a => ensureArray(project.linkedActions).some(id => sameId(id, a.id)) || ensureArray(a.linkedProjects).some(id => sameId(id, projectId)));
+  const decisions = state.decisions.filter(d => ensureArray(project.linkedDecisions).some(id => sameId(id, d.id)) || ensureArray(d.linkedProjects).some(id => sameId(id, projectId)));
+  const documents = state.documents.filter(d => ensureArray(project.linkedDocuments).some(id => sameId(id, d.id)) || ensureArray(d.linkedProjects).some(id => sameId(id, projectId)));
+  const journal = state.journal.filter(j => ensureArray(j.linkedProjects).some(id => sameId(id, projectId)));
+  const meetings = getMeetingsLinkedToObject("project", projectId);
+  return {
+    managers: [...linkedManagers.values()],
+    actions,
+    decisions,
+    documents,
+    journal,
+    meetings,
+    milestones: ensureArray(project.milestones)
+  };
+}
+
+function buildFolderA5Summary(folderId) {
+  const folder = byId("folders", folderId);
+  if (!folder) return null;
+  const matchesFolder = (item) => ensureArray(item?.linkedFolders).some(id => sameId(id, folder.id));
+  const projects = state.projects.filter(project => matchesFolder(project));
+  const projectIds = projects.map(project => String(project.id));
+  const managers = state.managers.filter(manager => ensureArray(folder.linkedManagers).some(id => sameId(id, manager.id))
+    || projectIds.some(id => ensureArray(manager.linkedProjects).some(link => sameId(link, id)))
+    || projects.some(project => sameId(project.ownerId, manager.id) || ensureArray(project.linkedManagers).some(link => sameId(link, manager.id))));
+  const managerIds = managers.map(manager => String(manager.id));
+  const actionsFromLinks = state.actions.filter(action => matchesFolder(action)
+    || projectIds.some(id => ensureArray(action.linkedProjects).some(link => sameId(link, id)))
+    || projects.some(project => ensureArray(project.linkedActions).some(link => sameId(link, action.id))));
+  const priorities = state.priorities.filter(priority => matchesFolder(priority));
+  const decisions = state.decisions.filter(decision => matchesFolder(decision)
+    || projectIds.some(id => ensureArray(decision.linkedProjects).some(link => sameId(link, id)))
+    || actionsFromLinks.some(action => ensureArray(decision.linkedActions).some(link => sameId(link, action.id))));
+  const decisionIds = decisions.map(decision => String(decision.id));
+  const journal = state.journal.filter(entry => matchesFolder(entry)
+    || projectIds.some(id => ensureArray(entry.linkedProjects).some(link => sameId(link, id)))
+    || decisionIds.some(id => ensureArray(entry.linkedDecisions).some(link => sameId(link, id))));
+  const documents = state.documents.filter(doc => matchesFolder(doc)
+    || projects.some(project => ensureArray(project.linkedDocuments).some(link => sameId(link, doc.id)))
+    || decisions.some(decision => ensureArray(decision.linkedDocuments).some(link => sameId(link, doc.id))));
+  const agenda = state.agenda.filter(meeting => matchesFolder(meeting)
+    || projectIds.some(id => ensureArray(meeting.linkedProjects).some(link => sameId(link, id)))
+    || managerIds.some(id => ensureArray(meeting.linkedManagers).some(link => sameId(link, id))));
+  const rel = { projects, managers, actions: actionsFromLinks, priorities, decisions, journal, documents, agenda };
+  const actionsAll = rel.actions.slice();
+  const openActions = actionsAll.filter(a => !a.done);
+  const actionPool = (openActions.length ? openActions : actionsAll).slice().sort(a5ActionSort);
+  const sortedDecisions = rel.decisions.slice().sort(a5DecisionSort);
+  const sortedProjects = rel.projects.slice().sort((a, b) => {
+    const ar = (a.status === "red" || a.priorityLevel === "red") ? 0 : 1;
+    const br = (b.status === "red" || b.priorityLevel === "red") ? 0 : 1;
+    if (ar !== br) return ar - br;
+    return dateRank(a.deadline) - dateRank(b.deadline);
+  });
+  const meetings = getMeetingsLinkedToObject("folder", folder.id).map(a5MeetingDisplay);
+  const upcomingMeetings = meetings.filter(m => a5IsUpcoming(m.date));
+  const overdueActions = openActions.filter(a => {
+    const d = daysUntil(a.due);
+    return d !== null && d < 0;
+  });
+  const risks = [];
+  sortedProjects.filter(p => p.risks || p.status === "red" || p.priorityLevel === "red").slice(0, 3).forEach(p => {
+    risks.push(`Projet ${p.name}: ${a5SafeText(p.risks || "Statut critique", 90)}`);
+  });
+  overdueActions.filter(a => levelRank(a.level || a.priorityLevel || "orange") <= 1).slice(0, 2).forEach(a => {
+    risks.push(`Action en retard: ${a5SafeText(a.title, 90)}`);
+  });
+  sortedDecisions.filter(d => d.status === "review" || d.status === "applying").slice(0, 2).forEach(d => {
+    risks.push(`Decision a suivre: ${a5SafeText(d.title, 90)}`);
+  });
+  rel.priorities.filter(p => !p.done && p.level === "red").slice(0, 1).forEach(p => {
+    risks.push(`Priorite critique: ${a5SafeText(p.title, 90)}`);
+  });
+  const nextSteps = [];
+  const nextDue = [...actionsAll.map(a => a.due), ...priorities.map(p => p.due), ...sortedProjects.map(p => p.deadline), ...sortedDecisions.map(d => d.reviewDate), ...agenda.map(a => a.date), folder.deadline]
+    .filter(Boolean)
+    .sort((a, b) => dateRank(a) - dateRank(b))[0] || "";
+  if (nextDue) nextSteps.push(`Prochaine echeance: ${a5Date(nextDue) || nextDue}`);
+  const nextMeeting = upcomingMeetings[0];
+  if (nextMeeting) nextSteps.push(`Prochain rendez-vous: ${nextMeeting.date} ${nextMeeting.time}`);
+  const nextAction = actionPool[0];
+  if (nextAction) nextSteps.push(`Prochaine action importante: ${a5SafeText(nextAction.title, 90)}`);
+  const nextDecision = sortedDecisions.find(d => d.status === "review" || d.status === "applying");
+  if (nextDecision) nextSteps.push(`Decision attendue: ${a5SafeText(nextDecision.title, 90)}`);
+
+  return {
+    type: "folder",
+    title: folder.name,
+    metadata: {
+      category: folder.category || "",
+      status: folderStatusLabel(folder.status),
+      priority: folderPriorityLabel(folder.priorityLevel),
+      owner: folder.owner || "",
+      deadline: folder.deadline || "",
+      generatedAt: a5DateTimeNow(),
+      version: DEOS_VERSION
+    },
+    context: {
+      description: folder.description || "",
+      context: folder.context || "",
+      objectives: folder.objectives || "",
+      expectedResults: folder.expectedResults || ""
+    },
+    metrics: {
+      linkedProjects: rel.projects.length,
+      openActions: openActions.length,
+      overdueActions: overdueActions.length,
+      linkedDecisions: rel.decisions.length,
+      upcomingMeetings: upcomingMeetings.length,
+      linkedManagers: rel.managers.length
+    },
+    projects: sortedProjects.slice(0, 4).map(p => ({
+      name: p.name,
+      status: folderStatusLabel(p.status),
+      progress: Number(p.progress || 0),
+      deadline: p.deadline || "",
+      risk: a5SafeText(p.risks || "", 90)
+    })),
+    actions: actionPool.slice(0, 5).map(a => ({
+      title: a.title,
+      owner: a.owner || "",
+      due: a.due || "",
+      overdue: (() => {
+        const d = daysUntil(a.due);
+        return d !== null && d < 0 ? `${Math.abs(d)} j` : "";
+      })(),
+      level: a5LevelLabel(a.level || a.priorityLevel || "orange"),
+      done: Boolean(a.done)
+    })),
+    decisions: sortedDecisions.slice(0, 3).map(d => ({
+      title: d.title,
+      status: decisionStatusLabel(d.status),
+      date: d.date || "",
+      owner: d.owner || "",
+      importance: a5LevelLabel(d.importance || "orange")
+    })),
+    risks: normalizeLinkedIdArray(risks).slice(0, 5),
+    meetings: meetings.slice(0, 4),
+    nextSteps: nextSteps.slice(0, 5)
+  };
+}
+
+function buildProjectA5Summary(projectId) {
+  const project = byId("projects", projectId);
+  if (!project) return null;
+  const rel = projectRelationsForA5(project);
+  const openActions = rel.actions.filter(a => !a.done).sort(a5ActionSort);
+  const actionPool = (openActions.length ? openActions : rel.actions.slice().sort(a5ActionSort));
+  const decisions = rel.decisions.slice().sort(a5DecisionSort);
+  const milestones = rel.milestones.slice().sort((a, b) => dateRank(a.date) - dateRank(b.date));
+  const meetings = rel.meetings.map(a5MeetingDisplay);
+  const upcomingMeetings = meetings.filter(m => a5IsUpcoming(m.date));
+  const overdueActions = openActions.filter(a => {
+    const d = daysUntil(a.due);
+    return d !== null && d < 0;
+  });
+  const risks = [];
+  if (project.risks) risks.push(a5SafeText(project.risks, 120));
+  overdueActions.slice(0, 2).forEach(a => risks.push(`Action en retard: ${a5SafeText(a.title, 90)}`));
+  milestones.filter(m => {
+    const d = daysUntil(m.date);
+    return d !== null && d < 0;
+  }).slice(0, 2).forEach(m => risks.push(`Jalon en retard: ${a5SafeText(m.title, 90)}`));
+  decisions.filter(d => d.status === "review" || d.status === "applying").slice(0, 2).forEach(d => risks.push(`Decision en attente: ${a5SafeText(d.title, 90)}`));
+  if (!risks.length && (project.status === "red" || project.priorityLevel === "red")) risks.push("Projet en statut critique.");
+
+  const nextSteps = [];
+  if (project.deadline) nextSteps.push(`Prochaine echeance: ${a5Date(project.deadline) || project.deadline}`);
+  const nextMilestone = milestones.find(m => a5IsUpcoming(m.date));
+  if (nextMilestone) nextSteps.push(`Prochain jalon: ${a5SafeText(nextMilestone.title, 90)} (${a5Date(nextMilestone.date) || nextMilestone.date})`);
+  const nextAction = actionPool[0];
+  if (nextAction) nextSteps.push(`Prochaine action: ${a5SafeText(nextAction.title, 90)}`);
+  const nextMeeting = upcomingMeetings[0];
+  if (nextMeeting) nextSteps.push(`Prochain rendez-vous: ${nextMeeting.date} ${nextMeeting.time}`);
+  const nextDecision = decisions.find(d => d.status === "review" || d.status === "applying");
+  if (nextDecision) nextSteps.push(`Decision attendue: ${a5SafeText(nextDecision.title, 90)}`);
+
+  return {
+    type: "project",
+    title: project.name,
+    metadata: {
+      status: folderStatusLabel(project.status),
+      progress: Number(project.progress || 0),
+      priority: folderPriorityLabel(project.priorityLevel || "orange"),
+      owner: projectOwnerName(project) || "",
+      deadline: project.deadline || "",
+      generatedAt: a5DateTimeNow(),
+      version: DEOS_VERSION
+    },
+    objectiveBlock: {
+      description: project.actions || "",
+      context: project.context || "",
+      objective: project.objective || "",
+      expectedResults: project.next || ""
+    },
+    metrics: {
+      progress: Number(project.progress || 0),
+      openActions: openActions.length,
+      overdueActions: overdueActions.length,
+      linkedDecisions: decisions.length,
+      milestones: milestones.length,
+      upcomingMeetings: upcomingMeetings.length,
+      linkedManagers: rel.managers.length
+    },
+    milestones: milestones.slice(0, 4).map(m => {
+      const d = daysUntil(m.date);
+      return {
+        title: m.title || "Jalon",
+        date: m.date || "",
+        status: m.status || "A suivre",
+        overdue: d !== null && d < 0 ? `${Math.abs(d)} j` : ""
+      };
+    }),
+    actions: actionPool.slice(0, 5).map(a => ({
+      title: a.title,
+      owner: a.owner || "",
+      due: a.due || "",
+      level: a5LevelLabel(a.level || a.priorityLevel || "orange"),
+      overdue: (() => {
+        const d = daysUntil(a.due);
+        return d !== null && d < 0 ? `${Math.abs(d)} j` : "";
+      })()
+    })),
+    decisions: decisions.slice(0, 4).map(d => ({
+      title: d.title,
+      status: decisionStatusLabel(d.status),
+      date: d.date || "",
+      importance: a5LevelLabel(d.importance || "orange"),
+      owner: d.owner || ""
+    })),
+    risks: normalizeLinkedIdArray(risks).slice(0, 5),
+    meetings: meetings.slice(0, 4),
+    nextSteps: nextSteps.slice(0, 5)
+  };
+}
+
+function openA5SummaryPreview(type, sourceId) {
+  const normalizedType = String(type || "").trim().toLowerCase();
+  const id = String(sourceId || "").trim();
+  if (!normalizedType || !id) return;
+  const model = normalizedType === "folder" ? buildFolderA5Summary(id) : buildProjectA5Summary(id);
+  if (!model) {
+    alert("Impossible de générer la synthèse : objet introuvable.");
+    return;
+  }
+  ensureA5PrintHooks();
+  a5SummaryDialog = {
+    open: true,
+    type: normalizedType,
+    sourceId: id,
+    orientation: "portrait",
+    model,
+    error: ""
+  };
+  renderA5SummaryOverlay();
+}
+
+function closeA5SummaryPreview() {
+  a5SummaryDialog.open = false;
+  a5SummaryDialog.error = "";
+  cleanupA5PrintClasses();
+  renderA5SummaryOverlay();
+}
+
+function setA5SummaryOrientation(orientation) {
+  const value = orientation === "landscape" ? "landscape" : "portrait";
+  a5SummaryDialog.orientation = value;
+  renderA5SummaryOverlay();
+}
+
+function a5PrintStyles(orientation) {
+  const pageSize = orientation === "landscape" ? "A5 landscape" : "A5 portrait";
+  return `
+    html,body{margin:0!important;padding:0!important;height:auto!important;background:#fff!important;color:#0f172a!important;font-family:Arial,Helvetica,sans-serif!important}
+    @page{size:${pageSize};margin:8mm}
+    .a5-print-doc{margin:0!important;padding:0!important;position:static!important;transform:none!important;width:auto!important;min-height:0!important;break-before:auto!important;page-break-before:auto!important}
+    .a5-summary-sheet{box-shadow:none!important;border:0!important;border-radius:0!important;margin:0!important;break-before:auto!important;page-break-before:auto!important;min-height:0!important}
+    .a5-section,.a5-item{break-inside:avoid;page-break-inside:avoid}
+  `;
+}
+
+function buildA5PrintWindowHtml(sheetHtml, orientation) {
+  const sheetStyleHref = document.querySelector("link[rel='stylesheet']")?.getAttribute("href") || "style.css";
+  return `<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DEOS Synthese A5</title>
+  <link rel="stylesheet" href="${esc(sheetStyleHref)}">
+  <style>${a5PrintStyles(orientation)}</style>
+</head>
+<body>
+  <div class="a5-print-doc">${sheetHtml}</div>
+</body>
+</html>`;
+}
+
+function printA5ViaIframe(sheetHtml, orientation) {
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.position = "fixed";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument || frame.contentWindow?.document;
+  if (!doc) {
+    frame.remove();
+    return;
+  }
+  doc.open();
+  doc.write(buildA5PrintWindowHtml(sheetHtml, orientation));
+  doc.close();
+  const launch = () => {
+    try {
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+    } catch {}
+    setTimeout(() => frame.remove(), 300);
+  };
+  if (doc.readyState === "complete") {
+    launch();
+  } else {
+    frame.addEventListener("load", launch, { once: true });
+  }
+}
+
+function printA5Summary() {
+  if (!a5SummaryDialog.open) return;
+  const sheet = document.querySelector(".a5-summary-sheet");
+  if (!sheet) return;
+  const orientation = a5SummaryDialog.orientation === "landscape" ? "landscape" : "portrait";
+  const win = window.open("", "_blank", "noopener,noreferrer");
+  if (!win) {
+    printA5ViaIframe(sheet.outerHTML, orientation);
+    return;
+  }
+  win.document.open();
+  win.document.write(buildA5PrintWindowHtml(sheet.outerHTML, orientation));
+  win.document.close();
+  const launch = () => {
+    try {
+      win.focus();
+      win.print();
+    } catch {}
+  };
+  if (win.document.readyState === "complete") {
+    launch();
+  } else {
+    win.addEventListener("load", launch, { once: true });
+  }
+}
+
+function a5SummaryBadge(label, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return `<span class="a5-summary-meta-badge"><strong class="a5-summary-meta-badge-label">${esc(label)}</strong><span class="a5-summary-meta-badge-sep"> · </span><span class="a5-summary-meta-badge-value">${esc(String(value))}</span></span>`;
+}
+
+function a5SummaryMetrics(model) {
+  const metrics = model.metrics || {};
+  const defs = model.type === "folder"
+    ? [
+      { label: "Projets lies", value: metrics.linkedProjects || 0 },
+      { label: "Actions ouvertes", value: metrics.openActions || 0 },
+      { label: "Actions en retard", value: metrics.overdueActions || 0 },
+      { label: "Decisions liees", value: metrics.linkedDecisions || 0 },
+      { label: "Rendez-vous a venir", value: metrics.upcomingMeetings || 0 },
+      { label: "Managers lies", value: metrics.linkedManagers || 0 }
+    ]
+    : [
+      { label: "Actions ouvertes", value: metrics.openActions || 0 },
+      { label: "Actions en retard", value: metrics.overdueActions || 0 },
+      { label: "Decisions liees", value: metrics.linkedDecisions || 0 },
+      { label: "Jalons", value: metrics.milestones || 0 },
+      { label: "Rendez-vous a venir", value: metrics.upcomingMeetings || 0 },
+      { label: "Managers lies", value: metrics.linkedManagers || 0 }
+    ];
+  return defs.map(d => `<article class="a5-summary-metric"><strong class="a5-summary-metric-value">${esc(String(d.value))}</strong><span class="a5-summary-metric-label"> ${esc(d.label)}</span></article>`).join("");
+}
+
+function renderA5SummaryHeader(model, orientation) {
+  const m = model.metadata || {};
+  const badges = model.type === "folder"
+    ? [
+      a5SummaryBadge("Categorie", m.category),
+      a5SummaryBadge("Statut", m.status),
+      a5SummaryBadge("Priorite", m.priority),
+      a5SummaryBadge("Echeance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
+    ]
+    : [
+      a5SummaryBadge("Statut", m.status),
+      a5SummaryBadge("Priorite", m.priority),
+      a5SummaryBadge("Avancement", `${Number(m.progress || 0)} %`),
+      a5SummaryBadge("Echeance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
+    ];
+  const badgeHtml = badges.filter(Boolean).join("");
+  const generatedAt = m.generatedAt ? `Genere le ${m.generatedAt}` : "";
+  return `
+    <header class="a5-header a5-summary-head">
+      <div class="a5-summary-kicker-row">
+        <p class="a5-summary-kicker">${model.type === "folder" ? "DOSSIER" : "PROJET"}</p>
+        <p class="a5-summary-version">DEOS ${esc(DEOS_VERSION)}</p>
+      </div>
+      <h1 class="a5-summary-title">${esc(model.title || "Synthese")}</h1>
+      <div class="a5-summary-meta-badges">${badgeHtml}</div>
+      <div class="a5-summary-metrics ${orientation === "landscape" ? "is-landscape" : "is-portrait"}">${a5SummaryMetrics(model)}</div>
+      ${generatedAt ? `<p class="a5-summary-generated-at">${esc(generatedAt)}</p>` : ""}
+      <div class="a5-summary-divider"></div>
+    </header>
+  `;
+}
+
+function renderA5SummaryFolder(model) {
+  const context = model.context || {};
+  const contextBody = [
+    context.description ? `<p><strong>Description:</strong> ${esc(a5SafeText(context.description, 300))}</p>` : "",
+    context.context ? `<p><strong>Contexte:</strong> ${esc(a5SafeText(context.context, 260))}</p>` : "",
+    context.objectives ? `<p><strong>Objectifs:</strong> ${esc(a5SafeText(context.objectives, 220))}</p>` : "",
+    context.expectedResults ? `<p><strong>Resultats attendus:</strong> ${esc(a5SafeText(context.expectedResults, 220))}</p>` : ""
+  ].join("");
+  const projectsBody = a5List(model.projects, p => `<article class="a5-item"><strong>${esc(p.name)}</strong><p>${esc(p.status)} · ${esc(String(p.progress))}%${p.deadline ? " · Echeance " + esc(a5Date(p.deadline) || p.deadline) : ""}</p>${p.risk ? `<p class="muted">Risque: ${esc(p.risk)}</p>` : ""}</article>`);
+  const actionsBody = a5List(model.actions, a => `<article class="a5-item"><strong>${esc(a5SafeText(a.title, 90))}</strong><p>${esc(a.owner || "Responsable a definir")} · ${esc(a.level)}${a.due ? " · " + esc(a5Date(a.due) || a.due) : ""}${a.overdue ? " · Retard " + esc(a.overdue) : ""}</p></article>`);
+  const decisionsBody = a5List(model.decisions, d => `<article class="a5-item"><strong>${esc(a5SafeText(d.title, 90))}</strong><p>${esc(d.status)}${d.date ? " · " + esc(a5Date(d.date) || d.date) : ""}${d.owner ? " · " + esc(d.owner) : ""}</p></article>`);
+  const risksBody = a5List(model.risks, r => `<article class="a5-item"><p>${esc(r)}</p></article>`);
+  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnee renseignee.");
+  const meetingsBody = a5List(model.meetings, m => `<article class="a5-item"><strong>${esc(m.label)}</strong><p>${esc(m.date)} · ${esc(m.time)} ${meetingConfidentialityBadge(m.confidentiality)}</p></article>`);
+  return `
+    ${a5Section("Contexte", contextBody || `<p class="muted">Aucune donnee renseignee.</p>`) }
+    ${a5Section("Rendez-vous", meetingsBody)}
+    ${a5Section("Projets cles", projectsBody)}
+    ${a5Section("Actions prioritaires", actionsBody)}
+    ${a5Section("Decisions", decisionsBody)}
+    ${a5Section("Risques / Points d'attention", risksBody)}
+    ${a5Section("Prochaines etapes", nextBody)}
+  `;
+}
+
+function renderA5SummaryProject(model) {
+  const objective = model.objectiveBlock || {};
+  const objectiveBody = [
+    objective.description ? `<p><strong>Description:</strong> ${esc(a5SafeText(objective.description, 260))}</p>` : "",
+    objective.context ? `<p><strong>Contexte:</strong> ${esc(a5SafeText(objective.context, 220))}</p>` : "",
+    objective.objective ? `<p><strong>Objectif:</strong> ${esc(a5SafeText(objective.objective, 220))}</p>` : "",
+    objective.expectedResults ? `<p><strong>Resultats attendus:</strong> ${esc(a5SafeText(objective.expectedResults, 200))}</p>` : ""
+  ].join("");
+  const milestonesBody = a5List(model.milestones, m => `<article class="a5-item"><strong>${esc(a5SafeText(m.title, 90))}</strong><p>${m.date ? esc(a5Date(m.date) || m.date) : "Sans date"} · ${esc(m.status)}${m.overdue ? " · Retard " + esc(m.overdue) : ""}</p></article>`);
+  const actionsBody = a5List(model.actions, a => `<article class="a5-item"><strong>${esc(a5SafeText(a.title, 90))}</strong><p>${esc(a.owner || "Responsable a definir")} · ${esc(a.level)}${a.due ? " · " + esc(a5Date(a.due) || a.due) : ""}${a.overdue ? " · Retard " + esc(a.overdue) : ""}</p></article>`);
+  const decisionsBody = a5List(model.decisions, d => `<article class="a5-item"><strong>${esc(a5SafeText(d.title, 90))}</strong><p>${esc(d.status)}${d.date ? " · " + esc(a5Date(d.date) || d.date) : ""} · ${esc(d.importance)}${d.owner ? " · " + esc(d.owner) : ""}</p></article>`);
+  const risksBody = a5List(model.risks, r => `<article class="a5-item"><p>${esc(r)}</p></article>`);
+  const meetingsBody = a5List(model.meetings, m => `<article class="a5-item"><strong>${esc(m.label)}</strong><p>${esc(m.date)} · ${esc(m.time)} ${meetingConfidentialityBadge(m.confidentiality)}</p></article>`);
+  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnee renseignee.");
+  return `
+    ${a5Section("Objectif", objectiveBody || `<p class="muted">Aucune donnee renseignee.</p>`) }
+    ${a5Section("Jalons", milestonesBody)}
+    ${a5Section("Actions prioritaires", actionsBody)}
+    ${a5Section("Decisions", decisionsBody)}
+    ${a5Section("Rendez-vous", meetingsBody)}
+    ${a5Section("Risques et blocages", risksBody)}
+    ${a5Section("Prochaines etapes", nextBody)}
+  `;
+}
+
+function renderA5SummaryModal() {
+  if (!a5SummaryDialog.open || !a5SummaryDialog.model) return "";
+  const model = a5SummaryDialog.model;
+  const orientation = a5SummaryDialog.orientation === "landscape" ? "landscape" : "portrait";
+  const body = model.type === "folder" ? renderA5SummaryFolder(model) : renderA5SummaryProject(model);
+  return `<div class="modal-backdrop a5-summary-modal" onclick="closeA5SummaryPreview()">
+    <div class="modal-panel a5-summary-panel" onclick="event.stopPropagation()">
+      <div class="modal-head no-print">
+        <h2>Synthese A5 · ${model.type === "folder" ? "Dossier" : "Projet"}</h2>
+        <button class="icon-close" type="button" onclick="closeA5SummaryPreview()" aria-label="Fermer">×</button>
+      </div>
+      <div class="a5-summary-toolbar no-print">
+        <div class="a5-orientation-switch" role="group" aria-label="Orientation">
+          <button type="button" class="secondary ${orientation === "portrait" ? "active-filter" : ""}" onclick="setA5SummaryOrientation('portrait')">Portrait</button>
+          <button type="button" class="secondary ${orientation === "landscape" ? "active-filter" : ""}" onclick="setA5SummaryOrientation('landscape')">Paysage</button>
+        </div>
+        <div class="row-actions">
+          <button type="button" class="action" onclick="printA5Summary()">Imprimer / Exporter en PDF</button>
+          <button type="button" class="secondary" onclick="closeA5SummaryPreview()">Fermer</button>
+        </div>
+      </div>
+      <div class="a5-print-root ${orientation}">
+        <article class="a5-summary-sheet ${orientation}">
+          ${renderA5SummaryHeader(model, orientation)}
+          <div class="a5-content ${orientation === "landscape" ? "two-columns" : "one-column"}">${body}</div>
+          <footer class="a5-footer">Document interne DEOS</footer>
+        </article>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderA5SummaryOverlay() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".a5-summary-modal").forEach(node => node.remove());
+  if (!a5SummaryDialog.open) return;
+  root.insertAdjacentHTML("beforeend", renderA5SummaryModal());
 }
 
 function toggleAgendaTimeFields() {

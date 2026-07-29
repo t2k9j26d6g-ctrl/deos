@@ -1,6 +1,119 @@
 *{box-sizing:border-box}
 body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f3f6fb;color:#101828;display:flex}
 .sidebar{width:260px;min-height:100vh;background:#0f172a;color:white;padding:24px;position:fixed;overflow:auto}
+
+/* V5.16 - Synthese A5 */
+.a5-summary-panel{width:min(1040px,calc(100vw - 36px));padding:16px}
+.a5-summary-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+.a5-orientation-switch{display:flex;gap:8px}
+.a5-orientation-switch .secondary{margin:0}
+.a5-print-root{display:flex;justify-content:center;background:linear-gradient(135deg,#f8fafc,#eef2ff);border:1px solid #dbe3f1;border-radius:16px;padding:16px;overflow:auto}
+.a5-summary-sheet{background:#fff;color:#0f172a;box-shadow:0 12px 30px rgba(15,23,42,.12);border:1px solid #e2e8f0;border-radius:12px;padding:14mm 10mm;width:148mm;min-height:210mm;display:flex;flex-direction:column;gap:10px}
+.a5-summary-sheet.landscape{width:210mm;min-height:148mm;padding:10mm}
+.a5-header{padding-bottom:6px}
+.a5-summary-head{display:grid;gap:7px}
+.a5-summary-kicker-row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.a5-summary-kicker,.a5-summary-version{margin:0;font-size:10px;line-height:1.2;letter-spacing:.14em;color:#64748b;font-weight:700}
+.a5-summary-version{text-align:right;white-space:nowrap}
+.a5-summary-title{margin:0;font-size:20px;line-height:1.15;color:#0f172a;font-weight:800}
+.a5-summary-meta-badges{display:flex;flex-wrap:wrap;gap:6px}
+.a5-summary-meta-badge{display:inline-flex;align-items:center;gap:4px;border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc;color:#334155;padding:3px 8px;font-size:10px;line-height:1.25;white-space:nowrap}
+.a5-summary-meta-badge-label{font-size:10px;line-height:1.25;font-weight:800;color:#1f2937}
+.a5-summary-meta-badge-sep{font-size:10px;line-height:1.25;color:#64748b}
+.a5-summary-meta-badge-value{font-size:10px;line-height:1.25;color:#334155}
+.a5-summary-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.a5-summary-metric{border:1px solid #dbe3f1;border-radius:10px;background:#f8fbff;padding:6px 7px;display:grid;gap:2px;min-height:44px;align-content:start}
+.a5-summary-metric-value{display:block;font-size:17px;line-height:1.05;color:#0f172a}
+.a5-summary-metric-label{display:block;font-size:10px;line-height:1.25;color:#475569}
+.a5-summary-generated-at{margin:0;font-size:10px;line-height:1.25;color:#64748b}
+.a5-summary-divider{border-top:1px solid #dbe3f1;height:0;margin-top:2px}
+.a5-content{display:grid;gap:8px}
+.a5-content.two-columns{grid-template-columns:1fr 1fr;align-items:start}
+.a5-section{break-inside:avoid;border:1px solid #e2e8f0;border-radius:10px;background:#fcfdff;padding:8px}
+.a5-section h3{margin:0 0 6px 0;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#334155}
+.a5-section p{margin:5px 0;font-size:12px;line-height:1.35}
+.a5-list{display:grid;gap:6px}
+.a5-item{padding:6px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;break-inside:avoid}
+.a5-item strong{display:block;font-size:12px}
+.a5-item p{margin:3px 0 0 0;font-size:11px;color:#334155}
+.a5-footer{margin-top:auto;border-top:1px solid #dbe3f1;padding-top:6px;font-size:10px;color:#64748b}
+
+@page a5-portrait{
+	size:A5 portrait;
+	margin:8mm;
+}
+
+@page a5-landscape{
+	size:A5 landscape;
+	margin:8mm;
+}
+
+.a5-summary-sheet.portrait{page:a5-portrait}
+.a5-summary-sheet.landscape{page:a5-landscape}
+
+@media print{
+	body.a5-print-active .sidebar,
+	body.a5-print-active .topbar,
+	body.a5-print-active .no-print,
+	body.a5-print-active .row-actions,
+	body.a5-print-active button,
+	body.a5-print-active input,
+	body.a5-print-active select,
+	body.a5-print-active textarea{
+		display:none!important;
+	}
+
+	body.a5-print-active .main{
+		margin:0!important;
+		width:100%!important;
+		padding:0!important;
+	}
+
+	body.a5-print-active #app > *:not(.a5-summary-modal){
+		display:none!important;
+	}
+
+	body.a5-print-active .a5-summary-modal{
+		position:static!important;
+		inset:auto!important;
+		background:transparent!important;
+		padding:0!important;
+		display:block!important;
+	}
+
+	body.a5-print-active .a5-summary-panel{
+		width:auto!important;
+		max-height:none!important;
+		overflow:visible!important;
+		border:0!important;
+		box-shadow:none!important;
+		padding:0!important;
+		margin:0!important;
+	}
+
+	body.a5-print-active .a5-print-root{
+		border:0!important;
+		background:transparent!important;
+		padding:0!important;
+		overflow:visible!important;
+	}
+
+	body.a5-print-active .a5-summary-sheet{
+		box-shadow:none!important;
+		border:0!important;
+		border-radius:0!important;
+		margin:0!important;
+	}
+}
+
+@media(max-width:900px){
+	.a5-summary-sheet,.a5-summary-sheet.landscape{width:100%;min-height:auto;padding:12px}
+	.a5-content.two-columns,.a5-summary-metrics{grid-template-columns:1fr 1fr}
+}
+
+@media(max-width:640px){
+	.a5-content.two-columns,.a5-summary-metrics{grid-template-columns:1fr}
+}
 .brand{display:flex;gap:12px;align-items:center;margin-bottom:30px}
 .logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#2563eb,#22c55e);display:grid;place-items:center;font-weight:800}
 .logo.logo-image{background-size:cover;background-position:center;color:transparent}
