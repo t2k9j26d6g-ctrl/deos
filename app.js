@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.12";
+﻿const DEOS_VERSION = "V5.12.1";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -7090,32 +7090,32 @@ function saveExternalEventEnrichment(eventKey, enrichment) {
  * AppelÃ©e par le bouton "Enregistrer" de la modale
  */
 function saveExternalEventEnrichmentFromModal(eventKey) {
+  if (!eventKey) return false;
   const enrichment = getExternalEventEnrichment(eventKey);
-  
-  // RÃ©cupÃ©rer les valeurs du formulaire
-  enrichment.preparation = document.getElementById("enrichPreparation")?.value || "";
-  enrichment.meetingNotes = document.getElementById("enrichMeetingNotes")?.value || "";
-  enrichment.meetingReport = document.getElementById("enrichMeetingReport")?.value || "";
-  enrichment.nextSteps = document.getElementById("enrichNextSteps")?.value || "";
-  enrichment.confidentiality = normalizeMeetingConfidentiality(document.getElementById("enrichConfidentiality")?.value || "normal");
-  enrichment.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds));
-  console.log("[DEOS MANAGER DEBUG] google enrichment before save", eventKey, enrichment);
-  
-  saveExternalEventEnrichment(eventKey, enrichment);
-  
-  // Afficher une confirmation discrÃ¨te
-  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
-  if (ev) {
-    addActivity("âœ… Enrichissement rendez-vous", ev.title, "Informations mises Ã  jour", ev._key);
-  }
-  
-  // Garder la modale ouverte pour que l'utilisateur voie la confirmation
-  setTimeout(() => {
-    // Notification discrÃ¨te - le titre de la modale pourrait changer
-    console.log("[DEOS V5.7] Enrichissement enregistrÃ© pour", eventKey);
-  }, 100);
+  try {
+    // Lire les champs de la modale et conserver les enrichissements V5.11 existants.
+    enrichment.preparation = document.getElementById("enrichPreparation")?.value || "";
+    enrichment.meetingNotes = document.getElementById("enrichMeetingNotes")?.value || "";
+    enrichment.meetingReport = document.getElementById("enrichMeetingReport")?.value || "";
+    enrichment.nextSteps = document.getElementById("enrichNextSteps")?.value || "";
+    enrichment.confidentiality = normalizeMeetingConfidentiality(document.getElementById("enrichConfidentiality")?.value || "normal");
+    enrichment.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds));
 
-  if (restoreMeetingOriginContext()) return;
+    saveExternalEventEnrichment(eventKey, enrichment);
+
+    const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+    if (ev) {
+      addActivity("Enrichissement rendez-vous", ev.title, "Informations mises à jour", ev._key);
+    }
+
+    // Fermer uniquement après succès ; closeExternalEventModal gère aussi le retour contexte V5.12.
+    closeExternalEventModal();
+    return true;
+  } catch (error) {
+    console.error(error);
+    alert("Erreur lors de l'enregistrement de l'enrichissement. Vérifiez les champs puis réessayez.");
+    return false;
+  }
 }
 
 /**
