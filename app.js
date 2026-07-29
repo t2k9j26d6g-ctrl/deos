@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.11";
+﻿const DEOS_VERSION = "V5.12.1";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -81,6 +81,7 @@ let backupPreviewSummary = null;
 let backupPreviewOpen = false;
 let agendaFormError = "";
 let currentView = "cockpit";
+let meetingOriginContext = null;
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -920,6 +921,115 @@ function compareAgendaEvents(a, b) {
   return String((a?.title || "")).localeCompare(String((b?.title || "")));
 }
 
+function meetingLinkIdsForType(item, type, source = "manual") {
+  if (!item || typeof item !== "object") return [];
+  const map = {
+    folder: source === "google" ? ["linkedFolderIds"] : ["linkedFolders", "linkedFolderIds"],
+    project: source === "google" ? ["linkedProjectIds"] : ["linkedProjects", "linkedProjectIds"],
+    action: source === "google" ? ["linkedActionIds"] : ["linkedActions", "linkedActionIds"],
+    decision: source === "google" ? ["linkedDecisionIds"] : ["linkedDecisions", "linkedDecisionIds"],
+    manager: ["linkedManagerIds", "linkedManagers"]
+  };
+  const keys = map[type] || [];
+  if (!keys.length) return [];
+  if (type === "manager") {
+    return normalizeLinkedManagerIds(keys.flatMap(k => ensureArray(item[k])));
+  }
+  return normalizeLinkedIdArray(keys.flatMap(k => ensureArray(item[k])));
+}
+
+function normalizeMeetingForLinkedRender(item) {
+  if (!item) return null;
+  const source = item.source === "google" ? "google" : "manual";
+  const sourceMeetingId = source === "google"
+    ? String(item.eventKey || item._key || item.externalId || "")
+    : String(item.id || "");
+  if (!sourceMeetingId) return null;
+  return {
+    key: `${source}:${sourceMeetingId}`,
+    source,
+    sourceMeetingId,
+    title: String(item.title || "Rendez-vous"),
+    date: String(item.date || ""),
+    startTime: String(item.startTime || item.time || ""),
+    endTime: String(item.endTime || ""),
+    allDay: agendaIsAllDay(item),
+    location: String(item.location || ""),
+    confidentiality: normalizeMeetingConfidentiality(item.confidentiality || "normal")
+  };
+}
+
+function getMeetingsLinkedToObject(type, objectId) {
+  const targetType = String(type || "").toLowerCase().trim();
+  const targetId = String(objectId || "").trim();
+  const supported = ["folder", "project", "action", "decision", "manager"];
+  if (!targetId || !supported.includes(targetType)) return [];
+
+  const out = [];
+  const seen = new Set();
+  const push = meeting => {
+    if (!meeting || seen.has(meeting.key)) return;
+    seen.add(meeting.key);
+    out.push(meeting);
+  };
+
+  state.agenda.forEach(a => {
+    const linked = meetingLinkIdsForType(a, targetType, "manual");
+    if (!linked.includes(targetId)) return;
+    push(normalizeMeetingForLinkedRender({ ...a, source: "manual" }));
+  });
+
+  (state.externalCalendarEvents || []).forEach(ev => {
+    const eventKey = String(ev?._key || `google_${ev?.externalId || ""}`);
+    if (!eventKey) return;
+    const enrichment = getExternalEventEnrichment(eventKey);
+    const linked = meetingLinkIdsForType(enrichment, targetType, "google");
+    if (!linked.includes(targetId)) return;
+    push(normalizeMeetingForLinkedRender({ ...ev, source: "google", eventKey, confidentiality: enrichment.confidentiality }));
+  });
+
+  return out.slice().sort(compareAgendaEvents);
+}
+
+function linkedMeetingSourceBadge(source) {
+  return source === "google" ? `<span class="badge orange">Google</span>` : `<span class="badge green">DEOS</span>`;
+}
+
+function openLinkedMeetingFromObject(originType, originId, source, meetingId) {
+  meetingOriginContext = { type: String(originType || ""), id: String(originId || "") };
+  if (source === "google") {
+    openExternalEventModal(meetingId);
+    return;
+  }
+  editAgenda(meetingId);
+}
+
+function restoreMeetingOriginContext() {
+  if (!meetingOriginContext) return false;
+  const ctx = meetingOriginContext;
+  meetingOriginContext = null;
+  if (ctx.type === "folder") return openFolder(ctx.id), true;
+  if (ctx.type === "project") return openProject(ctx.id), true;
+  if (ctx.type === "action") return openAction(ctx.id), true;
+  if (ctx.type === "decision") return openDecision(ctx.id), true;
+  if (ctx.type === "manager") return openManager(ctx.id), true;
+  if (ctx.type === "document") return editDocument(ctx.id), true;
+  return false;
+}
+
+function linkedMeetingItem(meeting, originType, originId) {
+  const timeLabel = meeting.allDay
+    ? "Journée entière"
+    : (meeting.startTime ? `${esc(meeting.startTime)}${meeting.endTime ? " - " + esc(meeting.endTime) : ""}` : "Heure à confirmer");
+  return `<div class="item clickable" onclick="openLinkedMeetingFromObject('${esc(originType)}','${esc(originId)}','${esc(meeting.source)}','${esc(meeting.sourceMeetingId)}')"><strong>${esc(meeting.date || "Sans date")} · ${timeLabel}</strong><span class="muted">${esc(meeting.title)}</span><span class="meta">${linkedMeetingSourceBadge(meeting.source)} ${meetingConfidentialityBadge(meeting.confidentiality)}${meeting.location ? " · " + esc(meeting.location) : ""}</span></div>`;
+}
+
+function renderLinkedMeetingsSection(type, objectId) {
+  const meetings = getMeetingsLinkedToObject(type, objectId);
+  if (!meetings.length) return `<div class="empty">Aucun rendez-vous lié.</div>`;
+  return meetings.map(m => linkedMeetingItem(m, type, objectId)).join("");
+}
+
 function toggleAgendaTimeFields() {
   const allDay = document.getElementById("agAllDay")?.checked;
   const start = document.getElementById("agStart");
@@ -1529,10 +1639,7 @@ function agendaLinkedList(items) {
 }
 
 function managerAgendaList(m) {
-  return agendaLinkedList(state.agenda.filter(a => {
-    const managerIds = normalizeLinkedManagerIds(ensureArray(a?.linkedManagerIds).length ? a.linkedManagerIds : ensureArray(a?.linkedManagers));
-    return managerIds.includes(String(m.id));
-  }));
+  return renderLinkedMeetingsSection("manager", m.id);
 }
 
 function managerMeetingPreparationsList(m) {
@@ -1550,7 +1657,7 @@ function managerMeetingPreparationsList(m) {
 }
 
 function projectAgendaList(p) {
-  return agendaLinkedList(state.agenda.filter(a => (a.linkedProjects || []).includes(p.id)));
+  return renderLinkedMeetingsSection("project", p.id);
 }
 
 function projectMeetingPreparationsList(project) {
@@ -1578,6 +1685,7 @@ function closeAgendaModal() {
   agendaEditId = "";
   agendaModalOpen = false;
   agendaFormError = "";
+  if (restoreMeetingOriginContext()) return;
   renderCockpit();
 }
 
@@ -1661,6 +1769,7 @@ function openExternalEventModal(eventRef) {
 
 function closeExternalEventModal() {
   googleExternalEventModalId = "";
+  if (restoreMeetingOriginContext()) return;
   renderCockpit();
 }
 
@@ -2033,6 +2142,7 @@ function saveAgenda() {
   addActivity("📅 Agenda modifié", a.title, `${a.date} ${a.startTime}`, a.id);
   agendaEditId = "";
   agendaModalOpen = false;
+  if (restoreMeetingOriginContext()) return;
   renderCockpit();
 }
 
@@ -2296,7 +2406,7 @@ function transferPrepIdea(id, ideaId) {
   idea.status = "Reporté";
   idea.conclusion = idea.conclusion || `Transféré vers ${target.title}`;
   persist("meetingPreparations");
-  addActivity("?? Sujet transféré", target.title, idea.text, targetPrep.id);
+  addActivity("🔁 Sujet transféré", target.title, idea.text, targetPrep.id);
   openMeetingPreparation(p.agendaId);
 }
 
@@ -3209,11 +3319,15 @@ function folderDocumentsList(items, folderId) {
 }
 
 function folderAgendaList(items, folderId) {
-  return [...items].slice().sort(compareAgendaEvents).map(a => {
-    const start = agendaStartTime(a);
-    const timeLabel = agendaIsAllDay(a) ? "Journée entière" : (start ? start : "Heure à confirmer");
-    return `<div class="item clickable" onclick="agendaFilter='all';renderCockpit()"><strong>${esc(a.date || "")} · ${esc(timeLabel)}</strong><span class="muted">${esc(a.title)} · ${esc(a.type || "Autre")}</span><span class="meta">${esc(a.location || "")}</span></div>`;
-  }).join("") || folderEmpty(folderId, "agenda", "réunion");
+  return renderLinkedMeetingsSection("folder", folderId);
+}
+
+function actionAgendaList(action) {
+  return renderLinkedMeetingsSection("action", action.id);
+}
+
+function decisionAgendaList(decision) {
+  return renderLinkedMeetingsSection("decision", decision.id);
 }
 
 function linkedFoldersList(item) {
@@ -3229,7 +3343,7 @@ function actionItem(a) {
   const folders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id)).map(f => f.name).join(" · ");
   const projects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
   const decisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
-  return `<div class="item row"><div><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="item row"><div><strong>${a.done ? "✅" : "⬜"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="openAction('${a.id}')">Ouvrir</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function addAction() {
@@ -3270,6 +3384,17 @@ function deleteAction(id) {
   persist("actions");
   addActivity("? Action supprimée", t);
   renderActions();
+}
+
+function openAction(id) {
+  const a = byId("actions", id);
+  if (!a) return renderActions();
+  const linkedProjects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
+  const linkedDecisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
+  const linkedFolders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id));
+  const linkedDocuments = state.documents.filter(d => ensureArray(d.linkedActions).includes(a.id));
+  document.getElementById("viewTitle").textContent = a.title;
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderActions()">Retour Actions</button><h2>${esc(a.title)}</h2><p>${esc(a.link || "")}</p><span class="muted">${a.done ? "Terminée" : "En cours"}</span><div class="row-actions"><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div><div class="grid two"><div class="card"><h2>Dossiers liés</h2>${linkedFolders.map(f => `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.category || "")}</span></div>`).join("") || `<div class="empty">Aucun dossier lié.</div>`}</div><div class="card"><h2>Projets liés</h2>${linkedProjects.map(p => `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.next || "")}</span></div>`).join("") || `<div class="empty">Aucun projet lié.</div>`}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card"><h2>Documents liés</h2>${linkedDocuments.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${actionAgendaList(a)}</div></div>`);
 }
 
 function managerMini(m) {
@@ -3400,11 +3525,47 @@ function editManager(id) {
 
 function saveManager(id) {
   const i = indexById("managers", id);
-  if (i < 0) return;
-  state.managers[i] = { ...state.managers[i], name: document.getElementById("emName").value.trim(), role: document.getElementById("emRole").value.trim(), status: document.getElementById("emStatus").value, note: document.getElementById("emNote").value.trim(), priority: document.getElementById("emPriority").value.trim(), lastInterview: document.getElementById("emLast").value.trim(), nextMeeting: document.getElementById("emNext").value.trim(), objectives: lines("emObjectives"), strengths: lines("emStrengths"), watchPoints: lines("emWatch"), actions: lines("emActions"), linkedActions: idsFromTextarea("emLinkedActions").filter(actionId => byId("actions", actionId)), linkedProjects: idsFromTextarea("emLinkedProjects").filter(projectId => byId("projects", projectId)), linkedDecisions: idsFromTextarea("emLinkedDecisions").filter(decisionId => byId("decisions", decisionId)), linkedFolders: checkedValues("emFolders") };
-  persist("managers");
-  addActivity("👤 Manager modifié", state.managers[i].name, state.managers[i].role, id);
-  openManager(id);
+  if (i < 0) return false;
+  try {
+    const parseLinkedIds = fieldId => {
+      const field = document.getElementById(fieldId);
+      if (!field) return [];
+      return String(field.value || "").split(/\r?\n/).map(x => x.split("?")[0].trim()).filter(Boolean);
+    };
+    const values = {
+      name: document.getElementById("emName")?.value.trim() || "",
+      role: document.getElementById("emRole")?.value.trim() || "",
+      status: document.getElementById("emStatus")?.value || "orange",
+      note: document.getElementById("emNote")?.value.trim() || "",
+      priority: document.getElementById("emPriority")?.value.trim() || "",
+      lastInterview: document.getElementById("emLast")?.value.trim() || "",
+      nextMeeting: document.getElementById("emNext")?.value.trim() || "",
+      objectives: readManagerLines("emObjectives"),
+      strengths: readManagerLines("emStrengths"),
+      watchPoints: readManagerLines("emWatch"),
+      actions: readManagerLines("emActions"),
+      linkedActions: parseLinkedIds("emLinkedActions").filter(actionId => byId("actions", actionId)),
+      linkedProjects: parseLinkedIds("emLinkedProjects").filter(projectId => byId("projects", projectId)),
+      linkedDecisions: parseLinkedIds("emLinkedDecisions").filter(decisionId => byId("decisions", decisionId)),
+      linkedFolders: checkedValues("emFolders")
+    };
+    if (!values.name) {
+      alert("Le nom du manager est obligatoire.");
+      return false;
+    }
+
+    const next = { ...state.managers[i], ...values };
+    state.managers[i] = next;
+
+    persist("managers");
+    addActivity("👤 Manager modifié", next.name, next.role, id);
+    openManager(id);
+    return true;
+  } catch (error) {
+    console.error(error);
+    alert("Erreur lors de l'enregistrement du manager. Vérifiez les champs puis réessayez.");
+    return false;
+  }
 }
 
 function saveManagerNote(id) {
@@ -3487,6 +3648,12 @@ function checkedValues(id) {
   const root = document.getElementById(id);
   if (!root) return [];
   return [...root.querySelectorAll("input:checked")].map(x => x.value);
+}
+
+function readManagerLines(id) {
+  const field = document.getElementById(id);
+  if (!field) return [];
+  return String(field.value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 }
 
 function projectManagersList(p) {
@@ -3696,7 +3863,7 @@ function openDecision(id, mode = "") {
   const d = byId("decisions", id);
   if (!d) return renderDecisions();
   document.getElementById("viewTitle").textContent = d.title;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderDecisions()">Retour Décisions</button><h2>${esc(d.title)}</h2><p>${esc(d.context || "")}</p><span class="muted">${esc(d.date || "")} · ${esc(decisionStatusLabel(d.status))}</span><span class="meta">ID ${esc(d.id)}</span><div class="row-actions"><button class="action" onclick="editDecision('${d.id}')">Modifier</button><button class="secondary" onclick="openDecision('${d.id}','note')">Ajouter une note</button><button class="secondary" onclick="openDecision('${d.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openDecision('${d.id}','action')">Créer une action liée</button><button class="danger" onclick="deleteDecision('${d.id}')">Supprimer</button></div></div><div class="grid two">${decisionQuickForm(d, mode)}<div class="card"><h2>Statut et importance</h2><p><strong>Statut :</strong> ${esc(decisionStatusLabel(d.status))}</p><p><strong>Importance :</strong> ${icons[d.importance] || ""} ${esc(labels[d.importance] || d.importance || "Important")}</p><p><strong>Réexamen :</strong> ${esc(d.reviewDate || "À préciser")}</p></div><div class="card"><h2>Responsable du suivi</h2><p>${esc(d.owner || "À compléter")}</p></div><div class="card"><h2>Problème ou besoin initial</h2><p>${esc(d.problem || "À compléter")}</p></div><div class="card"><h2>Décision prise</h2><p>${esc(d.decision || d.nextStep || "À compléter")}</p></div><div class="card"><h2>Raisons et critères</h2><p>${esc(d.rationale || "À compléter")}</p></div><div class="card"><h2>Alternatives étudiées</h2><p>${esc(d.alternatives || "À compléter")}</p></div><div class="card"><h2>Impacts attendus</h2><p>${esc(d.impacts || d.impact || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(d.risks || "À compléter")}</p></div><div class="card"><h2>Managers concernés</h2>${decisionManagersList(d)}</div><div class="card"><h2>Projets concernés</h2>${decisionProjectsList(d)}</div><div class="card"><h2>Actions générées</h2>${decisionActionsList(d)}</div><div class="card"><h2>Journal lié</h2>${decisionJournalList(d)}</div><div class="card"><h2>Documents liés</h2>${decisionDocumentsList(d)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(d)}</div><div class="card"><h2>Notes du directeur</h2>${decisionNotesList(d)}</div><div class="card"><h2>Mots-clés</h2>${listItems(d.tags)}</div><div class="card full-span"><h2>Historique chronologique</h2>${decisionTimeline(d)}</div></div>`);
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderDecisions()">Retour Décisions</button><h2>${esc(d.title)}</h2><p>${esc(d.context || "")}</p><span class="muted">${esc(d.date || "")} · ${esc(decisionStatusLabel(d.status))}</span><span class="meta">ID ${esc(d.id)}</span><div class="row-actions"><button class="action" onclick="editDecision('${d.id}')">Modifier</button><button class="secondary" onclick="openDecision('${d.id}','note')">Ajouter une note</button><button class="secondary" onclick="openDecision('${d.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openDecision('${d.id}','action')">Créer une action liée</button><button class="danger" onclick="deleteDecision('${d.id}')">Supprimer</button></div></div><div class="grid two">${decisionQuickForm(d, mode)}<div class="card"><h2>Statut et importance</h2><p><strong>Statut :</strong> ${esc(decisionStatusLabel(d.status))}</p><p><strong>Importance :</strong> ${icons[d.importance] || ""} ${esc(labels[d.importance] || d.importance || "Important")}</p><p><strong>Réexamen :</strong> ${esc(d.reviewDate || "À préciser")}</p></div><div class="card"><h2>Responsable du suivi</h2><p>${esc(d.owner || "À compléter")}</p></div><div class="card"><h2>Problème ou besoin initial</h2><p>${esc(d.problem || "À compléter")}</p></div><div class="card"><h2>Décision prise</h2><p>${esc(d.decision || d.nextStep || "À compléter")}</p></div><div class="card"><h2>Raisons et critères</h2><p>${esc(d.rationale || "À compléter")}</p></div><div class="card"><h2>Alternatives étudiées</h2><p>${esc(d.alternatives || "À compléter")}</p></div><div class="card"><h2>Impacts attendus</h2><p>${esc(d.impacts || d.impact || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(d.risks || "À compléter")}</p></div><div class="card"><h2>Managers concernés</h2>${decisionManagersList(d)}</div><div class="card"><h2>Projets concernés</h2>${decisionProjectsList(d)}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${decisionAgendaList(d)}</div><div class="card"><h2>Actions générées</h2>${decisionActionsList(d)}</div><div class="card"><h2>Journal lié</h2>${decisionJournalList(d)}</div><div class="card"><h2>Documents liés</h2>${decisionDocumentsList(d)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(d)}</div><div class="card"><h2>Notes du directeur</h2>${decisionNotesList(d)}</div><div class="card"><h2>Mots-clés</h2>${listItems(d.tags)}</div><div class="card full-span"><h2>Historique chronologique</h2>${decisionTimeline(d)}</div></div>`);
 }
 
 function editDecision(id) {
@@ -6923,30 +7090,32 @@ function saveExternalEventEnrichment(eventKey, enrichment) {
  * AppelÃ©e par le bouton "Enregistrer" de la modale
  */
 function saveExternalEventEnrichmentFromModal(eventKey) {
+  if (!eventKey) return false;
   const enrichment = getExternalEventEnrichment(eventKey);
-  
-  // RÃ©cupÃ©rer les valeurs du formulaire
-  enrichment.preparation = document.getElementById("enrichPreparation")?.value || "";
-  enrichment.meetingNotes = document.getElementById("enrichMeetingNotes")?.value || "";
-  enrichment.meetingReport = document.getElementById("enrichMeetingReport")?.value || "";
-  enrichment.nextSteps = document.getElementById("enrichNextSteps")?.value || "";
-  enrichment.confidentiality = normalizeMeetingConfidentiality(document.getElementById("enrichConfidentiality")?.value || "normal");
-  enrichment.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds));
-  console.log("[DEOS MANAGER DEBUG] google enrichment before save", eventKey, enrichment);
-  
-  saveExternalEventEnrichment(eventKey, enrichment);
-  
-  // Afficher une confirmation discrÃ¨te
-  const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
-  if (ev) {
-    addActivity("âœ… Enrichissement rendez-vous", ev.title, "Informations mises Ã  jour", ev._key);
+  try {
+    // Lire les champs de la modale et conserver les enrichissements V5.11 existants.
+    enrichment.preparation = document.getElementById("enrichPreparation")?.value || "";
+    enrichment.meetingNotes = document.getElementById("enrichMeetingNotes")?.value || "";
+    enrichment.meetingReport = document.getElementById("enrichMeetingReport")?.value || "";
+    enrichment.nextSteps = document.getElementById("enrichNextSteps")?.value || "";
+    enrichment.confidentiality = normalizeMeetingConfidentiality(document.getElementById("enrichConfidentiality")?.value || "normal");
+    enrichment.linkedManagerIds = normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds));
+
+    saveExternalEventEnrichment(eventKey, enrichment);
+
+    const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
+    if (ev) {
+      addActivity("Enrichissement rendez-vous", ev.title, "Informations mises à jour", ev._key);
+    }
+
+    // Fermer uniquement après succès ; closeExternalEventModal gère aussi le retour contexte V5.12.
+    closeExternalEventModal();
+    return true;
+  } catch (error) {
+    console.error(error);
+    alert("Erreur lors de l'enregistrement de l'enrichissement. Vérifiez les champs puis réessayez.");
+    return false;
   }
-  
-  // Garder la modale ouverte pour que l'utilisateur voie la confirmation
-  setTimeout(() => {
-    // Notification discrÃ¨te - le titre de la modale pourrait changer
-    console.log("[DEOS V5.7] Enrichissement enregistrÃ© pour", eventKey);
-  }, 100);
 }
 
 /**
