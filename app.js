@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.14";
+﻿const DEOS_VERSION = "V5.15";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -86,6 +86,21 @@ let meetingOriginContext = null;
 let meetingCreateState = null;
 let pendingMeetingCreateReveal = null;
 let cockpitQuickCreateMode = "";
+let graphTypeFilter = "all";
+let graphOnlyLinked = false;
+let graphSearch = "";
+let graphDepth = "all";
+let graphSelectedNodeId = "";
+let graphZoom = 1;
+let graphPan = { x: 0, y: 0 };
+let graphDragPan = null;
+let graphDragNode = null;
+let graphLayoutCache = null;
+let graphSimulationActive = false;
+let graphRafId = 0;
+let graphDataSignature = "";
+let graphReturnContext = null;
+let graphNavigationLock = false;
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -223,9 +238,11 @@ function applyIdentity() {
   }
   const app = document.getElementById("brandAppName");
   const site = document.getElementById("brandSiteName");
+  const version = document.getElementById("brandVersion");
   const search = document.getElementById("searchInput");
   if (app) app.textContent = identity.appName;
   if (site) site.textContent = identity.siteName || identity.organizationName || "";
+  if (version) version.textContent = `DEOS ${DEOS_VERSION}`;
   if (search) search.placeholder = `Rechercher : chocolat, ${identityName()}, CSE...`;
 }
 
@@ -242,7 +259,10 @@ function hideVisibleTechnicalIds(html) {
 }
 
 function appHtml(html) {
-  document.getElementById("app").innerHTML = hideVisibleTechnicalIds(html);
+  const graphReturnBanner = graphReturnContext && currentView !== "graph"
+    ? `<div class="card graph-return-banner"><div><strong>Vue graphique</strong><p class="muted">Contexte conservé (filtres, zoom, sélection).</p></div><div class="row-actions"><button class="secondary" onclick="returnToGraph()">Retour à la vue graphique</button></div></div>`
+    : "";
+  document.getElementById("app").innerHTML = hideVisibleTechnicalIds(`${graphReturnBanner}${html}`);
 }
 
 function badge(status) {
@@ -960,11 +980,536 @@ async function init() {
 
 function setView(view) {
   currentView = view;
+  if (view !== "graph" && !graphNavigationLock) graphReturnContext = null;
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
-  const titles = { cockpit: "Cockpit décisionnel", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
+  const titles = { cockpit: "Cockpit décisionnel", graph: "Vue graphique", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
   document.getElementById("viewTitle").textContent = titles[view] || identity.appName;
-  const views = { cockpit: renderCockpit, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
+  const views = { cockpit: renderCockpit, graph: renderGraph, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
   if (views[view]) views[view]();
+}
+
+function renderGraph() {
+  const data = buildDeosGraph({
+    typeFilter: graphTypeFilter,
+    onlyLinked: graphOnlyLinked,
+    search: graphSearch,
+    depth: graphDepth,
+    selectedNodeId: graphSelectedNodeId
+  });
+  if (graphSelectedNodeId && !data.nodes.some(node => node.id === graphSelectedNodeId)) {
+    graphSelectedNodeId = "";
+  }
+  const selected = data.nodes.find(node => node.id === graphSelectedNodeId) || null;
+  const layout = layoutDeosGraph(data);
+  const viewWidth = layout.width / graphZoom;
+  const viewHeight = layout.height / graphZoom;
+  const nodesById = new Map(data.nodes.map(node => [node.id, node]));
+  const connectedIds = new Set();
+  if (selected) {
+    data.edges.forEach(edge => {
+      if (edge.from === selected.id) connectedIds.add(edge.to);
+      if (edge.to === selected.id) connectedIds.add(edge.from);
+    });
+  }
+  const edgesHtml = data.edges.map(edge => {
+    const a = layout.positions[edge.from];
+    const b = layout.positions[edge.to];
+    if (!a || !b) return "";
+    const active = selected && (edge.from === selected.id || edge.to === selected.id);
+    return `<line class="deos-graph-link ${active ? "active" : selected ? "dim" : ""}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`;
+  }).join("");
+  const nodesHtml = data.nodes.map(node => {
+    const pos = layout.positions[node.id] || { x: 200, y: 200 };
+    const isSelected = selected && node.id === selected.id;
+    const isDim = selected && !isSelected && !connectedIds.has(node.id);
+    const conf = node.confidentiality && node.confidentiality !== "normal"
+      ? `<tspan class="node-conf"> · ${esc(meetingConfidentialityLabel(node.confidentiality))}</tspan>`
+      : "";
+    return `<g class="deos-graph-node kind-${esc(node.kind)} ${isSelected ? "selected" : ""} ${isDim ? "dim" : ""}" data-node-id="${esc(node.id)}" onclick="selectGraphNode('${esc(node.id)}')">
+      <circle cx="${pos.x}" cy="${pos.y}" r="31"></circle>
+      <text x="${pos.x}" y="${pos.y - 2}" text-anchor="middle" class="deos-graph-emoji">${esc(node.icon || "•")}</text>
+      <text x="${pos.x}" y="${pos.y + 48}" text-anchor="middle" class="deos-graph-label">${esc(node.shortLabel)}</text>
+      <text x="${pos.x}" y="${pos.y + 63}" text-anchor="middle" class="deos-graph-meta">${esc(node.kindLabel)}${conf}</text>
+    </g>`;
+  }).join("");
+
+  appHtml(`<div class="card hero"><div class="row"><div><h2>Vue graphique des liens DEOS</h2><p class="muted">Visualisation multi-entités des relations structurées, sans modification des données métier.</p></div><div class="row-actions"><button class="secondary" onclick="setView('cockpit')">Retour Cockpit</button></div></div></div>
+  <div class="card deos-graph-card">
+    <div class="deos-graph-toolbar">
+      <input value="${esc(graphSearch)}" placeholder="Rechercher (nom, titre, rôle, tag...)" oninput="setGraphSearch(this.value)">
+      <select onchange="setGraphTypeFilter(this.value)">
+        <option value="all" ${graphTypeFilter === "all" ? "selected" : ""}>Tous les types</option>
+        <option value="core" ${graphTypeFilter === "core" ? "selected" : ""}>Dossiers / Projets / Managers</option>
+        <option value="execution" ${graphTypeFilter === "execution" ? "selected" : ""}>Actions / Décisions / Priorités</option>
+        <option value="knowledge" ${graphTypeFilter === "knowledge" ? "selected" : ""}>Journal / Documents / Performance</option>
+        <option value="meetings" ${graphTypeFilter === "meetings" ? "selected" : ""}>Rendez-vous (DEOS + Google)</option>
+      </select>
+      <select onchange="setGraphDepth(this.value)">
+        <option value="all" ${graphDepth === "all" ? "selected" : ""}>Profondeur : tout le graphe</option>
+        <option value="1" ${graphDepth === "1" ? "selected" : ""}>Profondeur : 1 lien</option>
+        <option value="2" ${graphDepth === "2" ? "selected" : ""}>Profondeur : 2 liens</option>
+        <option value="3" ${graphDepth === "3" ? "selected" : ""}>Profondeur : 3 liens</option>
+      </select>
+      <label class="graph-check"><input type="checkbox" ${graphOnlyLinked ? "checked" : ""} onchange="setGraphOnlyLinked(this.checked)"> Masquer les nœuds isolés</label>
+      <button class="secondary" onclick="zoomGraph(1.18)">Zoom +</button>
+      <button class="secondary" onclick="zoomGraph(0.85)">Zoom -</button>
+      <button class="secondary" onclick="recenterGraph()">Recentrer</button>
+      <button class="secondary" onclick="resetGraphZoom()">Réinitialiser zoom</button>
+      <button class="secondary" onclick="clearGraphSelection()">Réinitialiser sélection</button>
+    </div>
+    <div class="deos-graph-layout">
+      <svg class="deos-graph-svg" viewBox="${graphPan.x} ${graphPan.y} ${viewWidth} ${viewHeight}" onwheel="graphWheel(event)" onmousedown="startGraphPan(event)" onmousemove="moveGraphPan(event)" onmouseup="endGraphPan()" onmouseleave="endGraphPan()">
+        <rect class="deos-graph-bg" x="${graphPan.x}" y="${graphPan.y}" width="${viewWidth}" height="${viewHeight}"></rect>
+        ${edgesHtml}
+        ${nodesHtml}
+      </svg>
+      <aside class="deos-graph-side">
+        <div class="graph-legend">
+          <span>${data.nodes.length} nœud(s) visibles · ${data.edges.length} relation(s) visibles</span>
+          <span>${data.totalNodes} nœud(s) total · ${data.totalEdges} relation(s) total</span>
+          <span>Rendu : SVG natif</span>
+        </div>
+        ${renderGraphDetailPanel(selected, nodesById, data)}
+      </aside>
+    </div>
+  </div>`);
+}
+
+function graphNodeId(kind, sourceId) {
+  return `${String(kind || "")}:${String(sourceId || "")}`;
+}
+
+function parseGraphNodeId(nodeId) {
+  const value = String(nodeId || "");
+  const idx = value.indexOf(":");
+  if (idx < 0) return { kind: "", sourceId: value };
+  return { kind: value.slice(0, idx), sourceId: value.slice(idx + 1) };
+}
+
+function graphKindMeta(kind) {
+  const meta = {
+    folder: { label: "Dossier", icon: "📁" },
+    project: { label: "Projet", icon: "📂" },
+    action: { label: "Action", icon: "✅" },
+    decision: { label: "Décision", icon: "⚖️" },
+    manager: { label: "Manager", icon: "👤" },
+    journal: { label: "Journal", icon: "📝" },
+    document: { label: "Document", icon: "📄" },
+    priority: { label: "Priorité", icon: "🎯" },
+    performance: { label: "Performance", icon: "📊" },
+    agenda_manual: { label: "Réunion DEOS", icon: "🗓️" },
+    agenda_google: { label: "Réunion Google", icon: "📅" }
+  };
+  return meta[kind] || { label: "Objet", icon: "•" };
+}
+
+function graphShortLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "Sans titre";
+  return text.length > 32 ? `${text.slice(0, 29)}...` : text;
+}
+
+function graphEntitySearchText(item, extra = "") {
+  return normalizeText([item?.name, item?.title, item?.role, item?.category, item?.type, item?.status, item?.summary, item?.context, item?.objective, item?.owner, item?.location, item?.date, ensureArray(item?.tags).join(" "), extra].filter(Boolean).join(" "));
+}
+
+function buildDeosGraph(options = {}) {
+  const nodes = new Map();
+  const edges = new Map();
+  const addNode = (kind, sourceId, label, item = {}, extra = {}) => {
+    const id = String(sourceId || "").trim();
+    if (!id) return;
+    const key = graphNodeId(kind, id);
+    if (nodes.has(key)) return;
+    const meta = graphKindMeta(kind);
+    nodes.set(key, {
+      id: key,
+      kind,
+      sourceId: id,
+      label: String(label || "Sans titre"),
+      shortLabel: graphShortLabel(label),
+      kindLabel: meta.label,
+      icon: meta.icon,
+      confidentiality: normalizeMeetingConfidentiality(extra.confidentiality || item?.confidentiality || "normal"),
+      searchText: graphEntitySearchText(item, extra.searchText || ""),
+      source: item,
+      extra
+    });
+  };
+  const ensureNode = (kind, sourceId) => nodes.has(graphNodeId(kind, sourceId));
+  const addEdge = (fromKind, fromId, toKind, toId, relation) => {
+    const from = graphNodeId(fromKind, fromId);
+    const to = graphNodeId(toKind, toId);
+    if (from === to || !nodes.has(from) || !nodes.has(to)) return;
+    const id = [from, to, relation].join("=>");
+    if (!edges.has(id)) edges.set(id, { id, from, to, relation });
+  };
+  const linkMany = (fromKind, fromId, toKind, ids, relation) => {
+    ensureArray(ids).map(x => String(x || "").trim()).filter(Boolean).forEach(targetId => {
+      if (ensureNode(toKind, targetId)) addEdge(fromKind, fromId, toKind, targetId, relation);
+    });
+  };
+
+  state.folders.forEach(folder => addNode("folder", folder.id, folder.name, folder));
+  state.projects.forEach(project => addNode("project", project.id, project.name, project));
+  state.actions.forEach(action => addNode("action", action.id, action.title, action));
+  state.decisions.forEach(decision => addNode("decision", decision.id, decision.title, decision));
+  state.managers.forEach(manager => addNode("manager", manager.id, manager.name, manager));
+  state.journal.forEach(journal => addNode("journal", journal.id, journal.title, journal));
+  state.documents.forEach(document => addNode("document", document.id, document.title, document));
+  state.priorities.forEach(priority => addNode("priority", priority.id, priority.title, priority));
+  state.performance.forEach(perf => addNode("performance", perf.id, perfPeriodLabel(perf), perf));
+
+  state.agenda.forEach(meeting => {
+    const confidentiality = normalizeMeetingConfidentiality(meeting.confidentiality || "normal");
+    const hidden = confidentiality !== "normal";
+    addNode("agenda_manual", meeting.id, hidden ? "Rendez-vous confidentiel" : (meeting.title || "Rendez-vous"), meeting, {
+      confidentiality,
+      searchText: hidden ? "reunion deos confidentielle" : ""
+    });
+  });
+  (state.externalCalendarEvents || []).forEach(event => {
+    const eventKey = String(event._key || `google_${event.externalId || event.id || ""}`);
+    if (!eventKey) return;
+    const enrichment = getExternalEventEnrichment(eventKey);
+    const confidentiality = normalizeMeetingConfidentiality(enrichment.confidentiality || "normal");
+    const hidden = confidentiality !== "normal";
+    addNode("agenda_google", eventKey, hidden ? "Rendez-vous Google confidentiel" : (event.title || "Rendez-vous Google"), event, {
+      confidentiality,
+      searchText: hidden ? "reunion google confidentielle" : (event.calendarName || "")
+    });
+  });
+
+  state.projects.forEach(project => {
+    linkMany("project", project.id, "folder", project.linkedFolders, "linkedFolders");
+    linkMany("project", project.id, "manager", project.linkedManagers, "linkedManagers");
+    if (project.ownerId) linkMany("project", project.id, "manager", [project.ownerId], "ownerId");
+    linkMany("project", project.id, "action", project.linkedActions, "linkedActions");
+    linkMany("project", project.id, "decision", project.linkedDecisions, "linkedDecisions");
+    linkMany("project", project.id, "document", project.linkedDocuments, "linkedDocuments");
+  });
+  state.actions.forEach(action => {
+    linkMany("action", action.id, "folder", action.linkedFolders, "linkedFolders");
+    linkMany("action", action.id, "project", action.linkedProjects, "linkedProjects");
+    linkMany("action", action.id, "decision", action.linkedDecisions, "linkedDecisions");
+    linkMany("action", action.id, "manager", action.linkedManagers, "linkedManagers");
+  });
+  state.decisions.forEach(decision => {
+    linkMany("decision", decision.id, "folder", decision.linkedFolders, "linkedFolders");
+    linkMany("decision", decision.id, "project", decision.linkedProjects, "linkedProjects");
+    linkMany("decision", decision.id, "action", decision.linkedActions, "linkedActions");
+    linkMany("decision", decision.id, "manager", decision.linkedManagers, "linkedManagers");
+    linkMany("decision", decision.id, "document", decision.linkedDocuments, "linkedDocuments");
+  });
+  state.managers.forEach(manager => {
+    linkMany("manager", manager.id, "folder", manager.linkedFolders, "linkedFolders");
+    linkMany("manager", manager.id, "project", manager.linkedProjects, "linkedProjects");
+    linkMany("manager", manager.id, "action", manager.linkedActions, "linkedActions");
+    linkMany("manager", manager.id, "decision", manager.linkedDecisions, "linkedDecisions");
+  });
+  state.journal.forEach(journal => {
+    linkMany("journal", journal.id, "folder", journal.linkedFolders, "linkedFolders");
+    linkMany("journal", journal.id, "project", journal.linkedProjects, "linkedProjects");
+    linkMany("journal", journal.id, "manager", journal.linkedManagers, "linkedManagers");
+    linkMany("journal", journal.id, "action", journal.linkedActions, "linkedActions");
+    linkMany("journal", journal.id, "decision", journal.linkedDecisions, "linkedDecisions");
+    linkMany("journal", journal.id, "document", journal.linkedDocuments, "linkedDocuments");
+  });
+  state.documents.forEach(document => {
+    linkMany("document", document.id, "folder", document.linkedFolders, "linkedFolders");
+    linkMany("document", document.id, "project", document.linkedProjects, "linkedProjects");
+    linkMany("document", document.id, "manager", document.linkedManagers, "linkedManagers");
+    linkMany("document", document.id, "action", document.linkedActions, "linkedActions");
+    linkMany("document", document.id, "decision", document.linkedDecisions, "linkedDecisions");
+    linkMany("document", document.id, "journal", document.linkedJournal, "linkedJournal");
+    linkMany("document", document.id, "performance", document.linkedPerformance, "linkedPerformance");
+  });
+  state.priorities.forEach(priority => {
+    linkMany("priority", priority.id, "folder", priority.linkedFolders, "linkedFolders");
+  });
+  state.performance.forEach(perf => {
+    linkMany("performance", perf.id, "folder", perf.linkedFolders, "linkedFolders");
+    linkMany("performance", perf.id, "project", perf.linkedProjects, "linkedProjects");
+    linkMany("performance", perf.id, "manager", perf.linkedManagers, "linkedManagers");
+    linkMany("performance", perf.id, "action", perf.linkedActions, "linkedActions");
+    linkMany("performance", perf.id, "decision", perf.linkedDecisions, "linkedDecisions");
+    linkMany("performance", perf.id, "journal", perf.linkedJournal, "linkedJournal");
+    linkMany("performance", perf.id, "document", perf.linkedDocuments, "linkedDocuments");
+  });
+  state.agenda.forEach(meeting => {
+    const source = "manual";
+    const meetingId = meeting.id;
+    linkMany("agenda_manual", meetingId, "folder", meetingLinkIdsForType(meeting, "folder", source), "meetingLinkedFolder");
+    linkMany("agenda_manual", meetingId, "project", meetingLinkIdsForType(meeting, "project", source), "meetingLinkedProject");
+    linkMany("agenda_manual", meetingId, "manager", meetingLinkIdsForType(meeting, "manager", source), "meetingLinkedManager");
+    linkMany("agenda_manual", meetingId, "action", meetingLinkIdsForType(meeting, "action", source), "meetingLinkedAction");
+    linkMany("agenda_manual", meetingId, "decision", meetingLinkIdsForType(meeting, "decision", source), "meetingLinkedDecision");
+  });
+  (state.externalCalendarEvents || []).forEach(event => {
+    const meetingId = String(event._key || `google_${event.externalId || event.id || ""}`);
+    if (!meetingId) return;
+    const enrichment = getExternalEventEnrichment(meetingId);
+    const source = "google";
+    linkMany("agenda_google", meetingId, "folder", meetingLinkIdsForType(enrichment, "folder", source), "meetingLinkedFolder");
+    linkMany("agenda_google", meetingId, "project", meetingLinkIdsForType(enrichment, "project", source), "meetingLinkedProject");
+    linkMany("agenda_google", meetingId, "manager", meetingLinkIdsForType(enrichment, "manager", source), "meetingLinkedManager");
+    linkMany("agenda_google", meetingId, "action", meetingLinkIdsForType(enrichment, "action", source), "meetingLinkedAction");
+    linkMany("agenda_google", meetingId, "decision", meetingLinkIdsForType(enrichment, "decision", source), "meetingLinkedDecision");
+  });
+
+  const totalNodes = nodes.size;
+  const totalEdges = edges.size;
+  let filteredNodes = [...nodes.values()];
+  let filteredEdges = [...edges.values()];
+
+  if (options.onlyLinked) {
+    const linked = new Set();
+    filteredEdges.forEach(edge => { linked.add(edge.from); linked.add(edge.to); });
+    filteredNodes = filteredNodes.filter(node => linked.has(node.id));
+  }
+
+  const typeFilter = String(options.typeFilter || "all");
+  if (typeFilter !== "all") {
+    const allowed = {
+      core: new Set(["folder", "project", "manager"]),
+      execution: new Set(["action", "decision", "priority"]),
+      knowledge: new Set(["journal", "document", "performance"]),
+      meetings: new Set(["agenda_manual", "agenda_google"])
+    }[typeFilter] || new Set();
+    filteredNodes = filteredNodes.filter(node => allowed.has(node.kind));
+  }
+
+  const search = normalizeText(options.search || "").trim();
+  if (search) {
+    filteredNodes = filteredNodes.filter(node => node.searchText.includes(search));
+  }
+
+  const visibleNodeIds = new Set(filteredNodes.map(node => node.id));
+  filteredEdges = filteredEdges.filter(edge => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to));
+
+  if (options.selectedNodeId && options.depth !== "all" && visibleNodeIds.has(options.selectedNodeId)) {
+    const depthLimit = Math.max(1, Number(options.depth || 1));
+    const adjacency = new Map();
+    filteredEdges.forEach(edge => {
+      if (!adjacency.has(edge.from)) adjacency.set(edge.from, new Set());
+      if (!adjacency.has(edge.to)) adjacency.set(edge.to, new Set());
+      adjacency.get(edge.from).add(edge.to);
+      adjacency.get(edge.to).add(edge.from);
+    });
+    const keep = new Set([options.selectedNodeId]);
+    let frontier = new Set([options.selectedNodeId]);
+    for (let depth = 0; depth < depthLimit; depth += 1) {
+      const next = new Set();
+      frontier.forEach(nodeId => {
+        (adjacency.get(nodeId) || new Set()).forEach(targetId => {
+          if (!keep.has(targetId)) next.add(targetId);
+          keep.add(targetId);
+        });
+      });
+      frontier = next;
+      if (!frontier.size) break;
+    }
+    filteredNodes = filteredNodes.filter(node => keep.has(node.id));
+    const scoped = new Set(filteredNodes.map(node => node.id));
+    filteredEdges = filteredEdges.filter(edge => scoped.has(edge.from) && scoped.has(edge.to));
+  }
+
+  return { nodes: filteredNodes, edges: filteredEdges, totalNodes, totalEdges };
+}
+
+function layoutDeosGraph(data) {
+  const signature = `${data.nodes.map(node => node.id).sort().join("|")}::${data.edges.length}`;
+  if (!graphLayoutCache || graphDataSignature !== signature) {
+    graphLayoutCache = { positions: {} };
+    graphDataSignature = signature;
+  }
+  const kindOrder = ["folder", "project", "manager", "action", "decision", "priority", "document", "journal", "performance", "agenda_manual", "agenda_google"];
+  const grouped = new Map(kindOrder.map(kind => [kind, []]));
+  data.nodes.forEach(node => {
+    if (!grouped.has(node.kind)) grouped.set(node.kind, []);
+    grouped.get(node.kind).push(node);
+  });
+  grouped.forEach(nodes => nodes.sort((a, b) => String(a.label).localeCompare(String(b.label))));
+
+  const positions = graphLayoutCache.positions;
+  let col = 0;
+  const used = [];
+  kindOrder.forEach(kind => {
+    const items = grouped.get(kind) || [];
+    if (!items.length) return;
+    const x = 160 + (col * 250);
+    items.forEach((node, index) => {
+      if (!positions[node.id]) positions[node.id] = { x, y: 110 + (index * 110) };
+      used.push(positions[node.id]);
+    });
+    col += 1;
+  });
+
+  const minX = used.length ? Math.min(...used.map(p => p.x)) : 0;
+  const maxX = used.length ? Math.max(...used.map(p => p.x)) : 1200;
+  const minY = used.length ? Math.min(...used.map(p => p.y)) : 0;
+  const maxY = used.length ? Math.max(...used.map(p => p.y)) : 700;
+  const width = Math.max(1200, (maxX - minX) + 360);
+  const height = Math.max(720, (maxY - minY) + 260);
+  return { positions, width, height, minX, maxX, minY, maxY };
+}
+
+function renderGraphDetailPanel(selected, nodesById, data) {
+  if (!selected) {
+    return `<div class="graph-preview empty"><strong>Aucun nœud sélectionné</strong><span>Cliquez un nœud pour afficher le détail, les relations et les actions d'ouverture.</span></div>`;
+  }
+  const related = data.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+  const neighbors = related.map(edge => nodesById.get(edge.from === selected.id ? edge.to : edge.from)).filter(Boolean);
+  const rows = neighbors.slice(0, 10).map(node => `<div class="item clickable" onclick="selectGraphNode('${esc(node.id)}')"><strong>${esc(node.label)}</strong><span class="muted">${esc(node.kindLabel)}</span></div>`).join("") || `<div class="empty">Aucune relation visible avec les filtres actuels.</div>`;
+  const conf = selected.confidentiality !== "normal" ? `<span class="badge orange">${esc(meetingConfidentialityLabel(selected.confidentiality))}</span>` : "";
+  return `<div class="graph-preview"><strong>${esc(selected.label)}</strong><span>${esc(selected.kindLabel)} ${conf}</span><span>${related.length} relation(s) visible(s)</span><div class="row-actions"><button class="action" onclick="openGraphNode('${esc(selected.id)}')">Ouvrir la fiche</button></div></div><div class="card" style="margin-top:10px"><h2>Objets connectés</h2>${rows}</div>`;
+}
+
+function setGraphTypeFilter(value) {
+  graphTypeFilter = value;
+  renderGraph();
+}
+
+function setGraphDepth(value) {
+  graphDepth = value;
+  renderGraph();
+}
+
+function setGraphOnlyLinked(value) {
+  graphOnlyLinked = Boolean(value);
+  renderGraph();
+}
+
+function setGraphSearch(value) {
+  graphSearch = value;
+  renderGraph();
+}
+
+function clearGraphSelection() {
+  graphSelectedNodeId = "";
+  graphDepth = "all";
+  renderGraph();
+}
+
+function selectGraphNode(nodeId) {
+  graphSelectedNodeId = String(nodeId || "");
+  renderGraph();
+}
+
+function captureGraphContext() {
+  return {
+    typeFilter: graphTypeFilter,
+    onlyLinked: graphOnlyLinked,
+    search: graphSearch,
+    depth: graphDepth,
+    selectedNodeId: graphSelectedNodeId,
+    zoom: graphZoom,
+    pan: { ...graphPan },
+    layout: graphLayoutCache ? JSON.parse(JSON.stringify(graphLayoutCache)) : null,
+    signature: graphDataSignature
+  };
+}
+
+function returnToGraph() {
+  const ctx = graphReturnContext;
+  graphReturnContext = null;
+  if (ctx) {
+    graphTypeFilter = ctx.typeFilter || "all";
+    graphOnlyLinked = Boolean(ctx.onlyLinked);
+    graphSearch = String(ctx.search || "");
+    graphDepth = String(ctx.depth || "all");
+    graphSelectedNodeId = String(ctx.selectedNodeId || "");
+    graphZoom = Number(ctx.zoom || 1);
+    graphPan = ctx.pan || { x: 0, y: 0 };
+    graphLayoutCache = ctx.layout || null;
+    graphDataSignature = String(ctx.signature || "");
+  }
+  graphNavigationLock = true;
+  setView("graph");
+  graphNavigationLock = false;
+}
+
+function openGraphNode(nodeId) {
+  const parsed = parseGraphNodeId(nodeId);
+  const sourceId = parsed.sourceId;
+  if (!parsed.kind || !sourceId) return;
+  graphReturnContext = captureGraphContext();
+  graphNavigationLock = true;
+  try {
+    if (parsed.kind === "folder") { setView("folders"); openFolder(sourceId); return; }
+    if (parsed.kind === "project") { setView("projects"); openProject(sourceId); return; }
+    if (parsed.kind === "action") { setView("actions"); openAction(sourceId); return; }
+    if (parsed.kind === "decision") { setView("decisions"); openDecision(sourceId); return; }
+    if (parsed.kind === "manager") { setView("managers"); openManager(sourceId); return; }
+    if (parsed.kind === "journal") { setView("journal"); openJournal(sourceId); return; }
+    if (parsed.kind === "document") { setView("documents"); editDocument(sourceId); return; }
+    if (parsed.kind === "priority") { setView("priorities"); return; }
+    if (parsed.kind === "performance") { setView("performance"); return; }
+    if (parsed.kind === "agenda_manual") {
+      setView("activity");
+      meetingOriginContext = { type: "graph", id: "" };
+      editAgenda(sourceId);
+      return;
+    }
+    if (parsed.kind === "agenda_google") {
+      setView("activity");
+      meetingOriginContext = { type: "graph", id: "" };
+      openExternalEventModal(sourceId);
+      return;
+    }
+  } finally {
+    graphNavigationLock = false;
+  }
+}
+
+function zoomGraph(ratio) {
+  graphZoom = Math.max(0.45, Math.min(2.8, graphZoom * ratio));
+  renderGraph();
+}
+
+function recenterGraph() {
+  const data = buildDeosGraph({
+    typeFilter: graphTypeFilter,
+    onlyLinked: graphOnlyLinked,
+    search: graphSearch,
+    depth: graphDepth,
+    selectedNodeId: graphSelectedNodeId
+  });
+  const layout = layoutDeosGraph(data);
+  graphPan = { x: Math.max(0, layout.minX - 140), y: Math.max(0, layout.minY - 120) };
+  renderGraph();
+}
+
+function resetGraphZoom() {
+  graphZoom = 1;
+  graphPan = { x: 0, y: 0 };
+  renderGraph();
+}
+
+function graphWheel(event) {
+  event.preventDefault();
+  zoomGraph(event.deltaY < 0 ? 1.12 : 0.9);
+}
+
+function startGraphPan(event) {
+  if (event.target.closest(".deos-graph-node")) return;
+  graphDragPan = { x: event.clientX, y: event.clientY, panX: graphPan.x, panY: graphPan.y };
+}
+
+function moveGraphPan(event) {
+  if (!graphDragPan) return;
+  graphPan = {
+    x: graphDragPan.panX - (event.clientX - graphDragPan.x) / graphZoom,
+    y: graphDragPan.panY - (event.clientY - graphDragPan.y) / graphZoom
+  };
+  const svg = document.querySelector(".deos-graph-svg");
+  if (!svg) return;
+  const [, , width, height] = String(svg.getAttribute("viewBox") || "0 0 1200 720").split(/\s+/).map(Number);
+  svg.setAttribute("viewBox", `${graphPan.x} ${graphPan.y} ${width || 1200} ${height || 720}`);
+}
+
+function endGraphPan() {
+  graphDragPan = null;
 }
 
 function parseDateValue(value) {
@@ -1102,6 +1647,7 @@ function restoreMeetingOriginContext() {
   if (!meetingOriginContext) return false;
   const ctx = meetingOriginContext;
   meetingOriginContext = null;
+  if (ctx.type === "graph") return returnToGraph(), true;
   if (ctx.type === "folder") return openFolder(ctx.id), true;
   if (ctx.type === "project") return openProject(ctx.id), true;
   if (ctx.type === "action") return openAction(ctx.id), true;

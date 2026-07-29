@@ -5,6 +5,7 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f3f6fb;color:#10
 .logo{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#2563eb,#22c55e);display:grid;place-items:center;font-weight:800}
 .logo.logo-image{background-size:cover;background-position:center;color:transparent}
 .brand span{display:block;color:#94a3b8;font-size:13px}
+.version-chip{display:inline-flex;align-items:center;max-width:100%;margin:0 0 10px;padding:5px 10px;border-radius:999px;border:1px solid #334155;background:#111f3f;color:#cbd5e1;font-size:12px;font-weight:700;line-height:1.2;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nav{display:block;width:100%;text-align:left;border:0;background:transparent;color:#cbd5e1;padding:13px 14px;border-radius:12px;margin:6px 0;font-size:15px;cursor:pointer}
 .nav.active,.nav:hover{background:#1e293b;color:white}
 .nav-settings{margin-top:16px;border-top:1px solid #334155;padding-top:14px}
@@ -78,6 +79,48 @@ textarea{min-height:92px}
 .cockpit-agenda-line{grid-template-columns:120px 1fr auto}
 .cockpit-ops-item .meta{margin-top:4px}
 .source-badge{display:inline-block;font-size:11px;background:#dbeafe;color:#1e3a8a;border-radius:999px;padding:2px 7px;margin-left:6px;font-weight:700}
+
+.graph-return-banner{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 16px;border-color:#bfdbfe;background:#f8fbff}
+.graph-return-banner p{margin:4px 0 0}
+.deos-graph-card{padding:16px}
+.deos-graph-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) 210px 220px auto repeat(5,auto);gap:8px;align-items:center;margin-bottom:12px}
+.deos-graph-toolbar input,.deos-graph-toolbar select{margin:0}
+.deos-graph-toolbar .secondary{margin:0}
+.graph-check{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#334155;font-weight:700;white-space:nowrap}
+.graph-check input{width:auto;margin:0}
+.deos-graph-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;align-items:stretch}
+.deos-graph-svg{width:100%;height:680px;border:1px solid #e2e8f0;border-radius:16px;background:#fbfdff;cursor:grab}
+.deos-graph-svg:active{cursor:grabbing}
+.deos-graph-bg{fill:#fbfdff}
+.deos-graph-link{stroke:#94a3b8;stroke-width:1.8;opacity:.56}
+.deos-graph-link.active{stroke:#0f172a;stroke-width:2.8;opacity:1}
+.deos-graph-link.dim{opacity:.14}
+.deos-graph-node{cursor:pointer;transition:opacity .15s ease}
+.deos-graph-node circle{fill:white;stroke:#cbd5e1;stroke-width:2;filter:drop-shadow(0 5px 10px rgba(15,23,42,.12))}
+.deos-graph-node.kind-folder circle{fill:#eefbf2;stroke:#22c55e}
+.deos-graph-node.kind-project circle{fill:#e8f1ff;stroke:#2563eb}
+.deos-graph-node.kind-manager circle{fill:#ebfcf7;stroke:#0f766e}
+.deos-graph-node.kind-action circle{fill:#f2fdf4;stroke:#16a34a}
+.deos-graph-node.kind-decision circle{fill:#fff5eb;stroke:#f97316}
+.deos-graph-node.kind-document circle{fill:#f8fafc;stroke:#64748b}
+.deos-graph-node.kind-journal circle{fill:#fefce8;stroke:#ca8a04}
+.deos-graph-node.kind-priority circle{fill:#fef2f2;stroke:#dc2626}
+.deos-graph-node.kind-performance circle{fill:#eef2ff;stroke:#4f46e5}
+.deos-graph-node.kind-agenda_manual circle{fill:#f1f5f9;stroke:#334155}
+.deos-graph-node.kind-agenda_google circle{fill:#eff6ff;stroke:#1d4ed8}
+.deos-graph-node.selected circle{stroke:#0f172a;stroke-width:3}
+.deos-graph-node.dim{opacity:.22}
+.deos-graph-emoji{font-size:20px}
+.deos-graph-label{font-size:11px;font-weight:800;fill:#0f172a}
+.deos-graph-meta{font-size:10px;fill:#64748b}
+.node-conf{fill:#b45309}
+.deos-graph-side{border:1px solid #e2e8f0;border-radius:16px;background:#f8fafc;padding:12px}
+
+@media(max-width:900px){
+	.deos-graph-toolbar{grid-template-columns:1fr}
+	.deos-graph-layout{grid-template-columns:1fr}
+	.deos-graph-svg{height:540px}
+}
 
 @media(max-width:1200px){
 	.cockpit-metrics-row{grid-template-columns:repeat(3,minmax(0,1fr))}
