@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.12.1";
+﻿const DEOS_VERSION = "V5.12.2";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -79,6 +79,7 @@ let restoreSuccessMessage = "";
 let backupPreviewPayload = null;
 let backupPreviewSummary = null;
 let backupPreviewOpen = false;
+let backupSafetySnapshot = null;
 let agendaFormError = "";
 let currentView = "cockpit";
 let meetingOriginContext = null;
@@ -345,25 +346,76 @@ function safeParseJson(text) {
 
 function validateBackupContent(content) {
   if (!content || typeof content !== "object" || Array.isArray(content)) return { valid: false, error: "Le fichier doit contenir un objet JSON valide." };
-  if (!content.localStorage || typeof content.localStorage !== "object" || Array.isArray(content.localStorage)) {
-    return { valid: false, error: "Le fichier doit contenir une propriété localStorage valide." };
+
+  const payload = {
+    date: String(content.date || content.exportedAt || content.createdAt || "").trim(),
+    adresse: String(content.adresse || content.url || "").trim(),
+    version: Number(content.version || DEOS_BACKUP_VERSION),
+    localStorage: {},
+    sessionStorage: {}
+  };
+
+  const appendStorageValue = (key, value) => {
+    if (typeof key !== "string" || !key.startsWith("deos_")) return;
+    if (typeof value === "string") {
+      payload.localStorage[key] = value;
+      return;
+    }
+    try {
+      payload.localStorage[key] = JSON.stringify(value ?? null);
+    } catch {
+      // Ignore non serializable values.
+    }
+  };
+
+  if (content.localStorage && typeof content.localStorage === "object" && !Array.isArray(content.localStorage)) {
+    for (const [key, value] of Object.entries(content.localStorage)) {
+      appendStorageValue(key, value);
+    }
   }
-  const keys = Object.keys(content.localStorage);
+
+  // Compatibilité anciennes sauvegardes stockées à la racine.
+  const legacyRootMap = {
+    identity: "deos_identity",
+    settings: "deos_settings",
+    actions: "deos_actions",
+    managers: "deos_managers",
+    projects: "deos_projects",
+    decisions: "deos_decisions",
+    priorities: "deos_priorities",
+    activity: "deos_activity",
+    journal: "deos_journal",
+    documents: "deos_documents",
+    agenda: "deos_agenda",
+    folders: "deos_folders",
+    performance: "deos_performance",
+    meetingPreparations: "deos_meetingPreparations",
+    links: "deos_links",
+    performance_imports: "deos_performance_imports",
+    externalCalendarEvents: "deos_external_events",
+    externalEventEnrichments: "deos_external_event_enrichments"
+  };
+  for (const [rootKey, storageKey] of Object.entries(legacyRootMap)) {
+    if (Object.prototype.hasOwnProperty.call(content, rootKey)) {
+      appendStorageValue(storageKey, content[rootKey]);
+    }
+  }
+
+  const keys = Object.keys(payload.localStorage);
   if (keys.length === 0) {
-    return { valid: false, error: "La sauvegarde ne contient aucune clé localStorage." };
+    return { valid: false, error: "La sauvegarde ne contient aucune donnée DEOS reconnue." };
   }
-  const deos = keys.filter(key => typeof key === "string" && key.startsWith("deos_"));
+  const deos = keys.filter(key => typeof key === "string" && key.startsWith("deos_") && !isTechnicalBackupKey(key));
   if (deos.length === 0) {
-    return { valid: false, error: "La sauvegarde ne contient aucune clé commençant par deos_." };
+    return { valid: false, error: "La sauvegarde ne contient aucune catégorie DEOS restaurable." };
   }
   for (const key of keys) {
     if (typeof key !== "string") return { valid: false, error: "Toutes les clés de localStorage doivent être des chaînes." };
-    if (typeof content.localStorage[key] !== "string") return { valid: false, error: `La valeur de ${key} doit être une chaîne.` };
+    if (typeof payload.localStorage[key] !== "string") return { valid: false, error: `La valeur de ${key} doit être une chaîne sérialisée.` };
   }
-  const normalized = { ...content };
-  normalized.localStorage = {};
-  for (const key of deos) normalized.localStorage[key] = content.localStorage[key];
-  return { valid: true, payload: normalized };
+  if (!payload.date) payload.date = new Date().toISOString();
+  payload.localStorage = Object.fromEntries(deos.map(key => [key, payload.localStorage[key]]));
+  return { valid: true, payload };
 }
 
 function backupCategoryCount(payload) {
@@ -423,19 +475,16 @@ function closeBackupPreview() {
   backupPreviewOpen = false;
   backupPreviewPayload = null;
   backupPreviewSummary = null;
+  resetBackupImportInput();
   renderSettings();
 }
 
 function applyBackupPayload(payload) {
   const currentSnapshot = localStorageBackupPayload();
   const backupKeys = deosBackupKeys(payload);
-  const keysToRemove = deosKeys().filter(key => !backupKeys.includes(key) && !isTechnicalBackupKey(key));
   try {
     for (const key of backupKeys) {
       localStorage.setItem(key, payload.localStorage[key]);
-    }
-    for (const key of keysToRemove) {
-      localStorage.removeItem(key);
     }
     return { success: true };
   } catch (error) {
@@ -447,9 +496,15 @@ function applyBackupPayload(payload) {
 }
 
 function prepareRestoreBackup(payload) {
-  const currentBackup = buildBackupPayload();
-  downloadBackupFile(currentBackup);
-  renderBackupPreviewModal(payload, backupStats(payload), "Sauvegarde actuelle téléchargée. Confirmez la restauration pour remplacer les données DEOS existantes.");
+  try {
+    backupSafetySnapshot = buildBackupPayload();
+  } catch {
+    backupSafetySnapshot = null;
+  }
+  const message = backupSafetySnapshot
+    ? "Sauvegarde de sécurité interne créée. Confirmez la restauration pour appliquer le fichier sélectionné."
+    : "Attention: aucune sauvegarde de sécurité interne n'a pu être créée. Confirmez uniquement si vous êtes certain.";
+  renderBackupPreviewModal(payload, backupStats(payload), message);
 }
 
 function confirmRestoreBackup() {
@@ -459,41 +514,77 @@ function confirmRestoreBackup() {
     renderSettings(result.error);
     return;
   }
+  backupSafetySnapshot = null;
   saveBackupMetadata("restore", new Date().toISOString(), backupCategoryCount(backupPreviewPayload));
   localStorage.setItem("deos_restore_success", "Restauration réussie.");
   location.reload();
 }
 
 function exportBackup() {
-  const payload = buildBackupPayload();
-  downloadBackupFile(payload);
-  saveBackupMetadata("export", new Date().toISOString(), backupCategoryCount(payload));
-  renderSettings("Exportation réussie.");
+  try {
+    const payload = buildBackupPayload();
+    const categoryCount = backupCategoryCount(payload);
+    if (categoryCount <= 0) {
+      renderSettings("Aucune donnée DEOS à exporter.");
+      return false;
+    }
+    downloadBackupFile(payload);
+    saveBackupMetadata("export", new Date().toISOString(), categoryCount);
+    renderSettings("Exportation réussie.");
+    return true;
+  } catch (error) {
+    console.error(error);
+    renderSettings("Erreur pendant l'exportation. Aucun fichier de sauvegarde n'a été généré.");
+    return false;
+  }
 }
 
 function handleImportBackupFile(file) {
+  if (!file) {
+    resetBackupImportInput();
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     const content = safeParseJson(reader.result);
     const validated = validateBackupContent(content);
     if (!validated.valid) {
       renderSettings(validated.error);
+      resetBackupImportInput();
       return;
     }
     prepareRestoreBackup(validated.payload);
+    resetBackupImportInput();
   };
-  reader.onerror = () => renderSettings("Impossible de lire le fichier sélectionné.");
+  reader.onerror = () => {
+    renderSettings("Impossible de lire le fichier sélectionné.");
+    resetBackupImportInput();
+  };
   reader.readAsText(file, "UTF-8");
 }
 
+function resetBackupImportInput() {
+  const input = document.getElementById("backupFileInput");
+  if (input) input.value = "";
+}
+
+function onBackupFileInputChange(event) {
+  const input = event?.target;
+  const file = input?.files && input.files[0];
+  if (!file) {
+    resetBackupImportInput();
+    return;
+  }
+  handleImportBackupFile(file);
+}
+
 function triggerBackupImport() {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".json,application/json";
-  input.onchange = () => {
-    const file = input.files && input.files[0];
-    if (file) handleImportBackupFile(file);
-  };
+  const input = document.getElementById("backupFileInput");
+  if (!input) {
+    renderSettings("Champ d'import introuvable. Rechargez la page puis réessayez.");
+    return;
+  }
+  input.value = "";
   input.click();
 }
 
@@ -6099,7 +6190,7 @@ function renderSettings(message = "") {
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
   const statusMessage = message || restoreSuccessMessage;
   restoreSuccessMessage = "";
-  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button class="action" onclick="exportBackup()">Exporter toutes les données</button><button class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
+  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button id="backupExportBtn" class="action" onclick="exportBackup()">Exporter toutes les données</button><button id="backupImportBtn" class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button><input id="backupFileInput" type="file" accept=".json,application/json" style="display:none" onchange="onBackupFileInputChange(event)"></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
 
 function readSettingsForm() {
@@ -7452,4 +7543,5 @@ function markExternalEventSourceMissing(eventKey, missing = true) {
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
 
