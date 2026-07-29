@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.13";
+﻿const DEOS_VERSION = "V5.14";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -85,6 +85,7 @@ let currentView = "cockpit";
 let meetingOriginContext = null;
 let meetingCreateState = null;
 let pendingMeetingCreateReveal = null;
+let cockpitQuickCreateMode = "";
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -1379,6 +1380,315 @@ function cockpitAlerts() {
   cockpitDecisions().forEach(d => push("decisions", d.id, d.title, d.status === "review" ? "Décision à réexaminer" : "Décision À suivre", d.importance === "red" ? "red" : "orange"));
   state.documents.filter(d => /validation|à valider|a valider/i.test(d.status || "")).forEach(d => push("documents", d.id, d.title, "Document en attente de validation", "orange"));
   return alerts;
+}
+
+function getCockpitAgenda(range = agendaFilter) {
+  const settings = getCalendarConnectionSettings();
+  const todayIso = localIsoDate();
+  const tomorrowIso = localIsoAddDays(1);
+  const weekIso = localIsoAddDays(7);
+  const normalizedRange = ["today", "tomorrow", "week", "all"].includes(range) ? range : "today";
+  const inRange = item => {
+    const date = String(item?.date || "");
+    if (!date) return normalizedRange === "all";
+    if (normalizedRange === "today") return date === todayIso;
+    if (normalizedRange === "tomorrow") return date === tomorrowIso;
+    if (normalizedRange === "week") return date >= todayIso && date <= weekIso;
+    return true;
+  };
+  const manual = state.agenda.filter(inRange).map(item => ({ ...item }));
+  const external = settings.showInAgenda
+    ? (state.externalCalendarEvents || []).filter(inRange).map(item => ({ ...item, _external: true }))
+    : [];
+  return [...manual, ...external].sort(compareAgendaEvents);
+}
+
+function getProjectsAtRisk() {
+  const blockedPattern = /blocage|bloqu[ée]|retard majeur|critique/i;
+  const donePattern = /fait|termin[ée]|clos|ok/i;
+  return state.projects.filter(project => {
+    const riskText = String(project.risks || "").trim();
+    const explicitRisk = project.status === "red" || project.priorityLevel === "red";
+    const blocked = blockedPattern.test(`${project.next || ""} ${project.context || ""} ${riskText}`);
+    const overdue = daysUntil(project.deadline) !== null && daysUntil(project.deadline) < 0;
+    const overdueMilestone = ensureArray(project.milestones).some(milestone => {
+      const delay = daysUntil(milestone?.date);
+      return delay !== null && delay < 0 && !donePattern.test(String(milestone?.status || ""));
+    });
+    return explicitRisk || Boolean(riskText) || blocked || overdue || overdueMilestone;
+  }).sort((a, b) => {
+    const aRed = a.status === "red" || a.priorityLevel === "red" ? 0 : 1;
+    const bRed = b.status === "red" || b.priorityLevel === "red" ? 0 : 1;
+    return aRed - bRed || dateRank(a.deadline) - dateRank(b.deadline) || Number(a.progress || 0) - Number(b.progress || 0);
+  });
+}
+
+function getActivePriorities() {
+  return state.priorities
+    .filter(priority => !priority.done)
+    .slice()
+    .sort((a, b) => levelRank(a.level) - levelRank(b.level) || dateRank(a.due) - dateRank(b.due) || createdRank(a) - createdRank(b));
+}
+
+function getTodayOperationalItems() {
+  const items = [];
+  const todayIso = localIsoDate();
+  const push = entry => {
+    if (!items.some(item => item.key === entry.key)) items.push(entry);
+  };
+
+  state.actions.filter(action => !action.done).forEach(action => {
+    const delay = daysUntil(action.due);
+    const level = action.level || action.priorityLevel || (/critique|urgent/i.test(`${action.title || ""} ${action.link || ""}`) ? "red" : "orange");
+    if (delay !== null && delay < 0) {
+      push({ key: `action:${action.id}`, entity: "actions", id: action.id, type: "Action", title: action.title, level: "red", owner: action.owner || "", due: action.due, detail: `En retard de ${Math.abs(delay)} j`, completion: "action" });
+      return;
+    }
+    if (action.due === todayIso) {
+      push({ key: `action:${action.id}`, entity: "actions", id: action.id, type: "Action", title: action.title, level, owner: action.owner || "", due: action.due, detail: "Echeance aujourd'hui", completion: "action" });
+    }
+  });
+
+  getActivePriorities().forEach(priority => {
+    const delay = daysUntil(priority.due);
+    if (priority.level === "red" && delay !== null && delay <= 0) {
+      push({ key: `priority:${priority.id}`, entity: "priorities", id: priority.id, type: "Priorite", title: priority.title, level: "red", owner: priority.owner || "", due: priority.due, detail: delay < 0 ? `Echeance depassee de ${Math.abs(delay)} j` : "Critique a traiter aujourd'hui", completion: "priority" });
+    }
+  });
+
+  state.decisions.filter(isPendingDecision).forEach(decision => {
+    const delay = daysUntil(decision.reviewDate);
+    if (decision.status === "review" || (delay !== null && delay <= 0)) {
+      push({ key: `decision:${decision.id}`, entity: "decisions", id: decision.id, type: "Decision", title: decision.title, level: decision.importance === "red" ? "red" : "orange", owner: decision.owner || "", due: decision.reviewDate, detail: decision.status === "review" ? "Arbitrage a mener" : dueLabel(decision.reviewDate), completion: "" });
+    }
+  });
+
+  state.meetingPreparations.filter(prep => !["Prête", "Réalisée", "Compte rendu à finaliser", "Clôturée"].includes(prep.status)).forEach(prep => {
+    const meeting = byId("agenda", prep.agendaId);
+    const delay = daysUntil(meeting?.date);
+    if (meeting && delay !== null && delay >= 0 && delay <= 1) {
+      push({ key: `meeting:${prep.id}`, entity: "meetingPreparations", id: prep.id, type: "Preparation", title: meeting.title, level: delay === 0 ? "red" : "orange", owner: prep.organizer || "", due: meeting.date, detail: "Preparation urgente", completion: "" });
+    }
+  });
+
+  return items.sort((a, b) => levelRank(a.level) - levelRank(b.level) || dateRank(a.due) - dateRank(b.due)).slice(0, 6);
+}
+
+function getAttentionItems() {
+  const todayItems = getTodayOperationalItems();
+  const blocked = new Set(todayItems.map(item => item.key));
+  const items = [];
+  const push = entry => {
+    if (!blocked.has(entry.key) && !items.some(item => item.key === entry.key)) items.push(entry);
+  };
+
+  getProjectsAtRisk().forEach(project => {
+    const delay = daysUntil(project.deadline);
+    const reason = project.risks || (delay !== null && delay < 0 ? `Retard de ${Math.abs(delay)} j` : project.next || "Risque explicite");
+    push({ key: `project:${project.id}`, entity: "projects", id: project.id, type: "Projet", title: project.name, level: project.status === "red" || project.priorityLevel === "red" ? "red" : "orange", due: project.deadline, detail: reason, completion: "" });
+  });
+
+  state.actions.filter(action => !action.done).forEach(action => {
+    const delay = daysUntil(action.due);
+    const severe = delay !== null && delay <= -2;
+    if (!severe) return;
+    push({ key: `action:${action.id}`, entity: "actions", id: action.id, type: "Action", title: action.title, level: "red", due: action.due, detail: `Retard important (${Math.abs(delay)} j)`, completion: "action" });
+  });
+
+  getActivePriorities().forEach(priority => {
+    if (priority.level !== "red") return;
+    push({ key: `priority:${priority.id}`, entity: "priorities", id: priority.id, type: "Priorite", title: priority.title, level: "red", due: priority.due, detail: "Priorite critique", completion: "priority" });
+  });
+
+  state.decisions.filter(isPendingDecision).forEach(decision => {
+    if (decision.status !== "review") return;
+    push({ key: `decision:${decision.id}`, entity: "decisions", id: decision.id, type: "Decision", title: decision.title, level: decision.importance === "red" ? "red" : "orange", due: decision.reviewDate, detail: "Decision a arbitrer", completion: "" });
+  });
+
+  state.managers.forEach(manager => {
+    const delay = daysUntil(manager.nextMeeting);
+    if (delay === null || delay > 3) return;
+    push({ key: `manager:${manager.id}`, entity: "managers", id: manager.id, type: "Manager", title: manager.name, level: delay < 0 || manager.status === "red" ? "red" : "orange", due: manager.nextMeeting, detail: delay < 0 ? "Entretien depasse" : "Entretien proche", completion: "" });
+  });
+
+  return items.sort((a, b) => levelRank(a.level) - levelRank(b.level) || dateRank(a.due) - dateRank(b.due)).slice(0, 5);
+}
+
+function getCockpitMetrics() {
+  const todayMeetings = getCockpitAgenda("today").length;
+  const overdueActions = state.actions.filter(action => !action.done && daysUntil(action.due) !== null && daysUntil(action.due) < 0).length;
+  const decisionsToTrack = state.decisions.filter(isPendingDecision).length;
+  const riskyProjects = getProjectsAtRisk().length;
+  const activePriorities = getActivePriorities().length;
+  return {
+    todayMeetings,
+    overdueActions,
+    decisionsToTrack,
+    riskyProjects,
+    activePriorities
+  };
+}
+
+function cockpitMetricCard(label, value, detail, action) {
+  return `<button class="cockpit-metric" type="button" onclick="${action}"><strong>${esc(String(value))}</strong><span>${esc(label)}</span><small>${esc(detail)}</small></button>`;
+}
+
+function openCockpitQuickCreate(type) {
+  cockpitQuickCreateMode = type;
+  if (type === "priority") {
+    setView("priorities");
+    requestAnimationFrame(() => document.getElementById("pTitle")?.focus());
+    return;
+  }
+  if (type === "action") {
+    setView("actions");
+    requestAnimationFrame(() => document.getElementById("aTitle")?.focus());
+    return;
+  }
+  if (type === "decision") {
+    setView("decisions");
+    requestAnimationFrame(() => document.getElementById("dTitle")?.focus());
+  }
+}
+
+function closeCockpitQuickCreateIfNeeded(type) {
+  if (cockpitQuickCreateMode !== type) return false;
+  cockpitQuickCreateMode = "";
+  setView("cockpit");
+  return true;
+}
+
+function cockpitOperationalRow(item) {
+  const completeButton = item.completion === "action"
+    ? `<button class="secondary" type="button" onclick="completeCockpitAction('${esc(item.id)}')">Terminer</button>`
+    : item.completion === "priority"
+      ? `<button class="secondary" type="button" onclick="completeCockpitPriority('${esc(item.id)}')">Terminer</button>`
+      : "";
+  const openButton = item.entity === "actions"
+    ? `openAction('${esc(item.id)}')`
+    : item.entity === "decisions"
+      ? `openDecision('${esc(item.id)}')`
+      : item.entity === "projects"
+        ? `openProject('${esc(item.id)}')`
+        : item.entity === "managers"
+          ? `openManager('${esc(item.id)}')`
+          : item.entity === "meetingPreparations"
+            ? `openMeetingPreparation('${esc(item.id)}')`
+            : `setView('${esc(item.entity)}')`;
+  return `<div class="item row cockpit-ops-item alert-${esc(item.level)}"><div><strong>${esc(item.type)} · ${esc(item.title)}</strong><span class="muted">${esc(levelLabel(item.level))} · ${esc(item.detail || dueLabel(item.due))}${item.owner ? " · " + esc(item.owner) : ""}</span><span class="meta">${esc(item.due ? dueLabel(item.due) : "Sans échéance")}</span></div><div class="row-actions">${completeButton}<button class="secondary" type="button" onclick="${openButton}">Ouvrir</button></div></div>`;
+}
+
+function cockpitPriorityRow(priority) {
+  return `<div class="item row"><div><strong>${icons[priority.level] || "🟠"} ${esc(priority.title)}</strong><span class="muted">${esc(levelLabel(priority.level))}${priority.owner ? " · " + esc(priority.owner) : ""}${priority.due ? " · " + esc(priority.due) : ""}</span><span class="meta">Etat : Active</span></div><div class="row-actions"><button class="secondary" type="button" onclick="completeCockpitPriority('${esc(priority.id)}')">Terminer</button><button class="secondary" type="button" onclick="setView('priorities')">Ouvrir</button></div></div>`;
+}
+
+function cockpitProjectRiskRow(project) {
+  const delay = daysUntil(project.deadline);
+  const riskText = project.risks || (delay !== null && delay < 0 ? `Retard de ${Math.abs(delay)} j` : "Risque a suivre");
+  return `<div class="item row"><div><strong>${icons[project.status] || "🟠"} ${esc(project.name)}</strong><span class="muted">${esc(riskText)}</span><span class="meta">Avancement ${esc(String(Number(project.progress || 0)))}%${project.deadline ? " · Echéance " + esc(project.deadline) : ""}</span></div><div class="row-actions"><button class="secondary" type="button" onclick="openProject('${esc(project.id)}')">Ouvrir</button></div></div>`;
+}
+
+function cockpitAgendaSourceBadge(item) {
+  return item._external
+    ? `<span class="gc-badge" title="Importé depuis Google Calendar">📅 Google</span>`
+    : `<span class="source-badge">DEOS</span>`;
+}
+
+function cockpitAgendaLine(item) {
+  const external = Boolean(item._external);
+  const key = item._key || `google_${item.externalId || item.id || "event"}`;
+  const enrichment = external ? getExternalEventEnrichment(key) : null;
+  const confidentiality = normalizeMeetingConfidentiality(external ? enrichment.confidentiality : item.confidentiality || "normal");
+  const restricted = confidentiality === "restricted" || confidentiality === "confidential";
+  const allDay = external ? Boolean(item.allDay) : agendaIsAllDay(item);
+  const start = agendaStartTime(item);
+  const time = allDay ? "Journee entiere" : (start ? `${start}${item.endTime ? " - " + item.endTime : ""}` : "Heure a confirmer");
+  const links = !external && !restricted ? agendaLinkedNames(item) : "";
+  const summary = external
+    ? esc(item.calendarName || "Google Calendar")
+    : esc(item.type || "Rendez-vous");
+  const extra = restricted ? "" : `${item.location ? " · " + esc(item.location) : ""}${links ? " · " + esc(links) : ""}`;
+  const openAction = external
+    ? `openExternalEventModal('${esc(key)}')`
+    : `editAgenda('${esc(item.id)}')`;
+  return `<div class="agenda-line cockpit-agenda-line clickable" onclick="${openAction}"><strong>${esc(item.date || "Sans date")} · ${esc(time)}</strong><span>${esc(item.title || "Rendez-vous")}${cockpitAgendaSourceBadge(item)}<small>${summary}${extra}</small>${meetingConfidentialityBadge(confidentiality)}</span><div class="row-actions"><button class="secondary" type="button" onclick="event.stopPropagation();${openAction}">Détails</button></div></div>`;
+}
+
+function renderCockpit() {
+  const now = new Date();
+  const week = isoWeekNumber(now);
+  const metrics = getCockpitMetrics();
+  const todayOperational = getTodayOperationalItems();
+  const attentionItems = getAttentionItems();
+  const activePriorities = getActivePriorities().slice(0, 5);
+  const projectsAtRisk = getProjectsAtRisk().slice(0, 5);
+  const agenda = getCockpitAgenda(agendaFilter);
+  const identityLine = `${identity.siteName || identityDefaults.siteName} · ${identityName()} · ${today()} · S${week}`;
+
+  appHtml(`
+    <div class="card hero cockpit-header-card">
+      <div class="cockpit-header-main">
+        <div>
+          <h2>Cockpit décisionnel</h2>
+          <p class="muted">${esc(identityLine)}</p>
+        </div>
+        <div class="row-actions cockpit-header-actions">
+          <button class="action" type="button" onclick="openCockpitQuickCreate('priority')">Nouvelle priorité</button>
+          <button class="action" type="button" onclick="openCockpitQuickCreate('action')">Nouvelle action</button>
+          <button class="action" type="button" onclick="openCockpitQuickCreate('decision')">Nouvelle décision</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card cockpit-metrics-row">
+      ${cockpitMetricCard("Rendez-vous aujourd'hui", metrics.todayMeetings, "DEOS + Google", "setAgendaFilter('today')")}
+      ${cockpitMetricCard("Actions en retard", metrics.overdueActions, "Actions non terminees", "setView('actions')")}
+      ${cockpitMetricCard("Decisions a suivre", metrics.decisionsToTrack, "Statuts non appliques", "setView('decisions')")}
+      ${cockpitMetricCard("Projets a risque", metrics.riskyProjects, "Risque explicite ou retard", "setView('projects')")}
+      ${cockpitMetricCard("Priorites actives", metrics.activePriorities, "Priorites non terminees", "setView('priorities')")}
+    </div>
+
+    <div class="cockpit-workspace">
+      <div class="card cockpit-today">
+        <div class="row"><h2>A traiter aujourd'hui</h2><button class="secondary" type="button" onclick="setView('actions')">Voir toutes les actions</button></div>
+        ${todayOperational.map(cockpitOperationalRow).join("") || `<div class="empty">Aucun element operationnel immediat.</div>`}
+        <button class="secondary" type="button" onclick="setView('actions')">Voir les autres</button>
+      </div>
+
+      <div class="card cockpit-alerts">
+        <h2>Alertes et points d'attention</h2>
+        ${attentionItems.map(cockpitOperationalRow).join("") || `<div class="empty">Aucune alerte active.</div>`}
+      </div>
+
+      <div class="card cockpit-priorities">
+        <h2>Priorités du moment</h2>
+        ${activePriorities.map(cockpitPriorityRow).join("") || `<div class="empty">Aucune priorité active.</div>`}
+        <button class="secondary" type="button" onclick="setView('priorities')">Voir toutes les priorités</button>
+      </div>
+
+      <div class="card cockpit-projects-risk">
+        <h2>Projets à risque</h2>
+        ${projectsAtRisk.map(cockpitProjectRiskRow).join("") || `<div class="empty">Aucun projet à risque.</div>`}
+        <button class="secondary" type="button" onclick="setView('projects')">Voir tous les projets</button>
+      </div>
+
+      <div class="card cockpit-rightpanel">
+        <div class="row"><h2>Agenda</h2><button class="action" type="button" onclick="openAgendaModal()">+ Nouveau rendez-vous</button></div>
+        <div class="agenda-filters">
+          <button class="secondary ${agendaFilter === "today" ? "active-filter" : ""}" type="button" onclick="setAgendaFilter('today')">Aujourd'hui</button>
+          <button class="secondary ${agendaFilter === "tomorrow" ? "active-filter" : ""}" type="button" onclick="setAgendaFilter('tomorrow')">Demain</button>
+          <button class="secondary ${agendaFilter === "week" ? "active-filter" : ""}" type="button" onclick="setAgendaFilter('week')">7 jours</button>
+          <button class="secondary ${agendaFilter === "all" ? "active-filter" : ""}" type="button" onclick="setAgendaFilter('all')">Tous</button>
+        </div>
+        <div class="agenda-compact cockpit-agenda-compact">
+          <div class="agenda-section">
+            <h3>${esc(agendaFilterLabel())}</h3>
+            ${agenda.map(cockpitAgendaLine).join("") || `<div class="empty compact-empty">${esc(agendaEmptyLabel())}</div>`}
+          </div>
+        </div>
+      </div>
+    </div>
+    ${agendaModal()}${meetingSubjectModal()}${externalEventModal()}`);
 }
 
 function openCockpitEntity(entity, id) {
@@ -3141,54 +3451,6 @@ function generateMeetingReport(id) {
   savePrepAndOpen(p);
 }
 
-function renderCockpit() {
-  const todayItems = cockpitTodayItems();
-  const upcoming = cockpitUpcomingItems();
-  const alerts = cockpitAlertItems(todayItems);
-  const visibleToday = todayItems.slice(0, 5);
-  const visibleAlerts = alerts.slice(0, 5);
-  const metrics = cockpitMetrics(todayItems, alerts, upcoming);
-  const focusItems = cockpitFocusItems(cockpitFocus, todayItems, alerts, upcoming);
-  const managers = cockpitManagers();
-  const projects = cockpitProjects();
-  const decisions = cockpitDecisions();
-  const folders = cockpitFolders();
-  appHtml(`
-    ${cockpitCreateBar()}
-    <div class="cockpit-top">
-      <div class="card hero compact-hero">
-        <h2>Brief du jour</h2><p class="muted">${today()} · ${esc(identity.appName)} ${esc(DEOS_VERSION)}</p>
-        <div class="quick-kpis">
-          ${cockpitKpi("Urgences", metrics.red, "red", "danger-kpi")}
-          ${cockpitKpi("Actions ouvertes", metrics.openActions, "actions")}
-          ${cockpitKpi("Managers À suivre", metrics.managers, "managers")}
-          ${cockpitKpi("Priorités actives", metrics.priorities, "priorities")}
-          ${cockpitKpi("En retard", metrics.overdue, "overdue", "danger-kpi")}
-          ${cockpitKpi("Décisions en attente", metrics.decisions, "decisions")}
-          ${cockpitKpi("Échéances 7 jours", metrics.week, "week")}
-        </div>
-      </div>
-      <div class="card agenda-card"><div class="row"><h2>Agenda</h2><button class="action" onclick="openAgendaModal()">+ Nouveau rendez-vous</button></div><div class="agenda-filters"><button class="secondary ${agendaFilter === "today" ? "active-filter" : ""}" onclick="setAgendaFilter('today')">Aujourd'hui</button><button class="secondary ${agendaFilter === "tomorrow" ? "active-filter" : ""}" onclick="setAgendaFilter('tomorrow')">Demain</button><button class="secondary ${agendaFilter === "week" ? "active-filter" : ""}" onclick="setAgendaFilter('week')">7 jours</button><button class="secondary ${agendaFilter === "all" ? "active-filter" : ""}" onclick="setAgendaFilter('all')">Tous</button></div>
-        ${agendaCompact()}
-      </div>
-    </div>
-    ${cockpitFocusPanel(focusItems)}
-    <div class="card quick-favorites"><h2>Favoris</h2>${cockpitFavoriteLinks()}</div>
-    <div class="grid two cockpit-center">
-      <div class="card cockpit-block"><div class="row"><h2>À traiter aujourd'hui</h2><button class="secondary" onclick="setCockpitFocus('overdue')">Voir retards</button></div>${visibleToday.map(cockpitDashboardItem).join("") || `<div class="empty">Aucun élément prioritaire aujourd'hui.</div>`}${cockpitMoreButton(todayItems.length - visibleToday.length, "today")}</div>
-      <div class="card cockpit-block"><h2>Alertes et points d'attention</h2>${visibleAlerts.map(cockpitDashboardItem).join("") || `<div class="empty">Aucune alerte active.</div>`}${cockpitMoreButton(alerts.length - visibleAlerts.length, "alerts")}</div>
-    </div>
-    <div class="grid two">
-      <div class="card"><h2>Prochaines échéances</h2>${upcoming.slice(0, 10).map(cockpitDeadlineItem).join("") || `<div class="empty">Aucune échéance dans les 7 prochains jours.</div>`}</div>
-      <div class="card"><h2>Managers À suivre</h2>${managers.map(managerMini).join("") || `<div class="empty">Aucun manager À suivre.</div>`}</div>
-    </div>
-    <div class="grid two">
-      <div class="card"><h2>Projets sensibles</h2>${projects.map(cockpitProjectItem).join("") || `<div class="empty">Aucun projet sensible.</div>`}</div>
-      <div class="card"><h2>Décisions À suivre</h2>${decisions.map(cockpitDecisionItem).join("") || `<div class="empty">Aucune décision À suivre.</div>`}</div>
-    </div>
-    <div class="card"><h2>Dossiers sensibles</h2>${folders.map(cockpitFolderItem).join("") || `<div class="empty">Aucun dossier sensible.</div>`}</div>${agendaModal()}${meetingSubjectModal()}${externalEventModal()}`);
-}
-
 function priorityItem(p) {
   const folders = state.folders.filter(f => ensureArray(p.linkedFolders).includes(f.id)).map(f => f.name).join(" · ");
   return `<div class="item row"><div><strong>${icons[p.level] || "🟠"} ${esc(p.title)}</strong><span class="muted">${esc(p.due || "Pas d'échéance")}${p.link ? " · " + esc(p.link) : ""}${p.owner ? " · " + esc(p.owner) : ""}${folders ? " · " + esc(folders) : ""}</span><span class="meta">ID ${esc(p.id)}</span></div><div class="row-actions"><button class="secondary" onclick="completePriority('${p.id}')">Terminer</button><button class="danger" onclick="deletePriority('${p.id}')">Supprimer</button></div></div>`;
@@ -3205,6 +3467,7 @@ function addPriority() {
   state.priorities.unshift(p);
   persist("priorities");
   addActivity("🎯 Priorité", p.title, p.due || p.link, p.id);
+  if (closeCockpitQuickCreateIfNeeded("priority")) return;
   renderPriorities();
 }
 
@@ -3826,6 +4089,7 @@ function addAction() {
   state.actions.unshift(a);
   persist("actions");
   addActivity("? Action", a.title, a.link, a.id);
+  if (closeCockpitQuickCreateIfNeeded("action")) return;
   renderActions();
 }
 
@@ -4329,6 +4593,7 @@ function addDecision() {
   syncDecisionBacklinks(d);
   persist("decisions");
   addActivity("📌 Décision", d.title, d.context, d.id);
+  if (closeCockpitQuickCreateIfNeeded("decision")) return;
   renderDecisions();
 }
 

@@ -58,3 +58,38 @@ textarea{min-height:92px}
 .deos-link-summary{margin-top:10px;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;padding:10px}.deos-link-summary strong{display:block;font-size:12px;color:#475569;margin-bottom:8px}.deos-link-badge-list{display:flex;flex-wrap:wrap;gap:8px}.deos-link-badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;border:1px solid transparent;padding:5px 10px;font-size:12px;line-height:1.2;font-weight:700;color:#0f172a;background:#f1f5f9}.deos-link-badge__icon{font-size:12px;line-height:1}.deos-link-badge__type{font-size:11px;font-weight:800;letter-spacing:.01em}.deos-link-badge__sep{opacity:.55}.deos-link-badge__name{font-weight:700}.deos-link-badge--folder{background:#eaf2ff;border-color:#bfd4ff;color:#1d4ed8}.deos-link-badge--project{background:#f2eefe;border-color:#ddd0ff;color:#6d28d9}.deos-link-badge--action{background:#e8f8ee;border-color:#bfeacb;color:#166534}.deos-link-badge--decision{background:#fff3e7;border-color:#ffd8b5;color:#c2410c}.deos-link-badge--manager{background:#e7fbf7;border-color:#b7efe2;color:#0f766e}
 @media print{.sidebar,.topbar,.row-actions,button,input,select,textarea{display:none!important}.main{margin:0;width:100%;padding:0}.card{box-shadow:none;border:0}.report-preview{border:0;max-height:none}}
 @media(max-width:900px){body{display:block}.sidebar{position:relative;width:100%;min-height:auto}.nav{display:inline-block;width:auto}.main{margin-left:0;width:100%;padding:16px}.two,.three,.cockpit-top,.form-grid,.folder-toolbar,.performance-selectors,.perf-charts,.prep-kpis,.links-grid,.links-grid-compact,.link-toolbar,.links-layout,.graph-toolbar,.graph-layout,.folder-summary-grid{grid-template-columns:1fr}.link-categories{position:static}.topbar{grid-template-columns:1fr;gap:10px;align-items:stretch}.topbar h1{text-align:left;white-space:normal;font-size:28px}#searchInput{max-width:100%;justify-self:stretch}.quick-kpis{grid-template-columns:repeat(2,1fr)}.folder-kpis{grid-template-columns:repeat(2,1fr)}.folder-graph{height:520px}.segmented{display:flex;margin:8px 0}}
+
+.cockpit-header-main{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.cockpit-header-card h2{margin-bottom:6px}
+.cockpit-header-actions{justify-content:flex-end}
+.cockpit-metrics-row{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.cockpit-metric{border:1px solid #e2e8f0;border-radius:14px;background:#f8fafc;padding:12px;text-align:left;color:#0f172a;cursor:pointer}
+.cockpit-metric:hover{border-color:#bfdbfe;background:#eff6ff}
+.cockpit-metric strong{display:block;font-size:24px;line-height:1.1}
+.cockpit-metric span{display:block;color:#334155;font-weight:700;font-size:13px;margin-top:3px}
+.cockpit-metric small{display:block;color:#64748b;font-size:11px;margin-top:4px}
+.cockpit-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(320px,.95fr);grid-template-areas:"today alerts agenda" "priorities projects agenda";gap:18px;align-items:start}
+.cockpit-today{grid-area:today}
+.cockpit-alerts{grid-area:alerts}
+.cockpit-priorities{grid-area:priorities}
+.cockpit-projects-risk{grid-area:projects}
+.cockpit-rightpanel{grid-area:agenda;position:sticky;top:16px}
+.cockpit-agenda-compact{max-height:720px;overflow:auto;padding-right:4px}
+.cockpit-agenda-line{grid-template-columns:120px 1fr auto}
+.cockpit-ops-item .meta{margin-top:4px}
+.source-badge{display:inline-block;font-size:11px;background:#dbeafe;color:#1e3a8a;border-radius:999px;padding:2px 7px;margin-left:6px;font-weight:700}
+
+@media(max-width:1200px){
+	.cockpit-metrics-row{grid-template-columns:repeat(3,minmax(0,1fr))}
+	.cockpit-workspace{grid-template-columns:1fr 1fr;grid-template-areas:"today alerts" "agenda agenda" "priorities projects"}
+	.cockpit-rightpanel{position:relative;top:auto}
+	.cockpit-agenda-compact{max-height:520px}
+}
+
+@media(max-width:900px){
+	.cockpit-header-main{flex-direction:column}
+	.cockpit-metrics-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+	.cockpit-workspace{grid-template-columns:1fr;grid-template-areas:"today" "alerts" "agenda" "priorities" "projects"}
+	.cockpit-agenda-line{grid-template-columns:1fr}
+	.cockpit-agenda-line strong{margin-bottom:4px}
+}
