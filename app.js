@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.12.2";
+﻿const DEOS_VERSION = "V5.13";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -83,6 +83,8 @@ let backupSafetySnapshot = null;
 let agendaFormError = "";
 let currentView = "cockpit";
 let meetingOriginContext = null;
+let meetingCreateState = null;
+let pendingMeetingCreateReveal = null;
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -1659,10 +1661,14 @@ function deosLinkBadgesHtml(items) {
 function agendaLinkedBadges(a) {
   const item = a || {};
   const managerIds = normalizeLinkedManagerIds(ensureArray(item.linkedManagerIds).length ? item.linkedManagerIds : ensureArray(item.linkedManagers));
+  const actionIds = normalizeLinkedIdArray([...(item.linkedActionIds || []), ...(item.linkedActions || [])]);
+  const decisionIds = normalizeLinkedIdArray([...(item.linkedDecisionIds || []), ...(item.linkedDecisions || [])]);
   const badges = [];
   state.folders.filter(f => ensureArray(item.linkedFolders).includes(f.id)).forEach(f => badges.push(deosLinkBadge("folder", f.name)));
   state.projects.filter(p => ensureArray(item.linkedProjects).includes(p.id)).forEach(p => badges.push(deosLinkBadge("project", p.name)));
   state.managers.filter(m => managerIds.includes(String(m.id))).forEach(m => badges.push(deosLinkBadge("manager", m.name)));
+  state.actions.filter(action => actionIds.includes(String(action.id))).forEach(action => badges.push(deosLinkBadge("action", action.title)));
+  state.decisions.filter(decision => decisionIds.includes(String(decision.id))).forEach(decision => badges.push(deosLinkBadge("decision", decision.title)));
   return badges.length ? `<div class="deos-link-summary">${deosLinkBadgesHtml(badges)}</div>` : "";
 }
 
@@ -1689,6 +1695,376 @@ function externalEventLinkedBadges(enrichment) {
     if (item) badges.push(deosLinkBadge("manager", item.name));
   });
   return deosLinkBadgesHtml(badges);
+}
+
+function singleLinkedId(ids = []) {
+  const normalized = normalizeLinkedIdArray(ids);
+  return normalized.length === 1 ? normalized[0] : "";
+}
+
+function meetingSourceData(source, meetingRef) {
+  if (source === "manual") {
+    const meeting = byId("agenda", meetingRef);
+    if (!meeting) return null;
+    return {
+      source,
+      meetingRef: String(meeting.id),
+      title: String(meeting.title || "Rendez-vous"),
+      linkedManagerIds: normalizeLinkedManagerIds(ensureArray(meeting.linkedManagerIds).length ? meeting.linkedManagerIds : ensureArray(meeting.linkedManagers)),
+      linkedProjectIds: normalizeLinkedIdArray(ensureArray(meeting.linkedProjects)),
+      linkedFolderIds: normalizeLinkedIdArray(ensureArray(meeting.linkedFolders))
+    };
+  }
+  if (source === "google") {
+    const eventKey = String(meetingRef || "");
+    const event = (state.externalCalendarEvents || []).find(e => String(e._key || "") === eventKey);
+    if (!event) return null;
+    const enrichment = getExternalEventEnrichment(eventKey);
+    return {
+      source,
+      meetingRef: eventKey,
+      title: String(event.title || "Rendez-vous"),
+      linkedManagerIds: normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)),
+      linkedProjectIds: normalizeLinkedIdArray(ensureArray(enrichment.linkedProjectIds)),
+      linkedFolderIds: normalizeLinkedIdArray(ensureArray(enrichment.linkedFolderIds))
+    };
+  }
+  return null;
+}
+
+function meetingCreateStateKey(source, meetingRef) {
+  return `${String(source || "")}::${String(meetingRef || "")}`;
+}
+
+function activeMeetingCreateState(source, meetingRef) {
+  const key = meetingCreateStateKey(source, meetingRef);
+  return meetingCreateState && meetingCreateState.key === key ? meetingCreateState : null;
+}
+
+function startCreateFromMeeting(source, meetingRef, objectType) {
+  const data = meetingSourceData(source, meetingRef);
+  if (!data) return;
+  const activeModalPanel = document.activeElement?.closest?.(".modal-panel") || document.querySelector(".modal-panel");
+  meetingCreateState = {
+    key: meetingCreateStateKey(source, meetingRef),
+    source,
+    meetingRef: String(meetingRef),
+    objectType,
+    success: "",
+    createdObjectType: "",
+    createdObjectId: ""
+  };
+  renderCockpit();
+  queueMeetingCreateReveal(source, meetingRef, objectType, {
+    modalScrollTop: activeModalPanel ? activeModalPanel.scrollTop : null,
+    windowScrollX: window.scrollX,
+    windowScrollY: window.scrollY
+  });
+}
+
+function cancelCreateFromMeeting(source, meetingRef) {
+  if (!activeMeetingCreateState(source, meetingRef)) return;
+  meetingCreateState = null;
+  renderCockpit();
+}
+
+function openCreatedObjectFromMeeting(source, meetingRef) {
+  const current = activeMeetingCreateState(source, meetingRef);
+  if (!current || !current.createdObjectId) return;
+  if (current.createdObjectType === "action") {
+    openAction(current.createdObjectId);
+    return;
+  }
+  if (current.createdObjectType === "decision") {
+    openDecision(current.createdObjectId);
+  }
+}
+
+function queueMeetingCreateReveal(source, meetingRef, objectType, options = {}) {
+  pendingMeetingCreateReveal = {
+    key: meetingCreateStateKey(source, meetingRef),
+    objectType: String(objectType || ""),
+    modalScrollTop: Number.isFinite(options.modalScrollTop) ? options.modalScrollTop : null,
+    windowScrollX: Number.isFinite(options.windowScrollX) ? options.windowScrollX : window.scrollX,
+    windowScrollY: Number.isFinite(options.windowScrollY) ? options.windowScrollY : window.scrollY
+  };
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      revealMeetingCreateForm();
+    });
+  });
+}
+
+function focusMeetingCreateInput(input) {
+  if (!input || typeof input.focus !== "function") return;
+  try {
+    input.focus({ preventScroll: true });
+  } catch {
+    input.focus();
+  }
+}
+
+function revealMeetingCreateForm() {
+  const pending = pendingMeetingCreateReveal;
+  if (!pending) return;
+  pendingMeetingCreateReveal = null;
+
+  const section = document.querySelector(`[data-meeting-create-key="${pending.key}"]`);
+  if (!section) return;
+
+  const modalPanel = section.closest(".modal-panel");
+  if (modalPanel && pending.modalScrollTop !== null) {
+    modalPanel.scrollTop = pending.modalScrollTop;
+  }
+  window.scrollTo(pending.windowScrollX, pending.windowScrollY);
+
+  const form = section.querySelector(`[data-meeting-create-form="${pending.objectType}"]`) || section;
+  if (form && typeof form.scrollIntoView === "function") {
+    form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  const titleInput = form?.querySelector?.("input[data-meeting-create-title]")
+    || form?.querySelector?.("input, textarea, select");
+  focusMeetingCreateInput(titleInput);
+}
+
+function renderMeetingCreationForm(source, meetingRef, objectType, data) {
+  if (objectType === "action") {
+    const suggestedOwnerId = singleLinkedId(data.linkedManagerIds);
+    const suggestedOwner = suggestedOwnerId ? (byId("managers", suggestedOwnerId)?.name || "") : "";
+    const suggestedProjectIds = singleLinkedId(data.linkedProjectIds) ? [singleLinkedId(data.linkedProjectIds)] : [];
+    const suggestedFolderIds = singleLinkedId(data.linkedFolderIds) ? [singleLinkedId(data.linkedFolderIds)] : [];
+    const suggestedManagerIds = suggestedOwnerId ? [suggestedOwnerId] : [];
+    return `<div class="card" data-meeting-create-form="action"><h3>Nouvelle action</h3><p class="muted">Créée depuis le rendez-vous : ${esc(data.title)}</p><div class="form-grid"><input id="meetingCreateActionTitle" data-meeting-create-title="action" placeholder="Titre de l'action (obligatoire)"><input id="meetingCreateActionContext" value="Créée depuis le rendez-vous : ${esc(data.title)}" placeholder="Contexte"><input id="meetingCreateActionDue" type="date"><input id="meetingCreateActionOwner" value="${esc(suggestedOwner)}" placeholder="Responsable"><select id="meetingCreateActionLevel"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div><div class="grid three manager-links"><div><label>Managers proposés</label>${checkboxList("meetingCreateActionManagers", state.managers, suggestedManagerIds, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets proposés</label>${checkboxList("meetingCreateActionProjects", state.projects, suggestedProjectIds, p => p.name)}</div><div><label>Dossiers proposés</label>${folderSelect("meetingCreateActionFolders", suggestedFolderIds)}</div></div><div class="modal-actions"><button type="button" class="action" onclick="saveCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','action')">Enregistrer</button><button type="button" class="secondary" onclick="cancelCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}')">Annuler</button></div></div>`;
+  }
+  const suggestedManagerId = singleLinkedId(data.linkedManagerIds);
+  const suggestedOwner = suggestedManagerId ? (byId("managers", suggestedManagerId)?.name || "") : "";
+  const suggestedProjectIds = singleLinkedId(data.linkedProjectIds) ? [singleLinkedId(data.linkedProjectIds)] : [];
+  const suggestedFolderIds = singleLinkedId(data.linkedFolderIds) ? [singleLinkedId(data.linkedFolderIds)] : [];
+  const suggestedManagerIds = suggestedManagerId ? [suggestedManagerId] : [];
+  return `<div class="card" data-meeting-create-form="decision"><h3>Nouvelle décision</h3><p class="muted">Créée depuis le rendez-vous : ${esc(data.title)}</p><div class="form-grid"><input id="meetingCreateDecisionTitle" data-meeting-create-title="decision" placeholder="Titre de la décision (obligatoire)"><input id="meetingCreateDecisionContext" value="Créée depuis le rendez-vous : ${esc(data.title)}" placeholder="Contexte"><input id="meetingCreateDecisionDate" type="date" value="${esc(isoToday())}"><input id="meetingCreateDecisionOwner" value="${esc(suggestedOwner)}" placeholder="Responsable"><select id="meetingCreateDecisionStatus"><option value="decided" selected>Décidée</option><option value="applying">En cours d'application</option><option value="review">À réexaminer</option><option value="applied">Appliquée</option></select><select id="meetingCreateDecisionImportance"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div><div class="grid three manager-links"><div><label>Managers proposés</label>${checkboxList("meetingCreateDecisionManagers", state.managers, suggestedManagerIds, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets proposés</label>${checkboxList("meetingCreateDecisionProjects", state.projects, suggestedProjectIds, p => p.name)}</div><div><label>Dossiers proposés</label>${folderSelect("meetingCreateDecisionFolders", suggestedFolderIds)}</div></div><div class="modal-actions"><button type="button" class="action" onclick="saveCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','decision')">Enregistrer</button><button type="button" class="secondary" onclick="cancelCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}')">Annuler</button></div></div>`;
+}
+
+function renderCreateFromMeetingSection(source, meetingRef) {
+  const data = meetingSourceData(source, meetingRef);
+  if (!data) return "";
+  const current = activeMeetingCreateState(source, meetingRef);
+  const openType = current?.objectType || "";
+  const success = current?.success
+    ? `<div class="settings-confirm">${esc(current.success)} <button type="button" class="secondary" onclick="openCreatedObjectFromMeeting('${esc(source)}','${esc(String(meetingRef))}')">${current.createdObjectType === "action" ? "Ouvrir l'action" : "Ouvrir la décision"}</button></div>`
+    : "";
+  return `<div class="card settings-card" data-meeting-create-key="${esc(meetingCreateStateKey(source, meetingRef))}"><h2>Créer depuis ce rendez-vous</h2><div class="row-actions"><button type="button" class="secondary" onclick="startCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','action')">+ Nouvelle action</button><button type="button" class="secondary" onclick="startCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','decision')">+ Nouvelle décision</button></div>${success}${openType ? renderMeetingCreationForm(source, meetingRef, openType, data) : ""}</div>`;
+}
+
+function normalizeMeetingLinkIds(item, id, keyPrimary, keyLegacy) {
+  item[keyPrimary] = normalizeLinkedIdArray([...(item[keyPrimary] || []), String(id)]);
+  if (Array.isArray(item[keyLegacy])) {
+    item[keyLegacy] = normalizeLinkedIdArray(item[keyLegacy]);
+  }
+}
+
+function rollbackMeetingObjectCreation(snapshot) {
+  if (!snapshot) return;
+  if (snapshot.actions) {
+    state.actions = snapshot.actions;
+    try { persist("actions"); } catch {}
+  }
+  if (snapshot.decisions) {
+    state.decisions = snapshot.decisions;
+    try { persist("decisions"); } catch {}
+  }
+  if (snapshot.agendaMeeting && snapshot.agendaMeetingId) {
+    const target = byId("agenda", snapshot.agendaMeetingId);
+    if (target) Object.assign(target, snapshot.agendaMeeting);
+    try { persist("agenda"); } catch {}
+  }
+  if (snapshot.externalEnrichments) {
+    state.externalEventEnrichments = snapshot.externalEnrichments;
+    try { persistExternalEvents(); } catch {}
+  }
+}
+
+function createActionFromMeeting(source, meetingRef, payload) {
+  const action = {
+    id: newId("action"),
+    title: payload.title,
+    link: payload.context,
+    owner: payload.owner,
+    due: payload.due,
+    level: payload.level,
+    done: false,
+    linkedManagers: payload.linkedManagers,
+    linkedProjects: payload.linkedProjects,
+    linkedFolders: payload.linkedFolders,
+    linkedDecisions: []
+  };
+  const snapshot = {
+    actions: state.actions.slice(),
+    externalEnrichments: source === "google" ? JSON.parse(JSON.stringify(state.externalEventEnrichments || {})) : null,
+    agendaMeetingId: source === "manual" ? String(meetingRef) : "",
+    agendaMeeting: null
+  };
+
+  if (source === "manual") {
+    const meeting = byId("agenda", meetingRef);
+    if (!meeting) throw new Error("Rendez-vous introuvable.");
+    snapshot.agendaMeeting = JSON.parse(JSON.stringify(meeting));
+  }
+
+  try {
+    state.actions.unshift(action);
+    persist("actions");
+
+    if (source === "manual") {
+      const meeting = byId("agenda", meetingRef);
+      if (!meeting) throw new Error("Rendez-vous introuvable pendant la liaison.");
+      normalizeMeetingLinkIds(meeting, action.id, "linkedActionIds", "linkedActions");
+      persist("agenda");
+    } else {
+      const enrichment = getExternalEventEnrichment(String(meetingRef));
+      enrichment.linkedActionIds = normalizeLinkedIdArray([...(enrichment.linkedActionIds || []), String(action.id)]);
+      saveExternalEventEnrichment(String(meetingRef), enrichment);
+    }
+
+    addActivity("✅ Action", action.title, `Créée depuis le rendez-vous: ${payload.meetingTitle}`, action.id);
+    return action;
+  } catch (error) {
+    rollbackMeetingObjectCreation(snapshot);
+    throw new Error(`Création action annulée: ${error.message || String(error)}`);
+  }
+}
+
+function createDecisionFromMeeting(source, meetingRef, payload) {
+  const decision = {
+    id: newId("decision"),
+    title: payload.title,
+    context: payload.context,
+    date: payload.date,
+    status: payload.status,
+    importance: payload.importance,
+    problem: "",
+    decision: "",
+    rationale: "",
+    alternatives: "",
+    impacts: "",
+    impact: "",
+    risks: "",
+    owner: payload.owner,
+    linkedManagers: payload.linkedManagers,
+    linkedProjects: payload.linkedProjects,
+    linkedActions: [],
+    reviewDate: "",
+    linkedDocuments: [],
+    events: [],
+    directorNotes: [],
+    nextStep: "",
+    tags: [],
+    linkedFolders: payload.linkedFolders
+  };
+  const snapshot = {
+    decisions: state.decisions.slice(),
+    externalEnrichments: source === "google" ? JSON.parse(JSON.stringify(state.externalEventEnrichments || {})) : null,
+    agendaMeetingId: source === "manual" ? String(meetingRef) : "",
+    agendaMeeting: null
+  };
+
+  if (source === "manual") {
+    const meeting = byId("agenda", meetingRef);
+    if (!meeting) throw new Error("Rendez-vous introuvable.");
+    snapshot.agendaMeeting = JSON.parse(JSON.stringify(meeting));
+  }
+
+  try {
+    state.decisions.unshift(decision);
+    persist("decisions");
+
+    if (source === "manual") {
+      const meeting = byId("agenda", meetingRef);
+      if (!meeting) throw new Error("Rendez-vous introuvable pendant la liaison.");
+      normalizeMeetingLinkIds(meeting, decision.id, "linkedDecisionIds", "linkedDecisions");
+      persist("agenda");
+    } else {
+      const enrichment = getExternalEventEnrichment(String(meetingRef));
+      enrichment.linkedDecisionIds = normalizeLinkedIdArray([...(enrichment.linkedDecisionIds || []), String(decision.id)]);
+      saveExternalEventEnrichment(String(meetingRef), enrichment);
+    }
+
+    addActivity("📌 Décision", decision.title, `Créée depuis le rendez-vous: ${payload.meetingTitle}`, decision.id);
+    return decision;
+  } catch (error) {
+    rollbackMeetingObjectCreation(snapshot);
+    throw new Error(`Création décision annulée: ${error.message || String(error)}`);
+  }
+}
+
+function saveCreateFromMeeting(source, meetingRef, objectType) {
+  const data = meetingSourceData(source, meetingRef);
+  if (!data) return;
+
+  try {
+    if (objectType === "action") {
+      const title = document.getElementById("meetingCreateActionTitle")?.value.trim() || "";
+      if (!title) {
+        alert("Le titre de l'action est obligatoire.");
+        return;
+      }
+      const created = createActionFromMeeting(source, meetingRef, {
+        title,
+        context: document.getElementById("meetingCreateActionContext")?.value.trim() || `Créée depuis le rendez-vous : ${data.title}`,
+        due: document.getElementById("meetingCreateActionDue")?.value || "",
+        owner: document.getElementById("meetingCreateActionOwner")?.value.trim() || "",
+        level: document.getElementById("meetingCreateActionLevel")?.value || "orange",
+        linkedManagers: normalizeLinkedManagerIds(checkedValues("meetingCreateActionManagers")),
+        linkedProjects: normalizeLinkedIdArray(checkedValues("meetingCreateActionProjects")),
+        linkedFolders: normalizeLinkedIdArray(checkedValues("meetingCreateActionFolders")),
+        meetingTitle: data.title
+      });
+
+      meetingCreateState = {
+        key: meetingCreateStateKey(source, meetingRef),
+        source,
+        meetingRef: String(meetingRef),
+        objectType: "",
+        success: `Action créée avec succès depuis le rendez-vous : ${created.title}`,
+        createdObjectType: "action",
+        createdObjectId: created.id
+      };
+      renderCockpit();
+      return;
+    }
+
+    const title = document.getElementById("meetingCreateDecisionTitle")?.value.trim() || "";
+    if (!title) {
+      alert("Le titre de la décision est obligatoire.");
+      return;
+    }
+    const created = createDecisionFromMeeting(source, meetingRef, {
+      title,
+      context: document.getElementById("meetingCreateDecisionContext")?.value.trim() || `Créée depuis le rendez-vous : ${data.title}`,
+      date: document.getElementById("meetingCreateDecisionDate")?.value || isoToday(),
+      status: document.getElementById("meetingCreateDecisionStatus")?.value || "decided",
+      importance: document.getElementById("meetingCreateDecisionImportance")?.value || "orange",
+      owner: document.getElementById("meetingCreateDecisionOwner")?.value.trim() || "",
+      linkedManagers: normalizeLinkedManagerIds(checkedValues("meetingCreateDecisionManagers")),
+      linkedProjects: normalizeLinkedIdArray(checkedValues("meetingCreateDecisionProjects")),
+      linkedFolders: normalizeLinkedIdArray(checkedValues("meetingCreateDecisionFolders")),
+      meetingTitle: data.title
+    });
+
+    meetingCreateState = {
+      key: meetingCreateStateKey(source, meetingRef),
+      source,
+      meetingRef: String(meetingRef),
+      objectType: "",
+      success: `Décision créée avec succès depuis le rendez-vous : ${created.title}`,
+      createdObjectType: "decision",
+      createdObjectId: created.id
+    };
+    renderCockpit();
+  } catch (error) {
+    console.error(error);
+    alert(error.message || "Erreur pendant la création depuis ce rendez-vous.");
+  }
 }
 
 function agendaItem(a) {
@@ -1764,6 +2140,7 @@ function projectMeetingPreparationsList(project) {
 function openAgendaModal(id = "") {
   agendaEditId = id;
   agendaModalOpen = true;
+  meetingCreateState = null;
   const selected = id ? byId("agenda", id) : null;
   console.log("[DEOS MANAGER DEBUG] manual open modal managers list", state.managers.map(m => ({ id: m.id, idType: typeof m.id, name: m.name })));
   console.log("[DEOS MANAGER DEBUG] manual open modal event manager ids", normalizeLinkedManagerIds(ensureArray(selected?.linkedManagerIds).length ? selected.linkedManagerIds : ensureArray(selected?.linkedManagers)));
@@ -1776,6 +2153,7 @@ function closeAgendaModal() {
   agendaEditId = "";
   agendaModalOpen = false;
   agendaFormError = "";
+  meetingCreateState = null;
   if (restoreMeetingOriginContext()) return;
   renderCockpit();
 }
@@ -1819,6 +2197,7 @@ function agendaForm() {
       </div>
       ${a ? meetingFollowUpSummaryHtml(followUp) : ""}
     </div>
+    ${a ? renderCreateFromMeetingSection("manual", String(a.id)) : ""}
     <div class="modal-actions"><button class="action" onclick="${a ? "saveAgenda()" : "addAgenda()"}">Enregistrer</button>${a ? `<button class="secondary" onclick="openMeetingPreparation('${a.id}')">Préparer la réunion</button>` : ""}<button class="secondary" onclick="cancelAgendaEdit()">Annuler</button></div>
   </div>`;
 }
@@ -1852,6 +2231,7 @@ function agendaModal() {
 function openExternalEventModal(eventRef) {
   const event = (state.externalCalendarEvents || []).find(e => e._key === eventRef || e.externalId === eventRef);
   googleExternalEventModalId = event?._key || eventRef || "";
+  meetingCreateState = null;
   const enrichment = getExternalEventEnrichment(googleExternalEventModalId);
   console.log("[DEOS MANAGER DEBUG] google open modal managers list", state.managers.map(m => ({ id: m.id, idType: typeof m.id, name: m.name })));
   console.log("[DEOS MANAGER DEBUG] google open modal linkedManagerIds before render", normalizeLinkedManagerIds(ensureArray(enrichment.linkedManagerIds)));
@@ -1860,6 +2240,7 @@ function openExternalEventModal(eventRef) {
 
 function closeExternalEventModal() {
   googleExternalEventModalId = "";
+  meetingCreateState = null;
   if (restoreMeetingOriginContext()) return;
   renderCockpit();
 }
@@ -2083,6 +2464,7 @@ function externalEventModal() {
         ⚠️ L'événement Google d'origine n'est plus disponible. Vos enrichissements locaux sont conservés.
       </div>` : ""}
       ${deosSectionHTML}
+      ${renderCreateFromMeetingSection("google", String(googleExternalEventModalId))}
       <div class="modal-actions" style="position:sticky;bottom:0;background:#fff;border-top:1px solid #e2e8f0;padding-top:12px">
         <button class="action" onclick="saveExternalEventEnrichmentFromModal('${esc(googleExternalEventModalId)}')">Enregistrer</button>
         <button class="secondary" onclick="closeExternalEventModal()">Fermer</button>
@@ -7344,21 +7726,24 @@ function createActionFromExternalEvent(eventKey, eventTitle) {
   
   const actionTitle = prompt("Titre de la nouvelle action:", `Ã€ propos de: ${eventTitle}`);
   if (!actionTitle || !actionTitle.trim()) return;
-  
-  const newAction = {
-    id: newId("action"),
-    title: actionTitle.trim(),
-    link: eventTitle,
-    done: false,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  
-  state.actions.push(newAction);
-  persist("actions");
-  linkActionToExternalEvent(eventKey, newAction.id);
-  addActivity("ðŸ“Œ Action crÃ©Ã©e", actionTitle, `LiÃ©e au rendez-vous: ${eventTitle}`, newAction.id);
-  renderCockpit();
+
+  try {
+    createActionFromMeeting("google", eventKey, {
+      title: actionTitle.trim(),
+      context: `Créée depuis le rendez-vous : ${eventTitle}`,
+      due: "",
+      owner: "",
+      level: "orange",
+      linkedManagers: [],
+      linkedProjects: [],
+      linkedFolders: [],
+      meetingTitle: eventTitle
+    });
+    renderCockpit();
+  } catch (error) {
+    console.error(error);
+    alert(error.message || "Erreur pendant la création de l'action.");
+  }
 }
 
 /**
@@ -7511,24 +7896,25 @@ function createDecisionFromExternalEvent(eventKey, eventTitle) {
   
   const decisionTitle = prompt("Titre de la nouvelle dÃ©cision:", `Ã€ propos de: ${eventTitle}`);
   if (!decisionTitle || !decisionTitle.trim()) return;
-  
-  const newDecision = {
-    id: newId("decision"),
-    title: decisionTitle.trim(),
-    context: eventTitle,
-    status: "Ã€ valider",
-    priority: "normale",
-    owner: identityName(),
-    deadline: ev.date,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  
-  state.decisions.push(newDecision);
-  persist("decisions");
-  linkDecisionToExternalEvent(eventKey, newDecision.id);
-  addActivity("âš–ï¸ DÃ©cision crÃ©Ã©e", decisionTitle, `LiÃ©e au rendez-vous: ${eventTitle}`, newDecision.id);
-  renderCockpit();
+
+  try {
+    createDecisionFromMeeting("google", eventKey, {
+      title: decisionTitle.trim(),
+      context: `Créée depuis le rendez-vous : ${eventTitle}`,
+      date: isoToday(),
+      status: "decided",
+      importance: "orange",
+      owner: identityName(),
+      linkedManagers: [],
+      linkedProjects: [],
+      linkedFolders: [],
+      meetingTitle: eventTitle
+    });
+    renderCockpit();
+  } catch (error) {
+    console.error(error);
+    alert(error.message || "Erreur pendant la création de la décision.");
+  }
 }
 
 /**
