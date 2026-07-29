@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.14";
+﻿const DEOS_VERSION = "V5.16";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -68,6 +68,17 @@ let folderGraphSelected = "";
 let folderGraphZoom = 1;
 let folderGraphPan = { x: 0, y: 0 };
 let folderGraphDrag = null;
+let folderOperationNotice = "";
+let folderDeletionDialog = {
+  open: false,
+  folderId: "",
+  step: 1,
+  impact: null,
+  confirmText: "",
+  error: "",
+  busy: false
+};
+let folderDeletionFailureMode = "";
 let reportWizard = null;
 let linkEditId = "";
 let linkCategoryFilter = "all";
@@ -86,6 +97,30 @@ let meetingOriginContext = null;
 let meetingCreateState = null;
 let pendingMeetingCreateReveal = null;
 let cockpitQuickCreateMode = "";
+let graphTypeFilter = "all";
+let graphOnlyLinked = false;
+let graphSearch = "";
+let graphDepth = "all";
+let graphSelectedNodeId = "";
+let graphZoom = 1;
+let graphPan = { x: 0, y: 0 };
+let graphDragPan = null;
+let graphDragNode = null;
+let graphLayoutCache = null;
+let graphSimulationActive = false;
+let graphRafId = 0;
+let graphDataSignature = "";
+let graphReturnContext = null;
+let graphNavigationLock = false;
+let a5SummaryDialog = {
+  open: false,
+  type: "",
+  sourceId: "",
+  orientation: "portrait",
+  model: null,
+  error: ""
+};
+let a5PrintCleanupBound = false;
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -223,9 +258,11 @@ function applyIdentity() {
   }
   const app = document.getElementById("brandAppName");
   const site = document.getElementById("brandSiteName");
+  const version = document.getElementById("brandVersion");
   const search = document.getElementById("searchInput");
   if (app) app.textContent = identity.appName;
   if (site) site.textContent = identity.siteName || identity.organizationName || "";
+  if (version) version.textContent = `DEOS ${DEOS_VERSION}`;
   if (search) search.placeholder = `Rechercher : chocolat, ${identityName()}, CSE...`;
 }
 
@@ -242,7 +279,12 @@ function hideVisibleTechnicalIds(html) {
 }
 
 function appHtml(html) {
-  document.getElementById("app").innerHTML = hideVisibleTechnicalIds(html);
+  const graphReturnBanner = graphReturnContext && currentView !== "graph"
+    ? `<div class="card graph-return-banner"><div><strong>Vue graphique</strong><p class="muted">Contexte conservé (filtres, zoom, sélection).</p></div><div class="row-actions"><button class="secondary" onclick="returnToGraph()">Retour à la vue graphique</button></div></div>`
+    : "";
+  document.getElementById("app").innerHTML = hideVisibleTechnicalIds(`${graphReturnBanner}${html}`);
+  injectA5SummaryButtons();
+  renderA5SummaryOverlay();
 }
 
 function badge(status) {
@@ -960,11 +1002,536 @@ async function init() {
 
 function setView(view) {
   currentView = view;
+  if (view !== "graph" && !graphNavigationLock) graphReturnContext = null;
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
-  const titles = { cockpit: "Cockpit décisionnel", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
+  const titles = { cockpit: "Cockpit décisionnel", graph: "Vue graphique", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
   document.getElementById("viewTitle").textContent = titles[view] || identity.appName;
-  const views = { cockpit: renderCockpit, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
+  const views = { cockpit: renderCockpit, graph: renderGraph, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
   if (views[view]) views[view]();
+}
+
+function renderGraph() {
+  const data = buildDeosGraph({
+    typeFilter: graphTypeFilter,
+    onlyLinked: graphOnlyLinked,
+    search: graphSearch,
+    depth: graphDepth,
+    selectedNodeId: graphSelectedNodeId
+  });
+  if (graphSelectedNodeId && !data.nodes.some(node => node.id === graphSelectedNodeId)) {
+    graphSelectedNodeId = "";
+  }
+  const selected = data.nodes.find(node => node.id === graphSelectedNodeId) || null;
+  const layout = layoutDeosGraph(data);
+  const viewWidth = layout.width / graphZoom;
+  const viewHeight = layout.height / graphZoom;
+  const nodesById = new Map(data.nodes.map(node => [node.id, node]));
+  const connectedIds = new Set();
+  if (selected) {
+    data.edges.forEach(edge => {
+      if (edge.from === selected.id) connectedIds.add(edge.to);
+      if (edge.to === selected.id) connectedIds.add(edge.from);
+    });
+  }
+  const edgesHtml = data.edges.map(edge => {
+    const a = layout.positions[edge.from];
+    const b = layout.positions[edge.to];
+    if (!a || !b) return "";
+    const active = selected && (edge.from === selected.id || edge.to === selected.id);
+    return `<line class="deos-graph-link ${active ? "active" : selected ? "dim" : ""}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`;
+  }).join("");
+  const nodesHtml = data.nodes.map(node => {
+    const pos = layout.positions[node.id] || { x: 200, y: 200 };
+    const isSelected = selected && node.id === selected.id;
+    const isDim = selected && !isSelected && !connectedIds.has(node.id);
+    const conf = node.confidentiality && node.confidentiality !== "normal"
+      ? `<tspan class="node-conf"> · ${esc(meetingConfidentialityLabel(node.confidentiality))}</tspan>`
+      : "";
+    return `<g class="deos-graph-node kind-${esc(node.kind)} ${isSelected ? "selected" : ""} ${isDim ? "dim" : ""}" data-node-id="${esc(node.id)}" onclick="selectGraphNode('${esc(node.id)}')">
+      <circle cx="${pos.x}" cy="${pos.y}" r="31"></circle>
+      <text x="${pos.x}" y="${pos.y - 2}" text-anchor="middle" class="deos-graph-emoji">${esc(node.icon || "•")}</text>
+      <text x="${pos.x}" y="${pos.y + 48}" text-anchor="middle" class="deos-graph-label">${esc(node.shortLabel)}</text>
+      <text x="${pos.x}" y="${pos.y + 63}" text-anchor="middle" class="deos-graph-meta">${esc(node.kindLabel)}${conf}</text>
+    </g>`;
+  }).join("");
+
+  appHtml(`<div class="card hero"><div class="row"><div><h2>Vue graphique des liens DEOS</h2><p class="muted">Visualisation multi-entités des relations structurées, sans modification des données métier.</p></div><div class="row-actions"><button class="secondary" onclick="setView('cockpit')">Retour Cockpit</button></div></div></div>
+  <div class="card deos-graph-card">
+    <div class="deos-graph-toolbar">
+      <input value="${esc(graphSearch)}" placeholder="Rechercher (nom, titre, rôle, tag...)" oninput="setGraphSearch(this.value)">
+      <select onchange="setGraphTypeFilter(this.value)">
+        <option value="all" ${graphTypeFilter === "all" ? "selected" : ""}>Tous les types</option>
+        <option value="core" ${graphTypeFilter === "core" ? "selected" : ""}>Dossiers / Projets / Managers</option>
+        <option value="execution" ${graphTypeFilter === "execution" ? "selected" : ""}>Actions / Décisions / Priorités</option>
+        <option value="knowledge" ${graphTypeFilter === "knowledge" ? "selected" : ""}>Journal / Documents / Performance</option>
+        <option value="meetings" ${graphTypeFilter === "meetings" ? "selected" : ""}>Rendez-vous (DEOS + Google)</option>
+      </select>
+      <select onchange="setGraphDepth(this.value)">
+        <option value="all" ${graphDepth === "all" ? "selected" : ""}>Profondeur : tout le graphe</option>
+        <option value="1" ${graphDepth === "1" ? "selected" : ""}>Profondeur : 1 lien</option>
+        <option value="2" ${graphDepth === "2" ? "selected" : ""}>Profondeur : 2 liens</option>
+        <option value="3" ${graphDepth === "3" ? "selected" : ""}>Profondeur : 3 liens</option>
+      </select>
+      <label class="graph-check"><input type="checkbox" ${graphOnlyLinked ? "checked" : ""} onchange="setGraphOnlyLinked(this.checked)"> Masquer les nœuds isolés</label>
+      <button class="secondary" onclick="zoomGraph(1.18)">Zoom +</button>
+      <button class="secondary" onclick="zoomGraph(0.85)">Zoom -</button>
+      <button class="secondary" onclick="recenterGraph()">Recentrer</button>
+      <button class="secondary" onclick="resetGraphZoom()">Réinitialiser zoom</button>
+      <button class="secondary" onclick="clearGraphSelection()">Réinitialiser sélection</button>
+    </div>
+    <div class="deos-graph-layout">
+      <svg class="deos-graph-svg" viewBox="${graphPan.x} ${graphPan.y} ${viewWidth} ${viewHeight}" onwheel="graphWheel(event)" onmousedown="startGraphPan(event)" onmousemove="moveGraphPan(event)" onmouseup="endGraphPan()" onmouseleave="endGraphPan()">
+        <rect class="deos-graph-bg" x="${graphPan.x}" y="${graphPan.y}" width="${viewWidth}" height="${viewHeight}"></rect>
+        ${edgesHtml}
+        ${nodesHtml}
+      </svg>
+      <aside class="deos-graph-side">
+        <div class="graph-legend">
+          <span>${data.nodes.length} nœud(s) visibles · ${data.edges.length} relation(s) visibles</span>
+          <span>${data.totalNodes} nœud(s) total · ${data.totalEdges} relation(s) total</span>
+          <span>Rendu : SVG natif</span>
+        </div>
+        ${renderGraphDetailPanel(selected, nodesById, data)}
+      </aside>
+    </div>
+  </div>`);
+}
+
+function graphNodeId(kind, sourceId) {
+  return `${String(kind || "")}:${String(sourceId || "")}`;
+}
+
+function parseGraphNodeId(nodeId) {
+  const value = String(nodeId || "");
+  const idx = value.indexOf(":");
+  if (idx < 0) return { kind: "", sourceId: value };
+  return { kind: value.slice(0, idx), sourceId: value.slice(idx + 1) };
+}
+
+function graphKindMeta(kind) {
+  const meta = {
+    folder: { label: "Dossier", icon: "📁" },
+    project: { label: "Projet", icon: "📂" },
+    action: { label: "Action", icon: "✅" },
+    decision: { label: "Décision", icon: "⚖️" },
+    manager: { label: "Manager", icon: "👤" },
+    journal: { label: "Journal", icon: "📝" },
+    document: { label: "Document", icon: "📄" },
+    priority: { label: "Priorité", icon: "🎯" },
+    performance: { label: "Performance", icon: "📊" },
+    agenda_manual: { label: "Réunion DEOS", icon: "🗓️" },
+    agenda_google: { label: "Réunion Google", icon: "📅" }
+  };
+  return meta[kind] || { label: "Objet", icon: "•" };
+}
+
+function graphShortLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "Sans titre";
+  return text.length > 32 ? `${text.slice(0, 29)}...` : text;
+}
+
+function graphEntitySearchText(item, extra = "") {
+  return normalizeText([item?.name, item?.title, item?.role, item?.category, item?.type, item?.status, item?.summary, item?.context, item?.objective, item?.owner, item?.location, item?.date, ensureArray(item?.tags).join(" "), extra].filter(Boolean).join(" "));
+}
+
+function buildDeosGraph(options = {}) {
+  const nodes = new Map();
+  const edges = new Map();
+  const addNode = (kind, sourceId, label, item = {}, extra = {}) => {
+    const id = String(sourceId || "").trim();
+    if (!id) return;
+    const key = graphNodeId(kind, id);
+    if (nodes.has(key)) return;
+    const meta = graphKindMeta(kind);
+    nodes.set(key, {
+      id: key,
+      kind,
+      sourceId: id,
+      label: String(label || "Sans titre"),
+      shortLabel: graphShortLabel(label),
+      kindLabel: meta.label,
+      icon: meta.icon,
+      confidentiality: normalizeMeetingConfidentiality(extra.confidentiality || item?.confidentiality || "normal"),
+      searchText: graphEntitySearchText(item, extra.searchText || ""),
+      source: item,
+      extra
+    });
+  };
+  const ensureNode = (kind, sourceId) => nodes.has(graphNodeId(kind, sourceId));
+  const addEdge = (fromKind, fromId, toKind, toId, relation) => {
+    const from = graphNodeId(fromKind, fromId);
+    const to = graphNodeId(toKind, toId);
+    if (from === to || !nodes.has(from) || !nodes.has(to)) return;
+    const id = [from, to, relation].join("=>");
+    if (!edges.has(id)) edges.set(id, { id, from, to, relation });
+  };
+  const linkMany = (fromKind, fromId, toKind, ids, relation) => {
+    ensureArray(ids).map(x => String(x || "").trim()).filter(Boolean).forEach(targetId => {
+      if (ensureNode(toKind, targetId)) addEdge(fromKind, fromId, toKind, targetId, relation);
+    });
+  };
+
+  state.folders.forEach(folder => addNode("folder", folder.id, folder.name, folder));
+  state.projects.forEach(project => addNode("project", project.id, project.name, project));
+  state.actions.forEach(action => addNode("action", action.id, action.title, action));
+  state.decisions.forEach(decision => addNode("decision", decision.id, decision.title, decision));
+  state.managers.forEach(manager => addNode("manager", manager.id, manager.name, manager));
+  state.journal.forEach(journal => addNode("journal", journal.id, journal.title, journal));
+  state.documents.forEach(document => addNode("document", document.id, document.title, document));
+  state.priorities.forEach(priority => addNode("priority", priority.id, priority.title, priority));
+  state.performance.forEach(perf => addNode("performance", perf.id, perfPeriodLabel(perf), perf));
+
+  state.agenda.forEach(meeting => {
+    const confidentiality = normalizeMeetingConfidentiality(meeting.confidentiality || "normal");
+    const hidden = confidentiality !== "normal";
+    addNode("agenda_manual", meeting.id, hidden ? "Rendez-vous confidentiel" : (meeting.title || "Rendez-vous"), meeting, {
+      confidentiality,
+      searchText: hidden ? "reunion deos confidentielle" : ""
+    });
+  });
+  (state.externalCalendarEvents || []).forEach(event => {
+    const eventKey = String(event._key || `google_${event.externalId || event.id || ""}`);
+    if (!eventKey) return;
+    const enrichment = getExternalEventEnrichment(eventKey);
+    const confidentiality = normalizeMeetingConfidentiality(enrichment.confidentiality || "normal");
+    const hidden = confidentiality !== "normal";
+    addNode("agenda_google", eventKey, hidden ? "Rendez-vous Google confidentiel" : (event.title || "Rendez-vous Google"), event, {
+      confidentiality,
+      searchText: hidden ? "reunion google confidentielle" : (event.calendarName || "")
+    });
+  });
+
+  state.projects.forEach(project => {
+    linkMany("project", project.id, "folder", project.linkedFolders, "linkedFolders");
+    linkMany("project", project.id, "manager", project.linkedManagers, "linkedManagers");
+    if (project.ownerId) linkMany("project", project.id, "manager", [project.ownerId], "ownerId");
+    linkMany("project", project.id, "action", project.linkedActions, "linkedActions");
+    linkMany("project", project.id, "decision", project.linkedDecisions, "linkedDecisions");
+    linkMany("project", project.id, "document", project.linkedDocuments, "linkedDocuments");
+  });
+  state.actions.forEach(action => {
+    linkMany("action", action.id, "folder", action.linkedFolders, "linkedFolders");
+    linkMany("action", action.id, "project", action.linkedProjects, "linkedProjects");
+    linkMany("action", action.id, "decision", action.linkedDecisions, "linkedDecisions");
+    linkMany("action", action.id, "manager", action.linkedManagers, "linkedManagers");
+  });
+  state.decisions.forEach(decision => {
+    linkMany("decision", decision.id, "folder", decision.linkedFolders, "linkedFolders");
+    linkMany("decision", decision.id, "project", decision.linkedProjects, "linkedProjects");
+    linkMany("decision", decision.id, "action", decision.linkedActions, "linkedActions");
+    linkMany("decision", decision.id, "manager", decision.linkedManagers, "linkedManagers");
+    linkMany("decision", decision.id, "document", decision.linkedDocuments, "linkedDocuments");
+  });
+  state.managers.forEach(manager => {
+    linkMany("manager", manager.id, "folder", manager.linkedFolders, "linkedFolders");
+    linkMany("manager", manager.id, "project", manager.linkedProjects, "linkedProjects");
+    linkMany("manager", manager.id, "action", manager.linkedActions, "linkedActions");
+    linkMany("manager", manager.id, "decision", manager.linkedDecisions, "linkedDecisions");
+  });
+  state.journal.forEach(journal => {
+    linkMany("journal", journal.id, "folder", journal.linkedFolders, "linkedFolders");
+    linkMany("journal", journal.id, "project", journal.linkedProjects, "linkedProjects");
+    linkMany("journal", journal.id, "manager", journal.linkedManagers, "linkedManagers");
+    linkMany("journal", journal.id, "action", journal.linkedActions, "linkedActions");
+    linkMany("journal", journal.id, "decision", journal.linkedDecisions, "linkedDecisions");
+    linkMany("journal", journal.id, "document", journal.linkedDocuments, "linkedDocuments");
+  });
+  state.documents.forEach(document => {
+    linkMany("document", document.id, "folder", document.linkedFolders, "linkedFolders");
+    linkMany("document", document.id, "project", document.linkedProjects, "linkedProjects");
+    linkMany("document", document.id, "manager", document.linkedManagers, "linkedManagers");
+    linkMany("document", document.id, "action", document.linkedActions, "linkedActions");
+    linkMany("document", document.id, "decision", document.linkedDecisions, "linkedDecisions");
+    linkMany("document", document.id, "journal", document.linkedJournal, "linkedJournal");
+    linkMany("document", document.id, "performance", document.linkedPerformance, "linkedPerformance");
+  });
+  state.priorities.forEach(priority => {
+    linkMany("priority", priority.id, "folder", priority.linkedFolders, "linkedFolders");
+  });
+  state.performance.forEach(perf => {
+    linkMany("performance", perf.id, "folder", perf.linkedFolders, "linkedFolders");
+    linkMany("performance", perf.id, "project", perf.linkedProjects, "linkedProjects");
+    linkMany("performance", perf.id, "manager", perf.linkedManagers, "linkedManagers");
+    linkMany("performance", perf.id, "action", perf.linkedActions, "linkedActions");
+    linkMany("performance", perf.id, "decision", perf.linkedDecisions, "linkedDecisions");
+    linkMany("performance", perf.id, "journal", perf.linkedJournal, "linkedJournal");
+    linkMany("performance", perf.id, "document", perf.linkedDocuments, "linkedDocuments");
+  });
+  state.agenda.forEach(meeting => {
+    const source = "manual";
+    const meetingId = meeting.id;
+    linkMany("agenda_manual", meetingId, "folder", meetingLinkIdsForType(meeting, "folder", source), "meetingLinkedFolder");
+    linkMany("agenda_manual", meetingId, "project", meetingLinkIdsForType(meeting, "project", source), "meetingLinkedProject");
+    linkMany("agenda_manual", meetingId, "manager", meetingLinkIdsForType(meeting, "manager", source), "meetingLinkedManager");
+    linkMany("agenda_manual", meetingId, "action", meetingLinkIdsForType(meeting, "action", source), "meetingLinkedAction");
+    linkMany("agenda_manual", meetingId, "decision", meetingLinkIdsForType(meeting, "decision", source), "meetingLinkedDecision");
+  });
+  (state.externalCalendarEvents || []).forEach(event => {
+    const meetingId = String(event._key || `google_${event.externalId || event.id || ""}`);
+    if (!meetingId) return;
+    const enrichment = getExternalEventEnrichment(meetingId);
+    const source = "google";
+    linkMany("agenda_google", meetingId, "folder", meetingLinkIdsForType(enrichment, "folder", source), "meetingLinkedFolder");
+    linkMany("agenda_google", meetingId, "project", meetingLinkIdsForType(enrichment, "project", source), "meetingLinkedProject");
+    linkMany("agenda_google", meetingId, "manager", meetingLinkIdsForType(enrichment, "manager", source), "meetingLinkedManager");
+    linkMany("agenda_google", meetingId, "action", meetingLinkIdsForType(enrichment, "action", source), "meetingLinkedAction");
+    linkMany("agenda_google", meetingId, "decision", meetingLinkIdsForType(enrichment, "decision", source), "meetingLinkedDecision");
+  });
+
+  const totalNodes = nodes.size;
+  const totalEdges = edges.size;
+  let filteredNodes = [...nodes.values()];
+  let filteredEdges = [...edges.values()];
+
+  if (options.onlyLinked) {
+    const linked = new Set();
+    filteredEdges.forEach(edge => { linked.add(edge.from); linked.add(edge.to); });
+    filteredNodes = filteredNodes.filter(node => linked.has(node.id));
+  }
+
+  const typeFilter = String(options.typeFilter || "all");
+  if (typeFilter !== "all") {
+    const allowed = {
+      core: new Set(["folder", "project", "manager"]),
+      execution: new Set(["action", "decision", "priority"]),
+      knowledge: new Set(["journal", "document", "performance"]),
+      meetings: new Set(["agenda_manual", "agenda_google"])
+    }[typeFilter] || new Set();
+    filteredNodes = filteredNodes.filter(node => allowed.has(node.kind));
+  }
+
+  const search = normalizeText(options.search || "").trim();
+  if (search) {
+    filteredNodes = filteredNodes.filter(node => node.searchText.includes(search));
+  }
+
+  const visibleNodeIds = new Set(filteredNodes.map(node => node.id));
+  filteredEdges = filteredEdges.filter(edge => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to));
+
+  if (options.selectedNodeId && options.depth !== "all" && visibleNodeIds.has(options.selectedNodeId)) {
+    const depthLimit = Math.max(1, Number(options.depth || 1));
+    const adjacency = new Map();
+    filteredEdges.forEach(edge => {
+      if (!adjacency.has(edge.from)) adjacency.set(edge.from, new Set());
+      if (!adjacency.has(edge.to)) adjacency.set(edge.to, new Set());
+      adjacency.get(edge.from).add(edge.to);
+      adjacency.get(edge.to).add(edge.from);
+    });
+    const keep = new Set([options.selectedNodeId]);
+    let frontier = new Set([options.selectedNodeId]);
+    for (let depth = 0; depth < depthLimit; depth += 1) {
+      const next = new Set();
+      frontier.forEach(nodeId => {
+        (adjacency.get(nodeId) || new Set()).forEach(targetId => {
+          if (!keep.has(targetId)) next.add(targetId);
+          keep.add(targetId);
+        });
+      });
+      frontier = next;
+      if (!frontier.size) break;
+    }
+    filteredNodes = filteredNodes.filter(node => keep.has(node.id));
+    const scoped = new Set(filteredNodes.map(node => node.id));
+    filteredEdges = filteredEdges.filter(edge => scoped.has(edge.from) && scoped.has(edge.to));
+  }
+
+  return { nodes: filteredNodes, edges: filteredEdges, totalNodes, totalEdges };
+}
+
+function layoutDeosGraph(data) {
+  const signature = `${data.nodes.map(node => node.id).sort().join("|")}::${data.edges.length}`;
+  if (!graphLayoutCache || graphDataSignature !== signature) {
+    graphLayoutCache = { positions: {} };
+    graphDataSignature = signature;
+  }
+  const kindOrder = ["folder", "project", "manager", "action", "decision", "priority", "document", "journal", "performance", "agenda_manual", "agenda_google"];
+  const grouped = new Map(kindOrder.map(kind => [kind, []]));
+  data.nodes.forEach(node => {
+    if (!grouped.has(node.kind)) grouped.set(node.kind, []);
+    grouped.get(node.kind).push(node);
+  });
+  grouped.forEach(nodes => nodes.sort((a, b) => String(a.label).localeCompare(String(b.label))));
+
+  const positions = graphLayoutCache.positions;
+  let col = 0;
+  const used = [];
+  kindOrder.forEach(kind => {
+    const items = grouped.get(kind) || [];
+    if (!items.length) return;
+    const x = 160 + (col * 250);
+    items.forEach((node, index) => {
+      if (!positions[node.id]) positions[node.id] = { x, y: 110 + (index * 110) };
+      used.push(positions[node.id]);
+    });
+    col += 1;
+  });
+
+  const minX = used.length ? Math.min(...used.map(p => p.x)) : 0;
+  const maxX = used.length ? Math.max(...used.map(p => p.x)) : 1200;
+  const minY = used.length ? Math.min(...used.map(p => p.y)) : 0;
+  const maxY = used.length ? Math.max(...used.map(p => p.y)) : 700;
+  const width = Math.max(1200, (maxX - minX) + 360);
+  const height = Math.max(720, (maxY - minY) + 260);
+  return { positions, width, height, minX, maxX, minY, maxY };
+}
+
+function renderGraphDetailPanel(selected, nodesById, data) {
+  if (!selected) {
+    return `<div class="graph-preview empty"><strong>Aucun nœud sélectionné</strong><span>Cliquez un nœud pour afficher le détail, les relations et les actions d'ouverture.</span></div>`;
+  }
+  const related = data.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+  const neighbors = related.map(edge => nodesById.get(edge.from === selected.id ? edge.to : edge.from)).filter(Boolean);
+  const rows = neighbors.slice(0, 10).map(node => `<div class="item clickable" onclick="selectGraphNode('${esc(node.id)}')"><strong>${esc(node.label)}</strong><span class="muted">${esc(node.kindLabel)}</span></div>`).join("") || `<div class="empty">Aucune relation visible avec les filtres actuels.</div>`;
+  const conf = selected.confidentiality !== "normal" ? `<span class="badge orange">${esc(meetingConfidentialityLabel(selected.confidentiality))}</span>` : "";
+  return `<div class="graph-preview"><strong>${esc(selected.label)}</strong><span>${esc(selected.kindLabel)} ${conf}</span><span>${related.length} relation(s) visible(s)</span><div class="row-actions"><button class="action" onclick="openGraphNode('${esc(selected.id)}')">Ouvrir la fiche</button></div></div><div class="card" style="margin-top:10px"><h2>Objets connectés</h2>${rows}</div>`;
+}
+
+function setGraphTypeFilter(value) {
+  graphTypeFilter = value;
+  renderGraph();
+}
+
+function setGraphDepth(value) {
+  graphDepth = value;
+  renderGraph();
+}
+
+function setGraphOnlyLinked(value) {
+  graphOnlyLinked = Boolean(value);
+  renderGraph();
+}
+
+function setGraphSearch(value) {
+  graphSearch = value;
+  renderGraph();
+}
+
+function clearGraphSelection() {
+  graphSelectedNodeId = "";
+  graphDepth = "all";
+  renderGraph();
+}
+
+function selectGraphNode(nodeId) {
+  graphSelectedNodeId = String(nodeId || "");
+  renderGraph();
+}
+
+function captureGraphContext() {
+  return {
+    typeFilter: graphTypeFilter,
+    onlyLinked: graphOnlyLinked,
+    search: graphSearch,
+    depth: graphDepth,
+    selectedNodeId: graphSelectedNodeId,
+    zoom: graphZoom,
+    pan: { ...graphPan },
+    layout: graphLayoutCache ? JSON.parse(JSON.stringify(graphLayoutCache)) : null,
+    signature: graphDataSignature
+  };
+}
+
+function returnToGraph() {
+  const ctx = graphReturnContext;
+  graphReturnContext = null;
+  if (ctx) {
+    graphTypeFilter = ctx.typeFilter || "all";
+    graphOnlyLinked = Boolean(ctx.onlyLinked);
+    graphSearch = String(ctx.search || "");
+    graphDepth = String(ctx.depth || "all");
+    graphSelectedNodeId = String(ctx.selectedNodeId || "");
+    graphZoom = Number(ctx.zoom || 1);
+    graphPan = ctx.pan || { x: 0, y: 0 };
+    graphLayoutCache = ctx.layout || null;
+    graphDataSignature = String(ctx.signature || "");
+  }
+  graphNavigationLock = true;
+  setView("graph");
+  graphNavigationLock = false;
+}
+
+function openGraphNode(nodeId) {
+  const parsed = parseGraphNodeId(nodeId);
+  const sourceId = parsed.sourceId;
+  if (!parsed.kind || !sourceId) return;
+  graphReturnContext = captureGraphContext();
+  graphNavigationLock = true;
+  try {
+    if (parsed.kind === "folder") { setView("folders"); openFolder(sourceId); return; }
+    if (parsed.kind === "project") { setView("projects"); openProject(sourceId); return; }
+    if (parsed.kind === "action") { setView("actions"); openAction(sourceId); return; }
+    if (parsed.kind === "decision") { setView("decisions"); openDecision(sourceId); return; }
+    if (parsed.kind === "manager") { setView("managers"); openManager(sourceId); return; }
+    if (parsed.kind === "journal") { setView("journal"); openJournal(sourceId); return; }
+    if (parsed.kind === "document") { setView("documents"); editDocument(sourceId); return; }
+    if (parsed.kind === "priority") { setView("priorities"); return; }
+    if (parsed.kind === "performance") { setView("performance"); return; }
+    if (parsed.kind === "agenda_manual") {
+      setView("activity");
+      meetingOriginContext = { type: "graph", id: "" };
+      editAgenda(sourceId);
+      return;
+    }
+    if (parsed.kind === "agenda_google") {
+      setView("activity");
+      meetingOriginContext = { type: "graph", id: "" };
+      openExternalEventModal(sourceId);
+      return;
+    }
+  } finally {
+    graphNavigationLock = false;
+  }
+}
+
+function zoomGraph(ratio) {
+  graphZoom = Math.max(0.45, Math.min(2.8, graphZoom * ratio));
+  renderGraph();
+}
+
+function recenterGraph() {
+  const data = buildDeosGraph({
+    typeFilter: graphTypeFilter,
+    onlyLinked: graphOnlyLinked,
+    search: graphSearch,
+    depth: graphDepth,
+    selectedNodeId: graphSelectedNodeId
+  });
+  const layout = layoutDeosGraph(data);
+  graphPan = { x: Math.max(0, layout.minX - 140), y: Math.max(0, layout.minY - 120) };
+  renderGraph();
+}
+
+function resetGraphZoom() {
+  graphZoom = 1;
+  graphPan = { x: 0, y: 0 };
+  renderGraph();
+}
+
+function graphWheel(event) {
+  event.preventDefault();
+  zoomGraph(event.deltaY < 0 ? 1.12 : 0.9);
+}
+
+function startGraphPan(event) {
+  if (event.target.closest(".deos-graph-node")) return;
+  graphDragPan = { x: event.clientX, y: event.clientY, panX: graphPan.x, panY: graphPan.y };
+}
+
+function moveGraphPan(event) {
+  if (!graphDragPan) return;
+  graphPan = {
+    x: graphDragPan.panX - (event.clientX - graphDragPan.x) / graphZoom,
+    y: graphDragPan.panY - (event.clientY - graphDragPan.y) / graphZoom
+  };
+  const svg = document.querySelector(".deos-graph-svg");
+  if (!svg) return;
+  const [, , width, height] = String(svg.getAttribute("viewBox") || "0 0 1200 720").split(/\s+/).map(Number);
+  svg.setAttribute("viewBox", `${graphPan.x} ${graphPan.y} ${width || 1200} ${height || 720}`);
+}
+
+function endGraphPan() {
+  graphDragPan = null;
 }
 
 function parseDateValue(value) {
@@ -1102,6 +1669,7 @@ function restoreMeetingOriginContext() {
   if (!meetingOriginContext) return false;
   const ctx = meetingOriginContext;
   meetingOriginContext = null;
+  if (ctx.type === "graph") return returnToGraph(), true;
   if (ctx.type === "folder") return openFolder(ctx.id), true;
   if (ctx.type === "project") return openProject(ctx.id), true;
   if (ctx.type === "action") return openAction(ctx.id), true;
@@ -1122,6 +1690,649 @@ function renderLinkedMeetingsSection(type, objectId) {
   const meetings = getMeetingsLinkedToObject(type, objectId);
   if (!meetings.length) return `<div class="empty">Aucun rendez-vous lié.</div>`;
   return meetings.map(m => linkedMeetingItem(m, type, objectId)).join("");
+}
+
+function parseEntityIdFromCall(source, fnName) {
+  const match = String(source || "").match(new RegExp(`${fnName}\\('([^']+)'\\)`));
+  return match ? String(match[1]) : "";
+}
+
+function injectA5SummaryButtons() {
+  const actions = document.querySelector(".manager-hero .row-actions");
+  if (!actions) return;
+  const buttons = [...actions.querySelectorAll("button")];
+  if (!buttons.length) return;
+  if (!actions.querySelector("button[data-a5-summary='folder']")) {
+    const folderBtn = buttons.find(btn => String(btn.getAttribute("onclick") || "").includes("editFolder('"));
+    const folderId = parseEntityIdFromCall(folderBtn?.getAttribute("onclick"), "editFolder");
+    if (folderBtn && folderId) {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "secondary";
+      node.setAttribute("data-a5-summary", "folder");
+      node.setAttribute("onclick", `openA5SummaryPreview('folder','${esc(folderId)}')`);
+      node.textContent = "🖨️ Synthèse A5";
+      folderBtn.insertAdjacentElement("afterend", node);
+    }
+  }
+  if (!actions.querySelector("button[data-a5-summary='project']")) {
+    const projectBtn = buttons.find(btn => String(btn.getAttribute("onclick") || "").includes("editProject('"));
+    const projectId = parseEntityIdFromCall(projectBtn?.getAttribute("onclick"), "editProject");
+    if (projectBtn && projectId) {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "secondary";
+      node.setAttribute("data-a5-summary", "project");
+      node.setAttribute("onclick", `openA5SummaryPreview('project','${esc(projectId)}')`);
+      node.textContent = "🖨️ Synthèse A5";
+      projectBtn.insertAdjacentElement("afterend", node);
+    }
+  }
+}
+
+function ensureA5PrintHooks() {
+  if (a5PrintCleanupBound) return;
+  window.addEventListener("afterprint", cleanupA5PrintClasses);
+  a5PrintCleanupBound = true;
+}
+
+function cleanupA5PrintClasses() {
+  document.body.classList.remove("a5-print-active", "a5-print-portrait", "a5-print-landscape");
+}
+
+function a5SafeText(value, max = 140) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1)).trim()}…` : text;
+}
+
+function a5LevelLabel(level) {
+  return level === "red" ? "Critique" : level === "orange" ? "Important" : level === "green" ? "Normal" : (level || "A suivre");
+}
+
+function a5MeetingTime(meeting) {
+  if (!meeting) return "Heure a confirmer";
+  if (meeting.allDay) return "Journee entiere";
+  const start = String(meeting.startTime || "").trim();
+  const end = String(meeting.endTime || "").trim();
+  if (!start) return "Heure a confirmer";
+  return end ? `${start} - ${end}` : start;
+}
+
+function a5Date(value) {
+  const d = parseDateValue(value);
+  if (!d) return "";
+  return d.toLocaleDateString("fr-FR");
+}
+
+function a5DateTimeNow() {
+  return new Date().toLocaleString("fr-FR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function a5IsUpcoming(value) {
+  const days = daysUntil(value);
+  return days !== null && days >= 0;
+}
+
+function a5ActionSort(a, b) {
+  const ad = daysUntil(a.due);
+  const bd = daysUntil(b.due);
+  const aOver = ad !== null && ad < 0 ? 0 : 1;
+  const bOver = bd !== null && bd < 0 ? 0 : 1;
+  if (aOver !== bOver) return aOver - bOver;
+  const byDue = dateRank(a.due) - dateRank(b.due);
+  if (byDue !== 0) return byDue;
+  return levelRank(a.level || a.priorityLevel || "orange") - levelRank(b.level || b.priorityLevel || "orange");
+}
+
+function a5DecisionSort(a, b) {
+  const byLevel = levelRank(a.importance || "orange") - levelRank(b.importance || "orange");
+  if (byLevel !== 0) return byLevel;
+  return dateRank(a.reviewDate || a.date) - dateRank(b.reviewDate || b.date);
+}
+
+function a5MeetingDisplay(meeting) {
+  const confidentiality = normalizeMeetingConfidentiality(meeting.confidentiality || "normal");
+  const restricted = confidentiality === "restricted" || confidentiality === "confidential";
+  const label = restricted ? "Rendez-vous restreint ou confidentiel" : (meeting.title || "Rendez-vous");
+  return {
+    label,
+    date: a5Date(meeting.date) || String(meeting.date || ""),
+    time: a5MeetingTime(meeting),
+    confidentiality,
+    restricted
+  };
+}
+
+function a5Section(title, body) {
+  if (!body) return "";
+  return `<section class="a5-section"><h3>${esc(title)}</h3>${body}</section>`;
+}
+
+function a5List(items, renderItem, emptyText = "") {
+  const rows = ensureArray(items).map(renderItem).filter(Boolean);
+  if (!rows.length) return emptyText ? `<p class="muted">${esc(emptyText)}</p>` : "";
+  return `<div class="a5-list">${rows.join("")}</div>`;
+}
+
+function projectRelationsForA5(project) {
+  const projectId = String(project?.id || "");
+  const linkedManagers = new Map();
+  ensureArray(project.linkedManagers).forEach(id => {
+    const manager = byId("managers", id);
+    if (manager) linkedManagers.set(String(manager.id), manager);
+  });
+  const owner = byId("managers", project.ownerId);
+  if (owner) linkedManagers.set(String(owner.id), owner);
+  const actions = state.actions.filter(a => ensureArray(project.linkedActions).some(id => sameId(id, a.id)) || ensureArray(a.linkedProjects).some(id => sameId(id, projectId)));
+  const decisions = state.decisions.filter(d => ensureArray(project.linkedDecisions).some(id => sameId(id, d.id)) || ensureArray(d.linkedProjects).some(id => sameId(id, projectId)));
+  const documents = state.documents.filter(d => ensureArray(project.linkedDocuments).some(id => sameId(id, d.id)) || ensureArray(d.linkedProjects).some(id => sameId(id, projectId)));
+  const journal = state.journal.filter(j => ensureArray(j.linkedProjects).some(id => sameId(id, projectId)));
+  const meetings = getMeetingsLinkedToObject("project", projectId);
+  return {
+    managers: [...linkedManagers.values()],
+    actions,
+    decisions,
+    documents,
+    journal,
+    meetings,
+    milestones: ensureArray(project.milestones)
+  };
+}
+
+function buildFolderA5Summary(folderId) {
+  const folder = byId("folders", folderId);
+  if (!folder) return null;
+  const matchesFolder = (item) => ensureArray(item?.linkedFolders).some(id => sameId(id, folder.id));
+  const projects = state.projects.filter(project => matchesFolder(project));
+  const projectIds = projects.map(project => String(project.id));
+  const managers = state.managers.filter(manager => ensureArray(folder.linkedManagers).some(id => sameId(id, manager.id))
+    || projectIds.some(id => ensureArray(manager.linkedProjects).some(link => sameId(link, id)))
+    || projects.some(project => sameId(project.ownerId, manager.id) || ensureArray(project.linkedManagers).some(link => sameId(link, manager.id))));
+  const managerIds = managers.map(manager => String(manager.id));
+  const actionsFromLinks = state.actions.filter(action => matchesFolder(action)
+    || projectIds.some(id => ensureArray(action.linkedProjects).some(link => sameId(link, id)))
+    || projects.some(project => ensureArray(project.linkedActions).some(link => sameId(link, action.id))));
+  const priorities = state.priorities.filter(priority => matchesFolder(priority));
+  const decisions = state.decisions.filter(decision => matchesFolder(decision)
+    || projectIds.some(id => ensureArray(decision.linkedProjects).some(link => sameId(link, id)))
+    || actionsFromLinks.some(action => ensureArray(decision.linkedActions).some(link => sameId(link, action.id))));
+  const decisionIds = decisions.map(decision => String(decision.id));
+  const journal = state.journal.filter(entry => matchesFolder(entry)
+    || projectIds.some(id => ensureArray(entry.linkedProjects).some(link => sameId(link, id)))
+    || decisionIds.some(id => ensureArray(entry.linkedDecisions).some(link => sameId(link, id))));
+  const documents = state.documents.filter(doc => matchesFolder(doc)
+    || projects.some(project => ensureArray(project.linkedDocuments).some(link => sameId(link, doc.id)))
+    || decisions.some(decision => ensureArray(decision.linkedDocuments).some(link => sameId(link, doc.id))));
+  const agenda = state.agenda.filter(meeting => matchesFolder(meeting)
+    || projectIds.some(id => ensureArray(meeting.linkedProjects).some(link => sameId(link, id)))
+    || managerIds.some(id => ensureArray(meeting.linkedManagers).some(link => sameId(link, id))));
+  const rel = { projects, managers, actions: actionsFromLinks, priorities, decisions, journal, documents, agenda };
+  const actionsAll = rel.actions.slice();
+  const openActions = actionsAll.filter(a => !a.done);
+  const actionPool = (openActions.length ? openActions : actionsAll).slice().sort(a5ActionSort);
+  const sortedDecisions = rel.decisions.slice().sort(a5DecisionSort);
+  const sortedProjects = rel.projects.slice().sort((a, b) => {
+    const ar = (a.status === "red" || a.priorityLevel === "red") ? 0 : 1;
+    const br = (b.status === "red" || b.priorityLevel === "red") ? 0 : 1;
+    if (ar !== br) return ar - br;
+    return dateRank(a.deadline) - dateRank(b.deadline);
+  });
+  const meetings = getMeetingsLinkedToObject("folder", folder.id).map(a5MeetingDisplay);
+  const upcomingMeetings = meetings.filter(m => a5IsUpcoming(m.date));
+  const overdueActions = openActions.filter(a => {
+    const d = daysUntil(a.due);
+    return d !== null && d < 0;
+  });
+  const risks = [];
+  sortedProjects.filter(p => p.risks || p.status === "red" || p.priorityLevel === "red").slice(0, 3).forEach(p => {
+    risks.push(`Projet ${p.name}: ${a5SafeText(p.risks || "Statut critique", 90)}`);
+  });
+  overdueActions.filter(a => levelRank(a.level || a.priorityLevel || "orange") <= 1).slice(0, 2).forEach(a => {
+    risks.push(`Action en retard: ${a5SafeText(a.title, 90)}`);
+  });
+  sortedDecisions.filter(d => d.status === "review" || d.status === "applying").slice(0, 2).forEach(d => {
+    risks.push(`Decision a suivre: ${a5SafeText(d.title, 90)}`);
+  });
+  rel.priorities.filter(p => !p.done && p.level === "red").slice(0, 1).forEach(p => {
+    risks.push(`Priorite critique: ${a5SafeText(p.title, 90)}`);
+  });
+  const nextSteps = [];
+  const nextDue = [...actionsAll.map(a => a.due), ...priorities.map(p => p.due), ...sortedProjects.map(p => p.deadline), ...sortedDecisions.map(d => d.reviewDate), ...agenda.map(a => a.date), folder.deadline]
+    .filter(Boolean)
+    .sort((a, b) => dateRank(a) - dateRank(b))[0] || "";
+  if (nextDue) nextSteps.push(`Prochaine echeance: ${a5Date(nextDue) || nextDue}`);
+  const nextMeeting = upcomingMeetings[0];
+  if (nextMeeting) nextSteps.push(`Prochain rendez-vous: ${nextMeeting.date} ${nextMeeting.time}`);
+  const nextAction = actionPool[0];
+  if (nextAction) nextSteps.push(`Prochaine action importante: ${a5SafeText(nextAction.title, 90)}`);
+  const nextDecision = sortedDecisions.find(d => d.status === "review" || d.status === "applying");
+  if (nextDecision) nextSteps.push(`Decision attendue: ${a5SafeText(nextDecision.title, 90)}`);
+
+  return {
+    type: "folder",
+    title: folder.name,
+    metadata: {
+      category: folder.category || "",
+      status: folderStatusLabel(folder.status),
+      priority: folderPriorityLabel(folder.priorityLevel),
+      owner: folder.owner || "",
+      deadline: folder.deadline || "",
+      generatedAt: a5DateTimeNow(),
+      version: DEOS_VERSION
+    },
+    context: {
+      description: folder.description || "",
+      context: folder.context || "",
+      objectives: folder.objectives || "",
+      expectedResults: folder.expectedResults || ""
+    },
+    metrics: {
+      linkedProjects: rel.projects.length,
+      openActions: openActions.length,
+      overdueActions: overdueActions.length,
+      linkedDecisions: rel.decisions.length,
+      upcomingMeetings: upcomingMeetings.length,
+      linkedManagers: rel.managers.length
+    },
+    projects: sortedProjects.slice(0, 4).map(p => ({
+      name: p.name,
+      status: folderStatusLabel(p.status),
+      progress: Number(p.progress || 0),
+      deadline: p.deadline || "",
+      risk: a5SafeText(p.risks || "", 90)
+    })),
+    actions: actionPool.slice(0, 5).map(a => ({
+      title: a.title,
+      owner: a.owner || "",
+      due: a.due || "",
+      overdue: (() => {
+        const d = daysUntil(a.due);
+        return d !== null && d < 0 ? `${Math.abs(d)} j` : "";
+      })(),
+      level: a5LevelLabel(a.level || a.priorityLevel || "orange"),
+      done: Boolean(a.done)
+    })),
+    decisions: sortedDecisions.slice(0, 3).map(d => ({
+      title: d.title,
+      status: decisionStatusLabel(d.status),
+      date: d.date || "",
+      owner: d.owner || "",
+      importance: a5LevelLabel(d.importance || "orange")
+    })),
+    risks: normalizeLinkedIdArray(risks).slice(0, 5),
+    meetings: meetings.slice(0, 4),
+    nextSteps: nextSteps.slice(0, 5)
+  };
+}
+
+function buildProjectA5Summary(projectId) {
+  const project = byId("projects", projectId);
+  if (!project) return null;
+  const rel = projectRelationsForA5(project);
+  const openActions = rel.actions.filter(a => !a.done).sort(a5ActionSort);
+  const actionPool = (openActions.length ? openActions : rel.actions.slice().sort(a5ActionSort));
+  const decisions = rel.decisions.slice().sort(a5DecisionSort);
+  const milestones = rel.milestones.slice().sort((a, b) => dateRank(a.date) - dateRank(b.date));
+  const meetings = rel.meetings.map(a5MeetingDisplay);
+  const upcomingMeetings = meetings.filter(m => a5IsUpcoming(m.date));
+  const overdueActions = openActions.filter(a => {
+    const d = daysUntil(a.due);
+    return d !== null && d < 0;
+  });
+  const risks = [];
+  if (project.risks) risks.push(a5SafeText(project.risks, 120));
+  overdueActions.slice(0, 2).forEach(a => risks.push(`Action en retard: ${a5SafeText(a.title, 90)}`));
+  milestones.filter(m => {
+    const d = daysUntil(m.date);
+    return d !== null && d < 0;
+  }).slice(0, 2).forEach(m => risks.push(`Jalon en retard: ${a5SafeText(m.title, 90)}`));
+  decisions.filter(d => d.status === "review" || d.status === "applying").slice(0, 2).forEach(d => risks.push(`Decision en attente: ${a5SafeText(d.title, 90)}`));
+  if (!risks.length && (project.status === "red" || project.priorityLevel === "red")) risks.push("Projet en statut critique.");
+
+  const nextSteps = [];
+  if (project.deadline) nextSteps.push(`Prochaine echeance: ${a5Date(project.deadline) || project.deadline}`);
+  const nextMilestone = milestones.find(m => a5IsUpcoming(m.date));
+  if (nextMilestone) nextSteps.push(`Prochain jalon: ${a5SafeText(nextMilestone.title, 90)} (${a5Date(nextMilestone.date) || nextMilestone.date})`);
+  const nextAction = actionPool[0];
+  if (nextAction) nextSteps.push(`Prochaine action: ${a5SafeText(nextAction.title, 90)}`);
+  const nextMeeting = upcomingMeetings[0];
+  if (nextMeeting) nextSteps.push(`Prochain rendez-vous: ${nextMeeting.date} ${nextMeeting.time}`);
+  const nextDecision = decisions.find(d => d.status === "review" || d.status === "applying");
+  if (nextDecision) nextSteps.push(`Decision attendue: ${a5SafeText(nextDecision.title, 90)}`);
+
+  return {
+    type: "project",
+    title: project.name,
+    metadata: {
+      status: folderStatusLabel(project.status),
+      progress: Number(project.progress || 0),
+      priority: folderPriorityLabel(project.priorityLevel || "orange"),
+      owner: projectOwnerName(project) || "",
+      deadline: project.deadline || "",
+      generatedAt: a5DateTimeNow(),
+      version: DEOS_VERSION
+    },
+    objectiveBlock: {
+      description: project.actions || "",
+      context: project.context || "",
+      objective: project.objective || "",
+      expectedResults: project.next || ""
+    },
+    metrics: {
+      progress: Number(project.progress || 0),
+      openActions: openActions.length,
+      overdueActions: overdueActions.length,
+      linkedDecisions: decisions.length,
+      milestones: milestones.length,
+      upcomingMeetings: upcomingMeetings.length,
+      linkedManagers: rel.managers.length
+    },
+    milestones: milestones.slice(0, 4).map(m => {
+      const d = daysUntil(m.date);
+      return {
+        title: m.title || "Jalon",
+        date: m.date || "",
+        status: m.status || "A suivre",
+        overdue: d !== null && d < 0 ? `${Math.abs(d)} j` : ""
+      };
+    }),
+    actions: actionPool.slice(0, 5).map(a => ({
+      title: a.title,
+      owner: a.owner || "",
+      due: a.due || "",
+      level: a5LevelLabel(a.level || a.priorityLevel || "orange"),
+      overdue: (() => {
+        const d = daysUntil(a.due);
+        return d !== null && d < 0 ? `${Math.abs(d)} j` : "";
+      })()
+    })),
+    decisions: decisions.slice(0, 4).map(d => ({
+      title: d.title,
+      status: decisionStatusLabel(d.status),
+      date: d.date || "",
+      importance: a5LevelLabel(d.importance || "orange"),
+      owner: d.owner || ""
+    })),
+    risks: normalizeLinkedIdArray(risks).slice(0, 5),
+    meetings: meetings.slice(0, 4),
+    nextSteps: nextSteps.slice(0, 5)
+  };
+}
+
+function openA5SummaryPreview(type, sourceId) {
+  const normalizedType = String(type || "").trim().toLowerCase();
+  const id = String(sourceId || "").trim();
+  if (!normalizedType || !id) return;
+  const model = normalizedType === "folder" ? buildFolderA5Summary(id) : buildProjectA5Summary(id);
+  if (!model) {
+    alert("Impossible de générer la synthèse : objet introuvable.");
+    return;
+  }
+  ensureA5PrintHooks();
+  a5SummaryDialog = {
+    open: true,
+    type: normalizedType,
+    sourceId: id,
+    orientation: "portrait",
+    model,
+    error: ""
+  };
+  renderA5SummaryOverlay();
+}
+
+function closeA5SummaryPreview() {
+  a5SummaryDialog.open = false;
+  a5SummaryDialog.error = "";
+  cleanupA5PrintClasses();
+  renderA5SummaryOverlay();
+}
+
+function setA5SummaryOrientation(orientation) {
+  const value = orientation === "landscape" ? "landscape" : "portrait";
+  a5SummaryDialog.orientation = value;
+  renderA5SummaryOverlay();
+}
+
+function a5PrintStyles(orientation) {
+  const pageSize = orientation === "landscape" ? "A5 landscape" : "A5 portrait";
+  return `
+    html,body{margin:0!important;padding:0!important;height:auto!important;background:#fff!important;color:#0f172a!important;font-family:Arial,Helvetica,sans-serif!important}
+    @page{size:${pageSize};margin:8mm}
+    .a5-print-doc{margin:0!important;padding:0!important;position:static!important;transform:none!important;width:auto!important;min-height:0!important;break-before:auto!important;page-break-before:auto!important}
+    .a5-summary-sheet{box-shadow:none!important;border:0!important;border-radius:0!important;margin:0!important;break-before:auto!important;page-break-before:auto!important;min-height:0!important}
+    .a5-section,.a5-item{break-inside:avoid;page-break-inside:avoid}
+  `;
+}
+
+function buildA5PrintWindowHtml(sheetHtml, orientation) {
+  const sheetStyleHref = document.querySelector("link[rel='stylesheet']")?.getAttribute("href") || "style.css";
+  return `<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DEOS Synthese A5</title>
+  <link rel="stylesheet" href="${esc(sheetStyleHref)}">
+  <style>${a5PrintStyles(orientation)}</style>
+</head>
+<body>
+  <div class="a5-print-doc">${sheetHtml}</div>
+</body>
+</html>`;
+}
+
+function printA5ViaIframe(sheetHtml, orientation) {
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.position = "fixed";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  document.body.appendChild(frame);
+  const doc = frame.contentDocument || frame.contentWindow?.document;
+  if (!doc) {
+    frame.remove();
+    return;
+  }
+  doc.open();
+  doc.write(buildA5PrintWindowHtml(sheetHtml, orientation));
+  doc.close();
+  const launch = () => {
+    try {
+      frame.contentWindow?.focus();
+      frame.contentWindow?.print();
+    } catch {}
+    setTimeout(() => frame.remove(), 300);
+  };
+  if (doc.readyState === "complete") {
+    launch();
+  } else {
+    frame.addEventListener("load", launch, { once: true });
+  }
+}
+
+function printA5Summary() {
+  if (!a5SummaryDialog.open) return;
+  const sheet = document.querySelector(".a5-summary-sheet");
+  if (!sheet) return;
+  const orientation = a5SummaryDialog.orientation === "landscape" ? "landscape" : "portrait";
+  const win = window.open("", "_blank", "noopener,noreferrer");
+  if (!win) {
+    printA5ViaIframe(sheet.outerHTML, orientation);
+    return;
+  }
+  win.document.open();
+  win.document.write(buildA5PrintWindowHtml(sheet.outerHTML, orientation));
+  win.document.close();
+  const launch = () => {
+    try {
+      win.focus();
+      win.print();
+    } catch {}
+  };
+  if (win.document.readyState === "complete") {
+    launch();
+  } else {
+    win.addEventListener("load", launch, { once: true });
+  }
+}
+
+function a5SummaryBadge(label, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return `<span class="a5-summary-meta-badge"><strong class="a5-summary-meta-badge-label">${esc(label)}</strong><span class="a5-summary-meta-badge-sep"> · </span><span class="a5-summary-meta-badge-value">${esc(String(value))}</span></span>`;
+}
+
+function a5SummaryMetrics(model) {
+  const metrics = model.metrics || {};
+  const defs = model.type === "folder"
+    ? [
+      { label: "Projets lies", value: metrics.linkedProjects || 0 },
+      { label: "Actions ouvertes", value: metrics.openActions || 0 },
+      { label: "Actions en retard", value: metrics.overdueActions || 0 },
+      { label: "Decisions liees", value: metrics.linkedDecisions || 0 },
+      { label: "Rendez-vous a venir", value: metrics.upcomingMeetings || 0 },
+      { label: "Managers lies", value: metrics.linkedManagers || 0 }
+    ]
+    : [
+      { label: "Actions ouvertes", value: metrics.openActions || 0 },
+      { label: "Actions en retard", value: metrics.overdueActions || 0 },
+      { label: "Decisions liees", value: metrics.linkedDecisions || 0 },
+      { label: "Jalons", value: metrics.milestones || 0 },
+      { label: "Rendez-vous a venir", value: metrics.upcomingMeetings || 0 },
+      { label: "Managers lies", value: metrics.linkedManagers || 0 }
+    ];
+  return defs.map(d => `<article class="a5-summary-metric"><strong class="a5-summary-metric-value">${esc(String(d.value))}</strong><span class="a5-summary-metric-label"> ${esc(d.label)}</span></article>`).join("");
+}
+
+function renderA5SummaryHeader(model, orientation) {
+  const m = model.metadata || {};
+  const badges = model.type === "folder"
+    ? [
+      a5SummaryBadge("Categorie", m.category),
+      a5SummaryBadge("Statut", m.status),
+      a5SummaryBadge("Priorite", m.priority),
+      a5SummaryBadge("Echeance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
+    ]
+    : [
+      a5SummaryBadge("Statut", m.status),
+      a5SummaryBadge("Priorite", m.priority),
+      a5SummaryBadge("Avancement", `${Number(m.progress || 0)} %`),
+      a5SummaryBadge("Echeance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
+    ];
+  const badgeHtml = badges.filter(Boolean).join("");
+  const generatedAt = m.generatedAt ? `Genere le ${m.generatedAt}` : "";
+  return `
+    <header class="a5-header a5-summary-head">
+      <div class="a5-summary-kicker-row">
+        <p class="a5-summary-kicker">${model.type === "folder" ? "DOSSIER" : "PROJET"}</p>
+        <p class="a5-summary-version">DEOS ${esc(DEOS_VERSION)}</p>
+      </div>
+      <h1 class="a5-summary-title">${esc(model.title || "Synthese")}</h1>
+      <div class="a5-summary-meta-badges">${badgeHtml}</div>
+      <div class="a5-summary-metrics ${orientation === "landscape" ? "is-landscape" : "is-portrait"}">${a5SummaryMetrics(model)}</div>
+      ${generatedAt ? `<p class="a5-summary-generated-at">${esc(generatedAt)}</p>` : ""}
+      <div class="a5-summary-divider"></div>
+    </header>
+  `;
+}
+
+function renderA5SummaryFolder(model) {
+  const context = model.context || {};
+  const contextBody = [
+    context.description ? `<p><strong>Description:</strong> ${esc(a5SafeText(context.description, 300))}</p>` : "",
+    context.context ? `<p><strong>Contexte:</strong> ${esc(a5SafeText(context.context, 260))}</p>` : "",
+    context.objectives ? `<p><strong>Objectifs:</strong> ${esc(a5SafeText(context.objectives, 220))}</p>` : "",
+    context.expectedResults ? `<p><strong>Resultats attendus:</strong> ${esc(a5SafeText(context.expectedResults, 220))}</p>` : ""
+  ].join("");
+  const projectsBody = a5List(model.projects, p => `<article class="a5-item"><strong>${esc(p.name)}</strong><p>${esc(p.status)} · ${esc(String(p.progress))}%${p.deadline ? " · Echeance " + esc(a5Date(p.deadline) || p.deadline) : ""}</p>${p.risk ? `<p class="muted">Risque: ${esc(p.risk)}</p>` : ""}</article>`);
+  const actionsBody = a5List(model.actions, a => `<article class="a5-item"><strong>${esc(a5SafeText(a.title, 90))}</strong><p>${esc(a.owner || "Responsable a definir")} · ${esc(a.level)}${a.due ? " · " + esc(a5Date(a.due) || a.due) : ""}${a.overdue ? " · Retard " + esc(a.overdue) : ""}</p></article>`);
+  const decisionsBody = a5List(model.decisions, d => `<article class="a5-item"><strong>${esc(a5SafeText(d.title, 90))}</strong><p>${esc(d.status)}${d.date ? " · " + esc(a5Date(d.date) || d.date) : ""}${d.owner ? " · " + esc(d.owner) : ""}</p></article>`);
+  const risksBody = a5List(model.risks, r => `<article class="a5-item"><p>${esc(r)}</p></article>`);
+  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnee renseignee.");
+  const meetingsBody = a5List(model.meetings, m => `<article class="a5-item"><strong>${esc(m.label)}</strong><p>${esc(m.date)} · ${esc(m.time)} ${meetingConfidentialityBadge(m.confidentiality)}</p></article>`);
+  return `
+    ${a5Section("Contexte", contextBody || `<p class="muted">Aucune donnee renseignee.</p>`) }
+    ${a5Section("Rendez-vous", meetingsBody)}
+    ${a5Section("Projets cles", projectsBody)}
+    ${a5Section("Actions prioritaires", actionsBody)}
+    ${a5Section("Decisions", decisionsBody)}
+    ${a5Section("Risques / Points d'attention", risksBody)}
+    ${a5Section("Prochaines etapes", nextBody)}
+  `;
+}
+
+function renderA5SummaryProject(model) {
+  const objective = model.objectiveBlock || {};
+  const objectiveBody = [
+    objective.description ? `<p><strong>Description:</strong> ${esc(a5SafeText(objective.description, 260))}</p>` : "",
+    objective.context ? `<p><strong>Contexte:</strong> ${esc(a5SafeText(objective.context, 220))}</p>` : "",
+    objective.objective ? `<p><strong>Objectif:</strong> ${esc(a5SafeText(objective.objective, 220))}</p>` : "",
+    objective.expectedResults ? `<p><strong>Resultats attendus:</strong> ${esc(a5SafeText(objective.expectedResults, 200))}</p>` : ""
+  ].join("");
+  const milestonesBody = a5List(model.milestones, m => `<article class="a5-item"><strong>${esc(a5SafeText(m.title, 90))}</strong><p>${m.date ? esc(a5Date(m.date) || m.date) : "Sans date"} · ${esc(m.status)}${m.overdue ? " · Retard " + esc(m.overdue) : ""}</p></article>`);
+  const actionsBody = a5List(model.actions, a => `<article class="a5-item"><strong>${esc(a5SafeText(a.title, 90))}</strong><p>${esc(a.owner || "Responsable a definir")} · ${esc(a.level)}${a.due ? " · " + esc(a5Date(a.due) || a.due) : ""}${a.overdue ? " · Retard " + esc(a.overdue) : ""}</p></article>`);
+  const decisionsBody = a5List(model.decisions, d => `<article class="a5-item"><strong>${esc(a5SafeText(d.title, 90))}</strong><p>${esc(d.status)}${d.date ? " · " + esc(a5Date(d.date) || d.date) : ""} · ${esc(d.importance)}${d.owner ? " · " + esc(d.owner) : ""}</p></article>`);
+  const risksBody = a5List(model.risks, r => `<article class="a5-item"><p>${esc(r)}</p></article>`);
+  const meetingsBody = a5List(model.meetings, m => `<article class="a5-item"><strong>${esc(m.label)}</strong><p>${esc(m.date)} · ${esc(m.time)} ${meetingConfidentialityBadge(m.confidentiality)}</p></article>`);
+  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnee renseignee.");
+  return `
+    ${a5Section("Objectif", objectiveBody || `<p class="muted">Aucune donnee renseignee.</p>`) }
+    ${a5Section("Jalons", milestonesBody)}
+    ${a5Section("Actions prioritaires", actionsBody)}
+    ${a5Section("Decisions", decisionsBody)}
+    ${a5Section("Rendez-vous", meetingsBody)}
+    ${a5Section("Risques et blocages", risksBody)}
+    ${a5Section("Prochaines etapes", nextBody)}
+  `;
+}
+
+function renderA5SummaryModal() {
+  if (!a5SummaryDialog.open || !a5SummaryDialog.model) return "";
+  const model = a5SummaryDialog.model;
+  const orientation = a5SummaryDialog.orientation === "landscape" ? "landscape" : "portrait";
+  const body = model.type === "folder" ? renderA5SummaryFolder(model) : renderA5SummaryProject(model);
+  return `<div class="modal-backdrop a5-summary-modal" onclick="closeA5SummaryPreview()">
+    <div class="modal-panel a5-summary-panel" onclick="event.stopPropagation()">
+      <div class="modal-head no-print">
+        <h2>Synthese A5 · ${model.type === "folder" ? "Dossier" : "Projet"}</h2>
+        <button class="icon-close" type="button" onclick="closeA5SummaryPreview()" aria-label="Fermer">×</button>
+      </div>
+      <div class="a5-summary-toolbar no-print">
+        <div class="a5-orientation-switch" role="group" aria-label="Orientation">
+          <button type="button" class="secondary ${orientation === "portrait" ? "active-filter" : ""}" onclick="setA5SummaryOrientation('portrait')">Portrait</button>
+          <button type="button" class="secondary ${orientation === "landscape" ? "active-filter" : ""}" onclick="setA5SummaryOrientation('landscape')">Paysage</button>
+        </div>
+        <div class="row-actions">
+          <button type="button" class="action" onclick="printA5Summary()">Imprimer / Exporter en PDF</button>
+          <button type="button" class="secondary" onclick="closeA5SummaryPreview()">Fermer</button>
+        </div>
+      </div>
+      <div class="a5-print-root ${orientation}">
+        <article class="a5-summary-sheet ${orientation}">
+          ${renderA5SummaryHeader(model, orientation)}
+          <div class="a5-content ${orientation === "landscape" ? "two-columns" : "one-column"}">${body}</div>
+          <footer class="a5-footer">Document interne DEOS</footer>
+        </article>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderA5SummaryOverlay() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".a5-summary-modal").forEach(node => node.remove());
+  if (!a5SummaryDialog.open) return;
+  root.insertAdjacentHTML("beforeend", renderA5SummaryModal());
 }
 
 function toggleAgendaTimeFields() {
@@ -1790,8 +3001,15 @@ function openActivityTarget(id) {
   setView("activity");
 }
 
+function activityDeletedFolderHint(a) {
+  if (!a || !a.entityId) return "";
+  const hasTarget = entities.some(name => name !== "activity" && byId(name, a.entityId));
+  if (hasTarget) return "";
+  return /dossier/i.test(String(a.type || "")) ? " · Dossier supprimé" : "";
+}
+
 function cockpitActivityItem(a) {
-  return `<div class="item ${a.entityId ? "clickable" : ""}" ${a.entityId ? `onclick="openActivityTarget('${a.entityId}')"` : ""}><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}</span></div>`;
+  return `<div class="item ${a.entityId ? "clickable" : ""}" ${a.entityId ? `onclick="openActivityTarget('${a.entityId}')"` : ""}><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}${esc(activityDeletedFolderHint(a))}</span></div>`;
 }
 
 function cockpitKpi(label, value, focus, tone = "") {
@@ -3753,7 +4971,9 @@ function endFolderGraphPan() {
 function renderFolders() {
   document.getElementById("viewTitle").textContent = "Dossiers";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "folders"));
-  const hero = `<div class="card hero folder-hero"><div class="row"><div><h2>Dossiers</h2><p class="muted">Regroupez ici tout ce qui concerne vos grands sujets durables.</p><p class="architecture-hint">Le dossier contient. Le projet transforme. L'action fait avancer. La décision arbitre.</p></div><div class="row-actions">${folderViewToggle()}<button class="action" onclick="newFolder()">Nouveau dossier</button></div></div></div>`;
+  const notice = folderOperationNotice ? `<p class="folder-operation-notice">${esc(folderOperationNotice)}</p>` : "";
+  const hero = `<div class="card hero folder-hero"><div class="row"><div><h2>Dossiers</h2><p class="muted">Regroupez ici tout ce qui concerne vos grands sujets durables.</p><p class="architecture-hint">Le dossier contient. Le projet transforme. L'action fait avancer. La décision arbitre.</p>${notice}</div><div class="row-actions">${folderViewToggle()}<button class="action" onclick="newFolder()">Nouveau dossier</button></div></div></div>`;
+  folderOperationNotice = "";
   if (folderViewMode === "graph") {
     appHtml(`${hero}${renderFolderGraph()}`);
     return;
@@ -3785,11 +5005,13 @@ function setFolderFilter(type, value) {
 }
 
 function newFolder() {
+  resetFolderDeletionDialog();
   document.getElementById("viewTitle").textContent = "Nouveau dossier";
   appHtml(folderForm({ id: "", name: "", category: "Performance", status: "orange", priorityLevel: "orange", owner: "", ownerId: "", linkedManagers: [], description: "", context: "", objectives: "", expectedResults: "", createdAt: isoToday(), deadline: "", tags: [], directorNotes: "" }, "create"));
 }
 
 function editFolder(id) {
+  if (!folderDeletionDialog.open || !sameId(folderDeletionDialog.folderId, id)) resetFolderDeletionDialog();
   const folder = byId("folders", id);
   if (!folder) return renderFolders();
   document.getElementById("viewTitle").textContent = "Modifier " + folder.name;
@@ -3797,7 +5019,322 @@ function editFolder(id) {
 }
 
 function folderForm(folder, mode) {
-  return `<div class="card"><h2>${mode === "create" ? "Nouveau dossier" : "Modifier dossier"}</h2><div class="form-grid"><input id="fName" value="${esc(folder.name)}" placeholder="Nom du dossier"><select id="fCategory">${folderCategories.map(c => `<option value="${esc(c)}" ${folder.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select><select id="fStatus"><option value="green" ${folder.status === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folder.status === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folder.status === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folder.status === "archived" ? "selected" : ""}>Archivé</option></select><select id="fPriority"><option value="green" ${folder.priorityLevel === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folder.priorityLevel === "orange" ? "selected" : ""}>Important</option><option value="red" ${folder.priorityLevel === "red" ? "selected" : ""}>Critique</option></select><input id="fOwner" value="${esc(folder.owner || "")}" placeholder="Responsable principal"><input id="fCreated" type="date" value="${esc(folder.createdAt || isoToday())}"><input id="fDeadline" type="date" value="${esc(folder.deadline || "")}"><input id="fTags" value="${esc((folder.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><div class="manager-links"><label>Managers associés</label>${checkboxList("fManagers", state.managers, folder.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><textarea id="fDescription" placeholder="Description">${esc(folder.description || "")}</textarea><textarea id="fContext" placeholder="Contexte">${esc(folder.context || "")}</textarea><textarea id="fObjectives" placeholder="Objectifs">${esc(folder.objectives || "")}</textarea><textarea id="fExpected" placeholder="Résultats attendus">${esc(folder.expectedResults || "")}</textarea><textarea id="fNotes" placeholder="Notes du directeur">${esc(folder.directorNotes || "")}</textarea><button class="action" onclick="${mode === "create" ? "saveNewFolder()" : `saveFolder('${folder.id}')`}">Enregistrer</button><button class="secondary" onclick="${mode === "create" ? "renderFolders()" : `openFolder('${folder.id}')`}">Annuler</button></div>`;
+  const isEdit = mode === "edit";
+  const deletionPanel = isEdit ? renderFolderDeletionPanel(folder) : "";
+  return `<div class="card"><h2>${mode === "create" ? "Nouveau dossier" : "Modifier dossier"}</h2><div class="form-grid"><input id="fName" value="${esc(folder.name)}" placeholder="Nom du dossier"><select id="fCategory">${folderCategories.map(c => `<option value="${esc(c)}" ${folder.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select><select id="fStatus"><option value="green" ${folder.status === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folder.status === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folder.status === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folder.status === "archived" ? "selected" : ""}>Archivé</option></select><select id="fPriority"><option value="green" ${folder.priorityLevel === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folder.priorityLevel === "orange" ? "selected" : ""}>Important</option><option value="red" ${folder.priorityLevel === "red" ? "selected" : ""}>Critique</option></select><input id="fOwner" value="${esc(folder.owner || "")}" placeholder="Responsable principal"><input id="fCreated" type="date" value="${esc(folder.createdAt || isoToday())}"><input id="fDeadline" type="date" value="${esc(folder.deadline || "")}"><input id="fTags" value="${esc((folder.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><div class="manager-links"><label>Managers associés</label>${checkboxList("fManagers", state.managers, folder.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><textarea id="fDescription" placeholder="Description">${esc(folder.description || "")}</textarea><textarea id="fContext" placeholder="Contexte">${esc(folder.context || "")}</textarea><textarea id="fObjectives" placeholder="Objectifs">${esc(folder.objectives || "")}</textarea><textarea id="fExpected" placeholder="Résultats attendus">${esc(folder.expectedResults || "")}</textarea><textarea id="fNotes" placeholder="Notes du directeur">${esc(folder.directorNotes || "")}</textarea><div class="row-actions"><button class="action" onclick="${mode === "create" ? "saveNewFolder()" : `saveFolder('${folder.id}')`}">Enregistrer</button><button class="secondary" onclick="${mode === "create" ? "renderFolders()" : `openFolder('${folder.id}')`}">Annuler</button></div>${isEdit ? `<div class="folder-delete-zone"><button class="danger" type="button" onclick="openFolderDeletionDialog('${folder.id}')">Supprimer le dossier</button><p class="muted">Action destructrice limitée au dossier. Les objets liés seront conservés.</p></div>` : ""}${deletionPanel}</div>`;
+}
+
+function resetFolderDeletionDialog() {
+  folderDeletionDialog = {
+    open: false,
+    folderId: "",
+    step: 1,
+    impact: null,
+    confirmText: "",
+    error: "",
+    busy: false
+  };
+}
+
+function folderDeleteImpactRows(impact) {
+  const rows = [
+    ["Projets", impact.projects],
+    ["Actions", impact.actions],
+    ["Décisions", impact.decisions],
+    ["Priorités", impact.priorities],
+    ["Managers", impact.managers],
+    ["Rendez-vous manuels", impact.manualMeetings],
+    ["Rendez-vous Google", impact.googleMeetings],
+    ["Documents", impact.documents],
+    ["Journal", impact.journal],
+    ["Performance", impact.performance],
+    ["Préparations de réunion", impact.meetingPreparations]
+  ];
+  return rows.map(([label, value]) => `<div class="folder-delete-impact-row"><strong>${esc(label)}</strong><span>${Number(value || 0)}</span></div>`).join("");
+}
+
+function renderFolderDeletionPanel(folder) {
+  if (!folderDeletionDialog.open || !sameId(folderDeletionDialog.folderId, folder.id)) return "";
+  const impact = folderDeletionDialog.impact || getFolderDeletionImpact(folder.id);
+  const sentence = "Seul le Dossier sera supprimé. Les éléments liés seront conservés, mais leur liaison avec ce Dossier sera retirée.";
+  const expectedPhrase = `Confirmer la suppression du dossier "${folder.name}"`;
+  const hasError = folderDeletionDialog.error ? `<p class="folder-delete-error">${esc(folderDeletionDialog.error)}</p>` : "";
+  if (folderDeletionDialog.step === 1) {
+    return `<div class="folder-delete-panel"><h3>Étape 1 — Aperçu des conséquences</h3><p><strong>${esc(folder.name)}</strong> · ${esc(folderStatusLabel(folder.status))}</p><div class="folder-delete-impact">${folderDeleteImpactRows(impact)}</div><p class="muted">${sentence}</p>${hasError}<div class="row-actions"><button class="secondary" type="button" onclick="cancelFolderDeletion()">Annuler</button><button class="danger" type="button" onclick="goFolderDeletionStep2()">Continuer</button></div></div>`;
+  }
+  return `<div class="folder-delete-panel"><h3>Étape 2 — Confirmation explicite</h3><p class="muted">Saisissez exactement la phrase suivante pour confirmer.</p><p><strong>${esc(expectedPhrase)}</strong></p><input id="folderDeleteConfirmInput" value="${esc(folderDeletionDialog.confirmText || "")}" oninput="setFolderDeletionConfirmText(this.value)" placeholder="Confirmer la suppression"><p class="muted">${sentence}</p>${hasError}<div class="row-actions"><button class="secondary" type="button" onclick="cancelFolderDeletion()">Annuler</button><button class="danger" type="button" ${folderDeletionDialog.busy ? "disabled" : ""} onclick="confirmFolderDeletion('${folder.id}')">Supprimer définitivement</button></div></div>`;
+}
+
+function objectReferencesFolder(item, folderId) {
+  const target = String(folderId || "");
+  if (!target || !item || typeof item !== "object") return false;
+  if (sameId(item.folderId, target)) return true;
+  const linked = [
+    ...ensureArray(item.linkedFolders),
+    ...ensureArray(item.linkedFolderIds)
+  ].map(x => String(x));
+  return linked.some(id => sameId(id, target));
+}
+
+function getFolderDeletionImpact(folderId) {
+  const target = String(folderId || "");
+  if (!target) return {
+    projects: 0,
+    actions: 0,
+    decisions: 0,
+    priorities: 0,
+    managers: 0,
+    manualMeetings: 0,
+    googleMeetings: 0,
+    documents: 0,
+    journal: 0,
+    performance: 0,
+    meetingPreparations: 0
+  };
+  const uniqueCount = (items, predicate) => new Set(ensureArray(items).filter(predicate).map(item => String(item.id || item._key || item.eventKey || item.externalId || ""))).size;
+  const manualMeetingIds = new Set(state.agenda.filter(item => objectReferencesFolder(item, target)).map(item => String(item.id)));
+  const googleMeetingIds = new Set(Object.entries(state.externalEventEnrichments || {}).filter(([, enrichment]) => objectReferencesFolder(enrichment, target)).map(([eventKey]) => String(eventKey)));
+  const prepIds = new Set(state.meetingPreparations.filter(prep => {
+    if (objectReferencesFolder(prep, target)) return true;
+    const hasIdea = ensureArray(prep.ideas).some(idea => sameId(idea.folderId, target));
+    const hasTopic = ensureArray(prep.agendaTopics).some(topic => sameId(topic.folderId, target));
+    return hasIdea || hasTopic;
+  }).map(prep => String(prep.id)));
+  return {
+    projects: uniqueCount(state.projects, item => objectReferencesFolder(item, target)),
+    actions: uniqueCount(state.actions, item => objectReferencesFolder(item, target)),
+    decisions: uniqueCount(state.decisions, item => objectReferencesFolder(item, target)),
+    priorities: uniqueCount(state.priorities, item => objectReferencesFolder(item, target)),
+    managers: uniqueCount(state.managers, item => objectReferencesFolder(item, target)),
+    manualMeetings: manualMeetingIds.size,
+    googleMeetings: googleMeetingIds.size,
+    documents: uniqueCount(state.documents, item => objectReferencesFolder(item, target)),
+    journal: uniqueCount(state.journal, item => objectReferencesFolder(item, target)),
+    performance: uniqueCount(state.performance, item => objectReferencesFolder(item, target)),
+    meetingPreparations: prepIds.size
+  };
+}
+
+function openFolderDeletionDialog(folderId) {
+  const folder = byId("folders", folderId);
+  if (!folder) return renderFolders();
+  folderDeletionDialog = {
+    open: true,
+    folderId: String(folderId),
+    step: 1,
+    impact: getFolderDeletionImpact(folderId),
+    confirmText: "",
+    error: "",
+    busy: false
+  };
+  editFolder(folderId);
+}
+
+function cancelFolderDeletion() {
+  const folderId = folderDeletionDialog.folderId;
+  resetFolderDeletionDialog();
+  if (folderId) return editFolder(folderId);
+  renderFolders();
+}
+
+function goFolderDeletionStep2() {
+  if (!folderDeletionDialog.open || !folderDeletionDialog.folderId) return;
+  folderDeletionDialog.step = 2;
+  folderDeletionDialog.error = "";
+  editFolder(folderDeletionDialog.folderId);
+}
+
+function setFolderDeletionConfirmText(value) {
+  folderDeletionDialog.confirmText = String(value || "");
+}
+
+function removeFolderReferencesFromItem(item, folderId) {
+  const target = String(folderId || "");
+  if (!target || !item || typeof item !== "object") return { item, changed: false };
+  let changed = false;
+  const next = { ...item };
+  if (Object.prototype.hasOwnProperty.call(next, "linkedFolders")) {
+    const before = ensureArray(next.linkedFolders);
+    const after = normalizeLinkedIdArray(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedFolders = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "linkedFolderIds")) {
+    const before = ensureArray(next.linkedFolderIds);
+    const after = normalizeLinkedIdArray(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedFolderIds = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "folderId") && sameId(next.folderId, target)) {
+    next.folderId = "";
+    changed = true;
+  }
+  return { item: changed ? next : item, changed };
+}
+
+function sanitizeMeetingPreparationFolderLinks(prep, folderId) {
+  const cleanedPrep = removeFolderReferencesFromItem(prep, folderId);
+  let changed = cleanedPrep.changed;
+  const next = { ...cleanedPrep.item };
+  const cleanedIdeas = ensureArray(next.ideas).map(idea => {
+    const cleaned = removeFolderReferencesFromItem(idea, folderId);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  const cleanedTopics = ensureArray(next.agendaTopics).map(topic => {
+    const cleaned = removeFolderReferencesFromItem(topic, folderId);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  if (changed) {
+    next.ideas = cleanedIdeas;
+    next.agendaTopics = cleanedTopics;
+  }
+  return { item: changed ? next : prep, changed };
+}
+
+function persistExternalEventEnrichmentsOnly() {
+  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
+}
+
+function deleteFolderSafely(folderId, options = {}) {
+  const target = String(folderId || "");
+  const folder = byId("folders", target);
+  if (!folder) throw new Error("Dossier introuvable.");
+  const phrase = `Confirmer la suppression du dossier "${folder.name}"`;
+  if (options.requirePhrase !== false && String(options.confirmText || "").trim() !== phrase) {
+    throw new Error("Confirmation invalide. La suppression a été annulée.");
+  }
+
+  const snapshot = {
+    folders: JSON.parse(JSON.stringify(state.folders)),
+    projects: JSON.parse(JSON.stringify(state.projects)),
+    actions: JSON.parse(JSON.stringify(state.actions)),
+    decisions: JSON.parse(JSON.stringify(state.decisions)),
+    priorities: JSON.parse(JSON.stringify(state.priorities)),
+    managers: JSON.parse(JSON.stringify(state.managers)),
+    journal: JSON.parse(JSON.stringify(state.journal)),
+    documents: JSON.parse(JSON.stringify(state.documents)),
+    agenda: JSON.parse(JSON.stringify(state.agenda)),
+    performance: JSON.parse(JSON.stringify(state.performance)),
+    meetingPreparations: JSON.parse(JSON.stringify(state.meetingPreparations)),
+    externalEventEnrichments: JSON.parse(JSON.stringify(state.externalEventEnrichments || {}))
+  };
+
+  const failAt = String(options.simulateFailureAt || folderDeletionFailureMode || "");
+  const changed = new Set();
+  const applyCollectionCleanup = (name, sanitizer) => {
+    let touched = false;
+    state[name] = state[name].map(item => {
+      const cleaned = sanitizer(item, target);
+      if (cleaned.changed) touched = true;
+      return cleaned.item;
+    });
+    if (touched) changed.add(name);
+  };
+
+  try {
+    const folderIndex = indexById("folders", target);
+    if (folderIndex < 0) throw new Error("Dossier introuvable.");
+    state.folders.splice(folderIndex, 1);
+    changed.add("folders");
+
+    if (failAt === "after_folder_removal") throw new Error("Erreur simulée après suppression du dossier.");
+
+    const simpleSanitizer = (item, id) => removeFolderReferencesFromItem(item, id);
+    applyCollectionCleanup("projects", simpleSanitizer);
+    applyCollectionCleanup("actions", simpleSanitizer);
+    applyCollectionCleanup("decisions", simpleSanitizer);
+    applyCollectionCleanup("priorities", simpleSanitizer);
+    applyCollectionCleanup("managers", simpleSanitizer);
+    applyCollectionCleanup("journal", simpleSanitizer);
+    applyCollectionCleanup("documents", simpleSanitizer);
+    applyCollectionCleanup("agenda", simpleSanitizer);
+    applyCollectionCleanup("performance", simpleSanitizer);
+    applyCollectionCleanup("meetingPreparations", sanitizeMeetingPreparationFolderLinks);
+
+    let externalChanged = false;
+    const nextEnrichments = {};
+    Object.entries(state.externalEventEnrichments || {}).forEach(([eventKey, enrichment]) => {
+      const cleaned = removeFolderReferencesFromItem(enrichment, target);
+      if (cleaned.changed) externalChanged = true;
+      nextEnrichments[eventKey] = cleaned.item;
+    });
+    if (externalChanged) {
+      state.externalEventEnrichments = nextEnrichments;
+      changed.add("externalEventEnrichments");
+    }
+
+    if (failAt === "after_cleanup") throw new Error("Erreur simulée après nettoyage des références.");
+
+    changed.forEach(name => {
+      if (name === "externalEventEnrichments") {
+        persistExternalEventEnrichmentsOnly();
+      } else {
+        persist(name);
+      }
+    });
+
+    if (graphSelectedNodeId && sameId(graphSelectedNodeId, graphNodeId("folder", target))) graphSelectedNodeId = "";
+    graphLayoutCache = null;
+    graphDataSignature = "";
+
+    addActivity("Dossier supprimé", folder.name, "Suppression sécurisée sans cascade", folder.id);
+    resetFolderDeletionDialog();
+    folderOperationNotice = `Dossier supprimé : ${folder.name}. Les liaisons ont été nettoyées sans suppression en cascade.`;
+    renderFolders();
+    return true;
+  } catch (error) {
+    state.folders = snapshot.folders;
+    state.projects = snapshot.projects;
+    state.actions = snapshot.actions;
+    state.decisions = snapshot.decisions;
+    state.priorities = snapshot.priorities;
+    state.managers = snapshot.managers;
+    state.journal = snapshot.journal;
+    state.documents = snapshot.documents;
+    state.agenda = snapshot.agenda;
+    state.performance = snapshot.performance;
+    state.meetingPreparations = snapshot.meetingPreparations;
+    state.externalEventEnrichments = snapshot.externalEventEnrichments;
+
+    persist("folders");
+    persist("projects");
+    persist("actions");
+    persist("decisions");
+    persist("priorities");
+    persist("managers");
+    persist("journal");
+    persist("documents");
+    persist("agenda");
+    persist("performance");
+    persist("meetingPreparations");
+    persistExternalEventEnrichmentsOnly();
+
+    folderDeletionDialog.open = true;
+    folderDeletionDialog.folderId = target;
+    folderDeletionDialog.step = 2;
+    folderDeletionDialog.impact = getFolderDeletionImpact(target);
+    folderDeletionDialog.busy = false;
+    folderDeletionDialog.error = `Échec de suppression : ${error?.message || "Erreur inconnue"}`;
+    console.error("[DEOS V5.15.1] deleteFolderSafely rollback", error);
+    editFolder(target);
+    return false;
+  }
+}
+
+function confirmFolderDeletion(folderId) {
+  if (!folderDeletionDialog.open || !sameId(folderDeletionDialog.folderId, folderId)) return;
+  folderDeletionDialog.busy = true;
+  folderDeletionDialog.error = "";
+  try {
+    const ok = deleteFolderSafely(folderId, { confirmText: folderDeletionDialog.confirmText });
+    if (!ok) return;
+  } catch (error) {
+    folderDeletionDialog.busy = false;
+    folderDeletionDialog.error = `Échec de suppression : ${error?.message || "Erreur inconnue"}`;
+    editFolder(folderId);
+  }
 }
 
 function readFolderForm(existing = {}) {
@@ -3812,6 +5349,7 @@ function saveNewFolder() {
   state.folders.unshift(folder);
   persist("folders");
   addActivity("Dossier", folder.name, folder.category, folder.id);
+  resetFolderDeletionDialog();
   openFolder(folder.id);
 }
 
@@ -3823,6 +5361,7 @@ function saveFolder(id) {
   state.folders[i] = folder;
   persist("folders");
   addActivity("Dossier modifié", folder.name, folder.category, folder.id);
+  resetFolderDeletionDialog();
   openFolder(id);
 }
 
@@ -6877,7 +8416,7 @@ function resetIdentitySettings() {
 }
 
 function activityItem(a) {
-  return `<div class="item"><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}</span></div>`;
+  return `<div class="item"><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}${esc(activityDeletedFolderHint(a))}</span></div>`;
 }
 
 function renderActivity() {
