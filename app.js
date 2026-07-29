@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.15";
+﻿const DEOS_VERSION = "V5.15.1";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -68,6 +68,17 @@ let folderGraphSelected = "";
 let folderGraphZoom = 1;
 let folderGraphPan = { x: 0, y: 0 };
 let folderGraphDrag = null;
+let folderOperationNotice = "";
+let folderDeletionDialog = {
+  open: false,
+  folderId: "",
+  step: 1,
+  impact: null,
+  confirmText: "",
+  error: "",
+  busy: false
+};
+let folderDeletionFailureMode = "";
 let reportWizard = null;
 let linkEditId = "";
 let linkCategoryFilter = "all";
@@ -2336,8 +2347,15 @@ function openActivityTarget(id) {
   setView("activity");
 }
 
+function activityDeletedFolderHint(a) {
+  if (!a || !a.entityId) return "";
+  const hasTarget = entities.some(name => name !== "activity" && byId(name, a.entityId));
+  if (hasTarget) return "";
+  return /dossier/i.test(String(a.type || "")) ? " · Dossier supprimé" : "";
+}
+
 function cockpitActivityItem(a) {
-  return `<div class="item ${a.entityId ? "clickable" : ""}" ${a.entityId ? `onclick="openActivityTarget('${a.entityId}')"` : ""}><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}</span></div>`;
+  return `<div class="item ${a.entityId ? "clickable" : ""}" ${a.entityId ? `onclick="openActivityTarget('${a.entityId}')"` : ""}><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}${esc(activityDeletedFolderHint(a))}</span></div>`;
 }
 
 function cockpitKpi(label, value, focus, tone = "") {
@@ -4299,7 +4317,9 @@ function endFolderGraphPan() {
 function renderFolders() {
   document.getElementById("viewTitle").textContent = "Dossiers";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "folders"));
-  const hero = `<div class="card hero folder-hero"><div class="row"><div><h2>Dossiers</h2><p class="muted">Regroupez ici tout ce qui concerne vos grands sujets durables.</p><p class="architecture-hint">Le dossier contient. Le projet transforme. L'action fait avancer. La décision arbitre.</p></div><div class="row-actions">${folderViewToggle()}<button class="action" onclick="newFolder()">Nouveau dossier</button></div></div></div>`;
+  const notice = folderOperationNotice ? `<p class="folder-operation-notice">${esc(folderOperationNotice)}</p>` : "";
+  const hero = `<div class="card hero folder-hero"><div class="row"><div><h2>Dossiers</h2><p class="muted">Regroupez ici tout ce qui concerne vos grands sujets durables.</p><p class="architecture-hint">Le dossier contient. Le projet transforme. L'action fait avancer. La décision arbitre.</p>${notice}</div><div class="row-actions">${folderViewToggle()}<button class="action" onclick="newFolder()">Nouveau dossier</button></div></div></div>`;
+  folderOperationNotice = "";
   if (folderViewMode === "graph") {
     appHtml(`${hero}${renderFolderGraph()}`);
     return;
@@ -4331,11 +4351,13 @@ function setFolderFilter(type, value) {
 }
 
 function newFolder() {
+  resetFolderDeletionDialog();
   document.getElementById("viewTitle").textContent = "Nouveau dossier";
   appHtml(folderForm({ id: "", name: "", category: "Performance", status: "orange", priorityLevel: "orange", owner: "", ownerId: "", linkedManagers: [], description: "", context: "", objectives: "", expectedResults: "", createdAt: isoToday(), deadline: "", tags: [], directorNotes: "" }, "create"));
 }
 
 function editFolder(id) {
+  if (!folderDeletionDialog.open || !sameId(folderDeletionDialog.folderId, id)) resetFolderDeletionDialog();
   const folder = byId("folders", id);
   if (!folder) return renderFolders();
   document.getElementById("viewTitle").textContent = "Modifier " + folder.name;
@@ -4343,7 +4365,322 @@ function editFolder(id) {
 }
 
 function folderForm(folder, mode) {
-  return `<div class="card"><h2>${mode === "create" ? "Nouveau dossier" : "Modifier dossier"}</h2><div class="form-grid"><input id="fName" value="${esc(folder.name)}" placeholder="Nom du dossier"><select id="fCategory">${folderCategories.map(c => `<option value="${esc(c)}" ${folder.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select><select id="fStatus"><option value="green" ${folder.status === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folder.status === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folder.status === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folder.status === "archived" ? "selected" : ""}>Archivé</option></select><select id="fPriority"><option value="green" ${folder.priorityLevel === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folder.priorityLevel === "orange" ? "selected" : ""}>Important</option><option value="red" ${folder.priorityLevel === "red" ? "selected" : ""}>Critique</option></select><input id="fOwner" value="${esc(folder.owner || "")}" placeholder="Responsable principal"><input id="fCreated" type="date" value="${esc(folder.createdAt || isoToday())}"><input id="fDeadline" type="date" value="${esc(folder.deadline || "")}"><input id="fTags" value="${esc((folder.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><div class="manager-links"><label>Managers associés</label>${checkboxList("fManagers", state.managers, folder.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><textarea id="fDescription" placeholder="Description">${esc(folder.description || "")}</textarea><textarea id="fContext" placeholder="Contexte">${esc(folder.context || "")}</textarea><textarea id="fObjectives" placeholder="Objectifs">${esc(folder.objectives || "")}</textarea><textarea id="fExpected" placeholder="Résultats attendus">${esc(folder.expectedResults || "")}</textarea><textarea id="fNotes" placeholder="Notes du directeur">${esc(folder.directorNotes || "")}</textarea><button class="action" onclick="${mode === "create" ? "saveNewFolder()" : `saveFolder('${folder.id}')`}">Enregistrer</button><button class="secondary" onclick="${mode === "create" ? "renderFolders()" : `openFolder('${folder.id}')`}">Annuler</button></div>`;
+  const isEdit = mode === "edit";
+  const deletionPanel = isEdit ? renderFolderDeletionPanel(folder) : "";
+  return `<div class="card"><h2>${mode === "create" ? "Nouveau dossier" : "Modifier dossier"}</h2><div class="form-grid"><input id="fName" value="${esc(folder.name)}" placeholder="Nom du dossier"><select id="fCategory">${folderCategories.map(c => `<option value="${esc(c)}" ${folder.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select><select id="fStatus"><option value="green" ${folder.status === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folder.status === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folder.status === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folder.status === "archived" ? "selected" : ""}>Archivé</option></select><select id="fPriority"><option value="green" ${folder.priorityLevel === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folder.priorityLevel === "orange" ? "selected" : ""}>Important</option><option value="red" ${folder.priorityLevel === "red" ? "selected" : ""}>Critique</option></select><input id="fOwner" value="${esc(folder.owner || "")}" placeholder="Responsable principal"><input id="fCreated" type="date" value="${esc(folder.createdAt || isoToday())}"><input id="fDeadline" type="date" value="${esc(folder.deadline || "")}"><input id="fTags" value="${esc((folder.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><div class="manager-links"><label>Managers associés</label>${checkboxList("fManagers", state.managers, folder.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><textarea id="fDescription" placeholder="Description">${esc(folder.description || "")}</textarea><textarea id="fContext" placeholder="Contexte">${esc(folder.context || "")}</textarea><textarea id="fObjectives" placeholder="Objectifs">${esc(folder.objectives || "")}</textarea><textarea id="fExpected" placeholder="Résultats attendus">${esc(folder.expectedResults || "")}</textarea><textarea id="fNotes" placeholder="Notes du directeur">${esc(folder.directorNotes || "")}</textarea><div class="row-actions"><button class="action" onclick="${mode === "create" ? "saveNewFolder()" : `saveFolder('${folder.id}')`}">Enregistrer</button><button class="secondary" onclick="${mode === "create" ? "renderFolders()" : `openFolder('${folder.id}')`}">Annuler</button></div>${isEdit ? `<div class="folder-delete-zone"><button class="danger" type="button" onclick="openFolderDeletionDialog('${folder.id}')">Supprimer le dossier</button><p class="muted">Action destructrice limitée au dossier. Les objets liés seront conservés.</p></div>` : ""}${deletionPanel}</div>`;
+}
+
+function resetFolderDeletionDialog() {
+  folderDeletionDialog = {
+    open: false,
+    folderId: "",
+    step: 1,
+    impact: null,
+    confirmText: "",
+    error: "",
+    busy: false
+  };
+}
+
+function folderDeleteImpactRows(impact) {
+  const rows = [
+    ["Projets", impact.projects],
+    ["Actions", impact.actions],
+    ["Décisions", impact.decisions],
+    ["Priorités", impact.priorities],
+    ["Managers", impact.managers],
+    ["Rendez-vous manuels", impact.manualMeetings],
+    ["Rendez-vous Google", impact.googleMeetings],
+    ["Documents", impact.documents],
+    ["Journal", impact.journal],
+    ["Performance", impact.performance],
+    ["Préparations de réunion", impact.meetingPreparations]
+  ];
+  return rows.map(([label, value]) => `<div class="folder-delete-impact-row"><strong>${esc(label)}</strong><span>${Number(value || 0)}</span></div>`).join("");
+}
+
+function renderFolderDeletionPanel(folder) {
+  if (!folderDeletionDialog.open || !sameId(folderDeletionDialog.folderId, folder.id)) return "";
+  const impact = folderDeletionDialog.impact || getFolderDeletionImpact(folder.id);
+  const sentence = "Seul le Dossier sera supprimé. Les éléments liés seront conservés, mais leur liaison avec ce Dossier sera retirée.";
+  const expectedPhrase = `Confirmer la suppression du dossier "${folder.name}"`;
+  const hasError = folderDeletionDialog.error ? `<p class="folder-delete-error">${esc(folderDeletionDialog.error)}</p>` : "";
+  if (folderDeletionDialog.step === 1) {
+    return `<div class="folder-delete-panel"><h3>Étape 1 — Aperçu des conséquences</h3><p><strong>${esc(folder.name)}</strong> · ${esc(folderStatusLabel(folder.status))}</p><div class="folder-delete-impact">${folderDeleteImpactRows(impact)}</div><p class="muted">${sentence}</p>${hasError}<div class="row-actions"><button class="secondary" type="button" onclick="cancelFolderDeletion()">Annuler</button><button class="danger" type="button" onclick="goFolderDeletionStep2()">Continuer</button></div></div>`;
+  }
+  return `<div class="folder-delete-panel"><h3>Étape 2 — Confirmation explicite</h3><p class="muted">Saisissez exactement la phrase suivante pour confirmer.</p><p><strong>${esc(expectedPhrase)}</strong></p><input id="folderDeleteConfirmInput" value="${esc(folderDeletionDialog.confirmText || "")}" oninput="setFolderDeletionConfirmText(this.value)" placeholder="Confirmer la suppression"><p class="muted">${sentence}</p>${hasError}<div class="row-actions"><button class="secondary" type="button" onclick="cancelFolderDeletion()">Annuler</button><button class="danger" type="button" ${folderDeletionDialog.busy ? "disabled" : ""} onclick="confirmFolderDeletion('${folder.id}')">Supprimer définitivement</button></div></div>`;
+}
+
+function objectReferencesFolder(item, folderId) {
+  const target = String(folderId || "");
+  if (!target || !item || typeof item !== "object") return false;
+  if (sameId(item.folderId, target)) return true;
+  const linked = [
+    ...ensureArray(item.linkedFolders),
+    ...ensureArray(item.linkedFolderIds)
+  ].map(x => String(x));
+  return linked.some(id => sameId(id, target));
+}
+
+function getFolderDeletionImpact(folderId) {
+  const target = String(folderId || "");
+  if (!target) return {
+    projects: 0,
+    actions: 0,
+    decisions: 0,
+    priorities: 0,
+    managers: 0,
+    manualMeetings: 0,
+    googleMeetings: 0,
+    documents: 0,
+    journal: 0,
+    performance: 0,
+    meetingPreparations: 0
+  };
+  const uniqueCount = (items, predicate) => new Set(ensureArray(items).filter(predicate).map(item => String(item.id || item._key || item.eventKey || item.externalId || ""))).size;
+  const manualMeetingIds = new Set(state.agenda.filter(item => objectReferencesFolder(item, target)).map(item => String(item.id)));
+  const googleMeetingIds = new Set(Object.entries(state.externalEventEnrichments || {}).filter(([, enrichment]) => objectReferencesFolder(enrichment, target)).map(([eventKey]) => String(eventKey)));
+  const prepIds = new Set(state.meetingPreparations.filter(prep => {
+    if (objectReferencesFolder(prep, target)) return true;
+    const hasIdea = ensureArray(prep.ideas).some(idea => sameId(idea.folderId, target));
+    const hasTopic = ensureArray(prep.agendaTopics).some(topic => sameId(topic.folderId, target));
+    return hasIdea || hasTopic;
+  }).map(prep => String(prep.id)));
+  return {
+    projects: uniqueCount(state.projects, item => objectReferencesFolder(item, target)),
+    actions: uniqueCount(state.actions, item => objectReferencesFolder(item, target)),
+    decisions: uniqueCount(state.decisions, item => objectReferencesFolder(item, target)),
+    priorities: uniqueCount(state.priorities, item => objectReferencesFolder(item, target)),
+    managers: uniqueCount(state.managers, item => objectReferencesFolder(item, target)),
+    manualMeetings: manualMeetingIds.size,
+    googleMeetings: googleMeetingIds.size,
+    documents: uniqueCount(state.documents, item => objectReferencesFolder(item, target)),
+    journal: uniqueCount(state.journal, item => objectReferencesFolder(item, target)),
+    performance: uniqueCount(state.performance, item => objectReferencesFolder(item, target)),
+    meetingPreparations: prepIds.size
+  };
+}
+
+function openFolderDeletionDialog(folderId) {
+  const folder = byId("folders", folderId);
+  if (!folder) return renderFolders();
+  folderDeletionDialog = {
+    open: true,
+    folderId: String(folderId),
+    step: 1,
+    impact: getFolderDeletionImpact(folderId),
+    confirmText: "",
+    error: "",
+    busy: false
+  };
+  editFolder(folderId);
+}
+
+function cancelFolderDeletion() {
+  const folderId = folderDeletionDialog.folderId;
+  resetFolderDeletionDialog();
+  if (folderId) return editFolder(folderId);
+  renderFolders();
+}
+
+function goFolderDeletionStep2() {
+  if (!folderDeletionDialog.open || !folderDeletionDialog.folderId) return;
+  folderDeletionDialog.step = 2;
+  folderDeletionDialog.error = "";
+  editFolder(folderDeletionDialog.folderId);
+}
+
+function setFolderDeletionConfirmText(value) {
+  folderDeletionDialog.confirmText = String(value || "");
+}
+
+function removeFolderReferencesFromItem(item, folderId) {
+  const target = String(folderId || "");
+  if (!target || !item || typeof item !== "object") return { item, changed: false };
+  let changed = false;
+  const next = { ...item };
+  if (Object.prototype.hasOwnProperty.call(next, "linkedFolders")) {
+    const before = ensureArray(next.linkedFolders);
+    const after = normalizeLinkedIdArray(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedFolders = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "linkedFolderIds")) {
+    const before = ensureArray(next.linkedFolderIds);
+    const after = normalizeLinkedIdArray(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedFolderIds = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "folderId") && sameId(next.folderId, target)) {
+    next.folderId = "";
+    changed = true;
+  }
+  return { item: changed ? next : item, changed };
+}
+
+function sanitizeMeetingPreparationFolderLinks(prep, folderId) {
+  const cleanedPrep = removeFolderReferencesFromItem(prep, folderId);
+  let changed = cleanedPrep.changed;
+  const next = { ...cleanedPrep.item };
+  const cleanedIdeas = ensureArray(next.ideas).map(idea => {
+    const cleaned = removeFolderReferencesFromItem(idea, folderId);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  const cleanedTopics = ensureArray(next.agendaTopics).map(topic => {
+    const cleaned = removeFolderReferencesFromItem(topic, folderId);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  if (changed) {
+    next.ideas = cleanedIdeas;
+    next.agendaTopics = cleanedTopics;
+  }
+  return { item: changed ? next : prep, changed };
+}
+
+function persistExternalEventEnrichmentsOnly() {
+  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
+}
+
+function deleteFolderSafely(folderId, options = {}) {
+  const target = String(folderId || "");
+  const folder = byId("folders", target);
+  if (!folder) throw new Error("Dossier introuvable.");
+  const phrase = `Confirmer la suppression du dossier "${folder.name}"`;
+  if (options.requirePhrase !== false && String(options.confirmText || "").trim() !== phrase) {
+    throw new Error("Confirmation invalide. La suppression a été annulée.");
+  }
+
+  const snapshot = {
+    folders: JSON.parse(JSON.stringify(state.folders)),
+    projects: JSON.parse(JSON.stringify(state.projects)),
+    actions: JSON.parse(JSON.stringify(state.actions)),
+    decisions: JSON.parse(JSON.stringify(state.decisions)),
+    priorities: JSON.parse(JSON.stringify(state.priorities)),
+    managers: JSON.parse(JSON.stringify(state.managers)),
+    journal: JSON.parse(JSON.stringify(state.journal)),
+    documents: JSON.parse(JSON.stringify(state.documents)),
+    agenda: JSON.parse(JSON.stringify(state.agenda)),
+    performance: JSON.parse(JSON.stringify(state.performance)),
+    meetingPreparations: JSON.parse(JSON.stringify(state.meetingPreparations)),
+    externalEventEnrichments: JSON.parse(JSON.stringify(state.externalEventEnrichments || {}))
+  };
+
+  const failAt = String(options.simulateFailureAt || folderDeletionFailureMode || "");
+  const changed = new Set();
+  const applyCollectionCleanup = (name, sanitizer) => {
+    let touched = false;
+    state[name] = state[name].map(item => {
+      const cleaned = sanitizer(item, target);
+      if (cleaned.changed) touched = true;
+      return cleaned.item;
+    });
+    if (touched) changed.add(name);
+  };
+
+  try {
+    const folderIndex = indexById("folders", target);
+    if (folderIndex < 0) throw new Error("Dossier introuvable.");
+    state.folders.splice(folderIndex, 1);
+    changed.add("folders");
+
+    if (failAt === "after_folder_removal") throw new Error("Erreur simulée après suppression du dossier.");
+
+    const simpleSanitizer = (item, id) => removeFolderReferencesFromItem(item, id);
+    applyCollectionCleanup("projects", simpleSanitizer);
+    applyCollectionCleanup("actions", simpleSanitizer);
+    applyCollectionCleanup("decisions", simpleSanitizer);
+    applyCollectionCleanup("priorities", simpleSanitizer);
+    applyCollectionCleanup("managers", simpleSanitizer);
+    applyCollectionCleanup("journal", simpleSanitizer);
+    applyCollectionCleanup("documents", simpleSanitizer);
+    applyCollectionCleanup("agenda", simpleSanitizer);
+    applyCollectionCleanup("performance", simpleSanitizer);
+    applyCollectionCleanup("meetingPreparations", sanitizeMeetingPreparationFolderLinks);
+
+    let externalChanged = false;
+    const nextEnrichments = {};
+    Object.entries(state.externalEventEnrichments || {}).forEach(([eventKey, enrichment]) => {
+      const cleaned = removeFolderReferencesFromItem(enrichment, target);
+      if (cleaned.changed) externalChanged = true;
+      nextEnrichments[eventKey] = cleaned.item;
+    });
+    if (externalChanged) {
+      state.externalEventEnrichments = nextEnrichments;
+      changed.add("externalEventEnrichments");
+    }
+
+    if (failAt === "after_cleanup") throw new Error("Erreur simulée après nettoyage des références.");
+
+    changed.forEach(name => {
+      if (name === "externalEventEnrichments") {
+        persistExternalEventEnrichmentsOnly();
+      } else {
+        persist(name);
+      }
+    });
+
+    if (graphSelectedNodeId && sameId(graphSelectedNodeId, graphNodeId("folder", target))) graphSelectedNodeId = "";
+    graphLayoutCache = null;
+    graphDataSignature = "";
+
+    addActivity("Dossier supprimé", folder.name, "Suppression sécurisée sans cascade", folder.id);
+    resetFolderDeletionDialog();
+    folderOperationNotice = `Dossier supprimé : ${folder.name}. Les liaisons ont été nettoyées sans suppression en cascade.`;
+    renderFolders();
+    return true;
+  } catch (error) {
+    state.folders = snapshot.folders;
+    state.projects = snapshot.projects;
+    state.actions = snapshot.actions;
+    state.decisions = snapshot.decisions;
+    state.priorities = snapshot.priorities;
+    state.managers = snapshot.managers;
+    state.journal = snapshot.journal;
+    state.documents = snapshot.documents;
+    state.agenda = snapshot.agenda;
+    state.performance = snapshot.performance;
+    state.meetingPreparations = snapshot.meetingPreparations;
+    state.externalEventEnrichments = snapshot.externalEventEnrichments;
+
+    persist("folders");
+    persist("projects");
+    persist("actions");
+    persist("decisions");
+    persist("priorities");
+    persist("managers");
+    persist("journal");
+    persist("documents");
+    persist("agenda");
+    persist("performance");
+    persist("meetingPreparations");
+    persistExternalEventEnrichmentsOnly();
+
+    folderDeletionDialog.open = true;
+    folderDeletionDialog.folderId = target;
+    folderDeletionDialog.step = 2;
+    folderDeletionDialog.impact = getFolderDeletionImpact(target);
+    folderDeletionDialog.busy = false;
+    folderDeletionDialog.error = `Échec de suppression : ${error?.message || "Erreur inconnue"}`;
+    console.error("[DEOS V5.15.1] deleteFolderSafely rollback", error);
+    editFolder(target);
+    return false;
+  }
+}
+
+function confirmFolderDeletion(folderId) {
+  if (!folderDeletionDialog.open || !sameId(folderDeletionDialog.folderId, folderId)) return;
+  folderDeletionDialog.busy = true;
+  folderDeletionDialog.error = "";
+  try {
+    const ok = deleteFolderSafely(folderId, { confirmText: folderDeletionDialog.confirmText });
+    if (!ok) return;
+  } catch (error) {
+    folderDeletionDialog.busy = false;
+    folderDeletionDialog.error = `Échec de suppression : ${error?.message || "Erreur inconnue"}`;
+    editFolder(folderId);
+  }
 }
 
 function readFolderForm(existing = {}) {
@@ -4358,6 +4695,7 @@ function saveNewFolder() {
   state.folders.unshift(folder);
   persist("folders");
   addActivity("Dossier", folder.name, folder.category, folder.id);
+  resetFolderDeletionDialog();
   openFolder(folder.id);
 }
 
@@ -4369,6 +4707,7 @@ function saveFolder(id) {
   state.folders[i] = folder;
   persist("folders");
   addActivity("Dossier modifié", folder.name, folder.category, folder.id);
+  resetFolderDeletionDialog();
   openFolder(id);
 }
 
@@ -7423,7 +7762,7 @@ function resetIdentitySettings() {
 }
 
 function activityItem(a) {
-  return `<div class="item"><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}</span></div>`;
+  return `<div class="item"><strong>${esc(a.type)} · ${esc(a.title)}</strong><span class="muted">${esc(a.date || "")}${a.detail ? " · " + esc(a.detail) : ""}</span><span class="meta">ID ${esc(a.id)}${a.entityId ? " ? Entité " + esc(a.entityId) : ""}${esc(activityDeletedFolderHint(a))}</span></div>`;
 }
 
 function renderActivity() {
