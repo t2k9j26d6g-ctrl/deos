@@ -1,4 +1,4 @@
-﻿const DEOS_VERSION = "V5.16";
+﻿const DEOS_VERSION = "V5.17";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -120,7 +120,19 @@ let a5SummaryDialog = {
   model: null,
   error: ""
 };
+let actionDetailId = "";
+let actionEditDialog = {
+  open: false,
+  actionId: "",
+  error: ""
+};
+let actionDeleteDialog = {
+  open: false,
+  actionId: "",
+  error: ""
+};
 let a5PrintCleanupBound = false;
+let modalEscapeBound = false;
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -285,6 +297,7 @@ function appHtml(html) {
   document.getElementById("app").innerHTML = hideVisibleTechnicalIds(`${graphReturnBanner}${html}`);
   injectA5SummaryButtons();
   renderA5SummaryOverlay();
+  renderActionModalOverlays();
 }
 
 function badge(status) {
@@ -1730,6 +1743,32 @@ function injectA5SummaryButtons() {
       projectBtn.insertAdjacentElement("afterend", node);
     }
   }
+  if (!actions.querySelector("button[data-a5-summary='action']")) {
+    const actionBtn = buttons.find(btn => String(btn.getAttribute("onclick") || "").includes("editAction('"));
+    const actionId = parseEntityIdFromCall(actionBtn?.getAttribute("onclick"), "editAction");
+    if (actionBtn && actionId) {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "secondary";
+      node.setAttribute("data-a5-summary", "action");
+      node.setAttribute("onclick", `openA5SummaryPreview('action','${esc(actionId)}')`);
+      node.textContent = "🖨️ Synthèse A5";
+      actionBtn.insertAdjacentElement("afterend", node);
+    }
+  }
+  if (!actions.querySelector("button[data-a5-summary='decision']")) {
+    const decisionBtn = buttons.find(btn => String(btn.getAttribute("onclick") || "").includes("editDecision('"));
+    const decisionId = parseEntityIdFromCall(decisionBtn?.getAttribute("onclick"), "editDecision");
+    if (decisionBtn && decisionId) {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "secondary";
+      node.setAttribute("data-a5-summary", "decision");
+      node.setAttribute("onclick", `openA5SummaryPreview('decision','${esc(decisionId)}')`);
+      node.textContent = "🖨️ Synthèse A5";
+      decisionBtn.insertAdjacentElement("afterend", node);
+    }
+  }
 }
 
 function ensureA5PrintHooks() {
@@ -1797,6 +1836,118 @@ function a5DecisionSort(a, b) {
   const byLevel = levelRank(a.importance || "orange") - levelRank(b.importance || "orange");
   if (byLevel !== 0) return byLevel;
   return dateRank(a.reviewDate || a.date) - dateRank(b.reviewDate || b.date);
+}
+
+function a5DueStateLabel(value) {
+  if (!value) return "Sans échéance";
+  const days = daysUntil(value);
+  if (days === null) return "Échéance invalide";
+  if (days < 0) return "En retard";
+  if (days === 0) return "Aujourd'hui";
+  return "À venir";
+}
+
+function a5UniqueItemsById(items) {
+  const map = new Map();
+  ensureArray(items).forEach(item => {
+    const id = String(item?.id || "").trim();
+    if (!id) return;
+    if (!map.has(id)) map.set(id, item);
+  });
+  return [...map.values()];
+}
+
+function actionRelationsForA5(action) {
+  const actionId = String(action?.id || "");
+  const linkedFolderIds = normalizeLinkedIdArray(ensureArray(action.linkedFolders));
+  const linkedProjectIds = normalizeLinkedIdArray(ensureArray(action.linkedProjects));
+  const linkedDecisionIds = normalizeLinkedIdArray(ensureArray(action.linkedDecisions));
+  const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(action.linkedManagers).length ? action.linkedManagers : ensureArray(action.linkedManagerIds));
+
+  const folders = state.folders.filter(folder => linkedFolderIds.some(id => sameId(id, folder.id)));
+  const projects = state.projects.filter(project => linkedProjectIds.some(id => sameId(id, project.id)) || ensureArray(project.linkedActions).some(id => sameId(id, actionId)));
+  const decisions = state.decisions.filter(decision => linkedDecisionIds.some(id => sameId(id, decision.id)) || ensureArray(decision.linkedActions).some(id => sameId(id, actionId)));
+  const meetings = getMeetingsLinkedToObject("action", actionId);
+
+  const managerMap = new Map();
+  linkedManagerIds.forEach(id => {
+    const manager = byId("managers", id);
+    if (manager) managerMap.set(String(manager.id), manager);
+  });
+  state.managers.forEach(manager => {
+    if (ensureArray(manager.linkedActions).some(id => sameId(id, actionId))) managerMap.set(String(manager.id), manager);
+  });
+  projects.forEach(project => {
+    state.managers.forEach(manager => {
+      if (sameId(project.ownerId, manager.id) || ensureArray(project.linkedManagers).some(id => sameId(id, manager.id))) {
+        managerMap.set(String(manager.id), manager);
+      }
+    });
+  });
+  decisions.forEach(decision => {
+    state.managers.forEach(manager => {
+      if (ensureArray(decision.linkedManagers).some(id => sameId(id, manager.id))) managerMap.set(String(manager.id), manager);
+    });
+  });
+  folders.forEach(folder => {
+    state.managers.forEach(manager => {
+      if (ensureArray(folder.linkedManagers).some(id => sameId(id, manager.id)) || sameId(folder.ownerId, manager.id)) {
+        managerMap.set(String(manager.id), manager);
+      }
+    });
+  });
+
+  return {
+    folders: a5UniqueItemsById(folders),
+    projects: a5UniqueItemsById(projects),
+    decisions: a5UniqueItemsById(decisions),
+    meetings,
+    managers: [...managerMap.values()]
+  };
+}
+
+function decisionRelationsForA5(decision) {
+  const decisionId = String(decision?.id || "");
+  const linkedFolderIds = normalizeLinkedIdArray(ensureArray(decision.linkedFolders));
+  const linkedProjectIds = normalizeLinkedIdArray(ensureArray(decision.linkedProjects));
+  const linkedActionIds = normalizeLinkedIdArray(ensureArray(decision.linkedActions));
+  const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(decision.linkedManagers).length ? decision.linkedManagers : ensureArray(decision.linkedManagerIds));
+
+  const folders = state.folders.filter(folder => linkedFolderIds.some(id => sameId(id, folder.id)));
+  const projects = state.projects.filter(project => linkedProjectIds.some(id => sameId(id, project.id)) || ensureArray(project.linkedDecisions).some(id => sameId(id, decisionId)));
+  const actions = state.actions.filter(action => linkedActionIds.some(id => sameId(id, action.id)) || ensureArray(action.linkedDecisions).some(id => sameId(id, decisionId)));
+  const meetings = getMeetingsLinkedToObject("decision", decisionId);
+
+  const managerMap = new Map();
+  linkedManagerIds.forEach(id => {
+    const manager = byId("managers", id);
+    if (manager) managerMap.set(String(manager.id), manager);
+  });
+  state.managers.forEach(manager => {
+    if (ensureArray(manager.linkedDecisions).some(id => sameId(id, decisionId))) managerMap.set(String(manager.id), manager);
+  });
+  projects.forEach(project => {
+    state.managers.forEach(manager => {
+      if (sameId(project.ownerId, manager.id) || ensureArray(project.linkedManagers).some(id => sameId(id, manager.id))) {
+        managerMap.set(String(manager.id), manager);
+      }
+    });
+  });
+  folders.forEach(folder => {
+    state.managers.forEach(manager => {
+      if (ensureArray(folder.linkedManagers).some(id => sameId(id, manager.id)) || sameId(folder.ownerId, manager.id)) {
+        managerMap.set(String(manager.id), manager);
+      }
+    });
+  });
+
+  return {
+    folders: a5UniqueItemsById(folders),
+    projects: a5UniqueItemsById(projects),
+    actions: a5UniqueItemsById(actions),
+    meetings,
+    managers: [...managerMap.values()]
+  };
 }
 
 function a5MeetingDisplay(meeting) {
@@ -2081,11 +2232,145 @@ function buildProjectA5Summary(projectId) {
   };
 }
 
+function buildActionA5Summary(actionId) {
+  const action = byId("actions", actionId);
+  if (!action) return null;
+  const rel = actionRelationsForA5(action);
+  const managerNames = normalizeLinkedIdArray(rel.managers.map(manager => String(manager.name || "").trim()).filter(Boolean));
+  const meetings = rel.meetings.map(a5MeetingDisplay);
+
+  const description = a5SafeText(action.description || action.objective || action.link || "", 260);
+  const expected = a5SafeText(action.expectedResults || action.result || action.next || "", 220);
+  const notes = a5SafeText(action.notes || action.note || "", 220);
+  const risks = normalizeLinkedIdArray([
+    a5SafeText(action.risks || action.blockers || "", 140),
+    ...((!action.done && daysUntil(action.due) !== null && daysUntil(action.due) < 0) ? ["Action en retard"] : [])
+  ].filter(Boolean));
+  const nextSteps = normalizeLinkedIdArray([
+    a5SafeText(action.nextStep || "", 140),
+    action.due ? `Échéance : ${a5Date(action.due) || action.due}` : ""
+  ].filter(Boolean));
+
+  return {
+    type: "action",
+    title: action.title || "Action",
+    metadata: {
+      status: action.done ? "Terminée" : "En cours",
+      priority: a5LevelLabel(action.level || action.priorityLevel || "orange"),
+      deadline: action.due || "",
+      progress: Number.isFinite(Number(action.progress)) ? Number(action.progress) : null,
+      generatedAt: a5DateTimeNow(),
+      version: DEOS_VERSION
+    },
+    body: {
+      description,
+      expectedResults: expected,
+      owner: String(action.owner || "").trim(),
+      notes
+    },
+    metrics: {
+      linkedFolders: rel.folders.length,
+      linkedProjects: rel.projects.length,
+      linkedDecisions: rel.decisions.length,
+      linkedMeetings: meetings.length,
+      linkedManagers: managerNames.length,
+      dueState: a5DueStateLabel(action.due)
+    },
+    managerNames,
+    folders: rel.folders.map(folder => ({
+      name: folder.name || "Dossier",
+      category: folder.category || "",
+      status: folderStatusLabel(folder.status)
+    })),
+    projects: rel.projects.map(project => ({
+      name: project.name || "Projet",
+      status: folderStatusLabel(project.status),
+      progress: Number(project.progress || 0)
+    })),
+    decisions: rel.decisions.map(decision => ({
+      title: decision.title || "Décision",
+      status: decisionStatusLabel(decision.status),
+      date: decision.date || ""
+    })),
+    meetings: meetings.slice(0, 5),
+    risks: risks.slice(0, 5),
+    nextSteps: nextSteps.slice(0, 5)
+  };
+}
+
+function buildDecisionA5Summary(decisionId) {
+  const decision = byId("decisions", decisionId);
+  if (!decision) return null;
+  const rel = decisionRelationsForA5(decision);
+  const managerNames = normalizeLinkedIdArray(rel.managers.map(manager => String(manager.name || "").trim()).filter(Boolean));
+  const meetings = rel.meetings.map(a5MeetingDisplay);
+  const notes = ensureArray(decision.directorNotes).map(note => a5SafeText(note.content || "", 140)).filter(Boolean);
+  const followUp = normalizeLinkedIdArray([
+    decision.reviewDate ? `Réexamen : ${a5Date(decision.reviewDate) || decision.reviewDate}` : "",
+    a5SafeText(decision.nextStep || "", 140)
+  ].filter(Boolean));
+
+  return {
+    type: "decision",
+    title: decision.title || "Décision",
+    metadata: {
+      status: decisionStatusLabel(decision.status),
+      priority: a5LevelLabel(decision.importance || "orange"),
+      decisionDate: decision.date || "",
+      deadline: decision.reviewDate || decision.effectDate || decision.effectiveDate || decision.due || "",
+      generatedAt: a5DateTimeNow(),
+      version: DEOS_VERSION
+    },
+    body: {
+      decisionText: a5SafeText(decision.decision || decision.nextStep || "", 260),
+      context: a5SafeText(decision.context || "", 220),
+      rationale: a5SafeText(decision.rationale || decision.problem || "", 220),
+      impacts: a5SafeText(decision.impacts || decision.impact || "", 220),
+      owner: String(decision.owner || "").trim(),
+      risks: a5SafeText(decision.risks || "", 180)
+    },
+    metrics: {
+      linkedFolders: rel.folders.length,
+      linkedProjects: rel.projects.length,
+      linkedActions: rel.actions.length,
+      linkedMeetings: meetings.length,
+      linkedManagers: managerNames.length,
+      implementationState: decisionStatusLabel(decision.status)
+    },
+    managerNames,
+    folders: rel.folders.map(folder => ({
+      name: folder.name || "Dossier",
+      category: folder.category || "",
+      status: folderStatusLabel(folder.status)
+    })),
+    projects: rel.projects.map(project => ({
+      name: project.name || "Projet",
+      status: folderStatusLabel(project.status),
+      progress: Number(project.progress || 0)
+    })),
+    actions: rel.actions.map(action => ({
+      title: action.title || "Action",
+      status: action.done ? "Terminée" : "En cours",
+      due: action.due || ""
+    })),
+    meetings: meetings.slice(0, 5),
+    followUp: followUp.slice(0, 5),
+    notes: notes.slice(0, 6)
+  };
+}
+
 function openA5SummaryPreview(type, sourceId) {
   const normalizedType = String(type || "").trim().toLowerCase();
   const id = String(sourceId || "").trim();
   if (!normalizedType || !id) return;
-  const model = normalizedType === "folder" ? buildFolderA5Summary(id) : buildProjectA5Summary(id);
+  const builders = {
+    folder: buildFolderA5Summary,
+    project: buildProjectA5Summary,
+    action: buildActionA5Summary,
+    decision: buildDecisionA5Summary
+  };
+  const builder = builders[normalizedType];
+  const model = builder ? builder(id) : null;
   if (!model) {
     alert("Impossible de générer la synthèse : objet introuvable.");
     return;
@@ -2296,14 +2581,32 @@ function a5SummaryMetrics(model) {
       { label: "Rendez-vous à venir", value: metrics.upcomingMeetings || 0 },
       { label: "Managers liés", value: metrics.linkedManagers || 0 }
     ]
-    : [
+    : model.type === "project"
+      ? [
       { label: "Actions ouvertes", value: metrics.openActions || 0 },
       { label: "Actions en retard", value: metrics.overdueActions || 0 },
       { label: "Décisions liées", value: metrics.linkedDecisions || 0 },
       { label: "Jalons", value: metrics.milestones || 0 },
       { label: "Rendez-vous à venir", value: metrics.upcomingMeetings || 0 },
       { label: "Managers liés", value: metrics.linkedManagers || 0 }
-    ];
+      ]
+      : model.type === "action"
+        ? [
+          { label: "Dossiers liés", value: metrics.linkedFolders || 0 },
+          { label: "Projets liés", value: metrics.linkedProjects || 0 },
+          { label: "Décisions liées", value: metrics.linkedDecisions || 0 },
+          { label: "Rendez-vous liés", value: metrics.linkedMeetings || 0 },
+          { label: "Managers associés", value: metrics.linkedManagers || 0 },
+          { label: "Échéance", value: metrics.dueState || "Sans échéance" }
+        ]
+        : [
+          { label: "Dossiers liés", value: metrics.linkedFolders || 0 },
+          { label: "Projets liés", value: metrics.linkedProjects || 0 },
+          { label: "Actions liées", value: metrics.linkedActions || 0 },
+          { label: "Rendez-vous liés", value: metrics.linkedMeetings || 0 },
+          { label: "Managers associés", value: metrics.linkedManagers || 0 },
+          { label: "Mise en œuvre", value: metrics.implementationState || "À suivre" }
+        ];
   return defs.map(d => `<article class="a5-summary-metric"><strong class="a5-summary-metric-value">${esc(String(d.value))}</strong><span class="a5-summary-metric-label"> ${esc(d.label)}</span></article>`).join("");
 }
 
@@ -2316,18 +2619,32 @@ function renderA5SummaryHeader(model, orientation) {
       a5SummaryBadge("Priorité", m.priority),
       a5SummaryBadge("Échéance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
     ]
-    : [
+    : model.type === "project"
+      ? [
       a5SummaryBadge("Statut", m.status),
       a5SummaryBadge("Priorité", m.priority),
       a5SummaryBadge("Avancement", `${Number(m.progress || 0)} %`),
       a5SummaryBadge("Échéance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
-    ];
+      ]
+      : model.type === "action"
+        ? [
+          a5SummaryBadge("Statut", m.status),
+          a5SummaryBadge("Priorité", m.priority),
+          a5SummaryBadge("Échéance", m.deadline ? (a5Date(m.deadline) || m.deadline) : ""),
+          a5SummaryBadge("Avancement", m.progress === null || m.progress === undefined ? "" : `${Number(m.progress || 0)} %`)
+        ]
+        : [
+          a5SummaryBadge("Statut", m.status),
+          a5SummaryBadge("Priorité", m.priority),
+          a5SummaryBadge("Date de décision", m.decisionDate ? (a5Date(m.decisionDate) || m.decisionDate) : ""),
+          a5SummaryBadge("Échéance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
+        ];
   const badgeHtml = badges.filter(Boolean).join("");
   const generatedAt = m.generatedAt ? `Généré le ${m.generatedAt}` : "";
   return `
     <header class="a5-header a5-summary-head">
       <div class="a5-summary-kicker-row">
-        <p class="a5-summary-kicker">${model.type === "folder" ? "DOSSIER" : "PROJET"}</p>
+        <p class="a5-summary-kicker">${model.type === "folder" ? "DOSSIER" : model.type === "project" ? "PROJET" : model.type === "action" ? "ACTION" : "DÉCISION"}</p>
         <p class="a5-summary-version">DEOS ${esc(DEOS_VERSION)}</p>
       </div>
       <h1 class="a5-summary-title">${esc(model.title || "Synthèse")}</h1>
@@ -2395,15 +2712,88 @@ function renderA5SummaryProject(model) {
   `;
 }
 
+function renderA5SummaryAction(model) {
+  const body = model.body || {};
+  const managerNames = ensureArray(model.managerNames).filter(Boolean);
+  const descriptionBody = [
+    body.description ? `<p><strong>Description / objectif :</strong> ${esc(body.description)}</p>` : "",
+    body.expectedResults ? `<p><strong>Résultat attendu :</strong> ${esc(body.expectedResults)}</p>` : "",
+    body.owner ? `<p><strong>Responsable :</strong> ${esc(body.owner)}</p>` : ""
+  ].join("");
+  const foldersBody = a5List(model.folders, folder => `<article class="a5-item"><strong>${esc(folder.name)}</strong><p>${esc(folder.category || "")} · ${esc(folder.status || "")}</p></article>`, "Aucun dossier lié.");
+  const projectsBody = a5List(model.projects, project => `<article class="a5-item"><strong>${esc(project.name)}</strong><p>${esc(project.status)} · ${esc(String(project.progress || 0))}%</p></article>`, "Aucun projet lié.");
+  const decisionsBody = a5List(model.decisions, decision => `<article class="a5-item"><strong>${esc(decision.title)}</strong><p>${esc(decision.status)}${decision.date ? " · " + esc(a5Date(decision.date) || decision.date) : ""}</p></article>`, "Aucune décision liée.");
+  const managersBody = a5List(managerNames, name => `<article class="a5-item"><p>${esc(name)}</p></article>`, "Aucun manager associé");
+  const meetingsBody = a5List(model.meetings, meeting => `<article class="a5-item"><strong>${esc(meeting.label)}</strong><p>${esc(meeting.date)} · ${esc(meeting.time)} ${meetingConfidentialityBadge(meeting.confidentiality)}</p></article>`, "Aucun rendez-vous lié.");
+  const risksBody = a5List(model.risks, risk => `<article class="a5-item"><p>${esc(risk)}</p></article>`, "Aucun blocage ou risque.");
+  const nextBody = a5List(model.nextSteps, step => `<article class="a5-item"><p>${esc(step)}</p></article>`, "Aucune donnée renseignée.");
+  const notesBody = body.notes ? `<p>${esc(body.notes)}</p>` : `<p class="muted">Aucune donnée renseignée.</p>`;
+  return `
+    ${a5Section("Description", descriptionBody || `<p class="muted">Aucune donnée renseignée.</p>`) }
+    ${a5Section("MANAGERS ASSOCIÉS", managersBody)}
+    ${a5Section("Dossiers liés", foldersBody)}
+    ${a5Section("Projets liés", projectsBody)}
+    ${a5Section("Décisions liées", decisionsBody)}
+    ${a5Section("Rendez-vous liés", meetingsBody)}
+    ${a5Section("Blocages ou risques", risksBody)}
+    ${a5Section("Prochaines étapes", nextBody)}
+    ${a5Section("Notes", notesBody)}
+  `;
+}
+
+function renderA5SummaryDecision(model) {
+  const body = model.body || {};
+  const managerNames = ensureArray(model.managerNames).filter(Boolean);
+  const mainBody = [
+    body.decisionText ? `<p><strong>Décision prise :</strong> ${esc(body.decisionText)}</p>` : "",
+    body.context ? `<p><strong>Contexte :</strong> ${esc(body.context)}</p>` : "",
+    body.rationale ? `<p><strong>Motifs / justification :</strong> ${esc(body.rationale)}</p>` : "",
+    body.impacts ? `<p><strong>Impacts attendus :</strong> ${esc(body.impacts)}</p>` : "",
+    body.owner ? `<p><strong>Responsable / décideur :</strong> ${esc(body.owner)}</p>` : "",
+    body.risks ? `<p><strong>Risques :</strong> ${esc(body.risks)}</p>` : ""
+  ].join("");
+  const foldersBody = a5List(model.folders, folder => `<article class="a5-item"><strong>${esc(folder.name)}</strong><p>${esc(folder.category || "")} · ${esc(folder.status || "")}</p></article>`, "Aucun dossier lié.");
+  const projectsBody = a5List(model.projects, project => `<article class="a5-item"><strong>${esc(project.name)}</strong><p>${esc(project.status)} · ${esc(String(project.progress || 0))}%</p></article>`, "Aucun projet lié.");
+  const actionsBody = a5List(model.actions, action => `<article class="a5-item"><strong>${esc(action.title)}</strong><p>${esc(action.status)}${action.due ? " · " + esc(a5Date(action.due) || action.due) : ""}</p></article>`, "Aucune action liée.");
+  const managersBody = a5List(managerNames, name => `<article class="a5-item"><p>${esc(name)}</p></article>`, "Aucun manager associé");
+  const meetingsBody = a5List(model.meetings, meeting => `<article class="a5-item"><strong>${esc(meeting.label)}</strong><p>${esc(meeting.date)} · ${esc(meeting.time)} ${meetingConfidentialityBadge(meeting.confidentiality)}</p></article>`, "Aucun rendez-vous lié.");
+  const followUpBody = a5List(model.followUp, row => `<article class="a5-item"><p>${esc(row)}</p></article>`, "Aucune donnée renseignée.");
+  const notesBody = a5List(model.notes, note => `<article class="a5-item"><p>${esc(note)}</p></article>`, "Aucune donnée renseignée.");
+  return `
+    ${a5Section("Décision et contexte", mainBody || `<p class="muted">Aucune donnée renseignée.</p>`) }
+    ${a5Section("MANAGERS ASSOCIÉS", managersBody)}
+    ${a5Section("Dossiers liés", foldersBody)}
+    ${a5Section("Projets liés", projectsBody)}
+    ${a5Section("Actions liées", actionsBody)}
+    ${a5Section("Rendez-vous liés", meetingsBody)}
+    ${a5Section("Modalités de suivi", followUpBody)}
+    ${a5Section("Prochaines étapes", followUpBody)}
+    ${a5Section("Notes", notesBody)}
+  `;
+}
+
 function renderA5SummaryModal() {
   if (!a5SummaryDialog.open || !a5SummaryDialog.model) return "";
   const model = a5SummaryDialog.model;
   const orientation = a5SummaryDialog.orientation === "landscape" ? "landscape" : "portrait";
-  const body = model.type === "folder" ? renderA5SummaryFolder(model) : renderA5SummaryProject(model);
+  const body = model.type === "folder"
+    ? renderA5SummaryFolder(model)
+    : model.type === "project"
+      ? renderA5SummaryProject(model)
+      : model.type === "action"
+        ? renderA5SummaryAction(model)
+        : renderA5SummaryDecision(model);
+  const typeLabel = model.type === "folder"
+    ? "Dossier"
+    : model.type === "project"
+      ? "Projet"
+      : model.type === "action"
+        ? "Action"
+        : "Décision";
   return `<div class="modal-backdrop a5-summary-modal" onclick="closeA5SummaryPreview()">
     <div class="modal-panel a5-summary-panel" onclick="event.stopPropagation()">
       <div class="modal-head no-print">
-        <h2>Synthèse A5 · ${model.type === "folder" ? "Dossier" : "Projet"}</h2>
+        <h2>Synthèse A5 · ${typeLabel}</h2>
         <button class="icon-close" type="button" onclick="closeA5SummaryPreview()" aria-label="Fermer">×</button>
       </div>
       <div class="a5-summary-toolbar no-print">
@@ -2433,6 +2823,211 @@ function renderA5SummaryOverlay() {
   root.querySelectorAll(".a5-summary-modal").forEach(node => node.remove());
   if (!a5SummaryDialog.open) return;
   root.insertAdjacentHTML("beforeend", renderA5SummaryModal());
+}
+
+function ensureActionModalHooks() {
+  if (modalEscapeBound) return;
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    if (actionDeleteDialog.open) {
+      closeActionDeleteModal();
+      event.preventDefault();
+      return;
+    }
+    if (actionEditDialog.open) {
+      closeActionEditModal();
+      event.preventDefault();
+    }
+  });
+  modalEscapeBound = true;
+}
+
+function actionEditableManagerIds(action) {
+  return normalizeLinkedManagerIds(ensureArray(action?.linkedManagers).length ? action.linkedManagers : ensureArray(action?.linkedManagerIds));
+}
+
+function actionRenderRelatedMeetings(action) {
+  const meetings = actionRelationsForA5(action).meetings.map(a5MeetingDisplay);
+  return a5List(meetings, meeting => `<article class="a5-item"><strong>${esc(meeting.label)}</strong><p>${esc(meeting.date)} · ${esc(meeting.time)} ${meetingConfidentialityBadge(meeting.confidentiality)}</p></article>`, "Aucun rendez-vous lié.");
+}
+
+function actionEditModalBody(action) {
+  const relations = actionRelationsForA5(action);
+  const hasManagersField = Object.prototype.hasOwnProperty.call(action, "linkedManagers") || Object.prototype.hasOwnProperty.call(action, "linkedManagerIds");
+  const hasProgressField = Object.prototype.hasOwnProperty.call(action, "progress");
+  const managerIds = actionEditableManagerIds(action);
+  const descriptionValue = action.description || action.link || "";
+  const objectiveValue = action.objective || action.next || "";
+  const expectedValue = action.expectedResults || action.result || "";
+  const notesValue = action.notes || action.note || "";
+  const risksValue = action.risks || action.blockers || "";
+  const nextStepValue = action.nextStep || action.next || "";
+  const progressValue = hasProgressField ? Number(action.progress || 0) : 0;
+  const relatedManagersHtml = hasManagersField
+    ? `<div><label>Managers associés</label>${checkboxList("eaManagers", state.managers, managerIds, m => `${m.name} · ${m.role || ""}`)}</div>`
+    : `<div><label>Managers associés</label>${a5List(relations.managers, manager => `<article class="a5-item"><p>${esc(manager.name || "Manager")}${manager.role ? " · " + esc(manager.role) : ""}</p></article>`, "Aucun manager associé.")}</div>`;
+
+  return `
+    <div class="form-grid">
+      <input id="eaTitle" value="${esc(action.title || "")}" placeholder="Titre ou libellé" class="full">
+      <input id="eaLink" value="${esc(action.link || "")}" placeholder="Description / contexte" class="full">
+      <input id="eaOwner" value="${esc(action.owner || "")}" placeholder="Responsable">
+      <select id="eaLevel">
+        <option value="green" ${action.level === "green" ? "selected" : ""}>Normal</option>
+        <option value="orange" ${action.level === "orange" || !action.level ? "selected" : ""}>Important</option>
+        <option value="red" ${action.level === "red" ? "selected" : ""}>Critique</option>
+      </select>
+      <input id="eaDue" type="date" value="${esc(action.due || "")}" placeholder="Échéance">
+      <label class="check-row"><input id="eaDone" type="checkbox" ${action.done ? "checked" : ""}> <span>Action réalisée</span></label>
+      ${hasProgressField ? `<input id="eaProgress" type="number" min="0" max="100" value="${Number(progressValue || 0)}" placeholder="Avancement">` : ""}
+    </div>
+    <textarea id="eaDescription" placeholder="Description">${esc(descriptionValue)}</textarea>
+    <textarea id="eaObjective" placeholder="Objectif">${esc(objectiveValue)}</textarea>
+    <textarea id="eaExpectedResults" placeholder="Résultat attendu">${esc(expectedValue)}</textarea>
+    <textarea id="eaRisks" placeholder="Blocages ou risques">${esc(risksValue)}</textarea>
+    <textarea id="eaNextStep" placeholder="Prochaines étapes">${esc(nextStepValue)}</textarea>
+    <textarea id="eaNotes" placeholder="Notes">${esc(notesValue)}</textarea>
+    <div class="grid two manager-links">
+      <div><label>Dossiers liés</label>${checkboxList("eaFolders", state.folders, normalizeLinkedIdArray(action.linkedFolders), folder => folder.name)}</div>
+      <div><label>Projets liés</label>${checkboxList("eaProjects", state.projects, normalizeLinkedIdArray(action.linkedProjects), project => project.name)}</div>
+      <div><label>Décisions liées</label>${checkboxList("eaDecisions", state.decisions, normalizeLinkedIdArray(action.linkedDecisions), decision => decision.title)}</div>
+      ${relatedManagersHtml}
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Rendez-vous liés</h3>
+      ${actionRenderRelatedMeetings(action)}
+    </div>
+    <div class="modal-actions">
+      <button class="action" type="button" onclick="saveActionEdit('${esc(action.id)}')">Enregistrer</button>
+      <button class="secondary" type="button" onclick="closeActionEditModal()">Annuler</button>
+    </div>
+  `;
+}
+
+function renderActionEditModal() {
+  if (!actionEditDialog.open) return "";
+  const action = byId("actions", actionEditDialog.actionId);
+  if (!action) return "";
+  const errorHtml = actionEditDialog.error ? `<p class="folder-delete-error">${esc(actionEditDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop action-edit-modal" onclick="closeActionEditModal()"><div class="modal-panel" style="max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()"><div class="modal-head"><h2>Modifier action</h2><button class="icon-close" type="button" onclick="closeActionEditModal()" aria-label="Fermer">×</button></div>${errorHtml}${actionEditModalBody(action)}</div></div>`;
+}
+
+function renderActionDeleteModal() {
+  if (!actionDeleteDialog.open) return "";
+  const action = byId("actions", actionDeleteDialog.actionId);
+  if (!action) return "";
+  const relations = actionRelationsForA5(action);
+  const errorHtml = actionDeleteDialog.error ? `<p class="folder-delete-error">${esc(actionDeleteDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop action-delete-modal" onclick="closeActionDeleteModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>Supprimer l'action</h2><button class="icon-close" type="button" onclick="closeActionDeleteModal()" aria-label="Fermer">×</button></div><p>Confirmer la suppression de <strong>${esc(action.title || "Action")}</strong>.</p><p class="muted">Les liens visibles resteront dans les autres objets, mais cette Action sera retirée de DEOS.</p>${errorHtml}<div class="grid two"><div class="card"><h3>Impacts</h3><p><strong>Dossiers :</strong> ${relations.folders.length}</p><p><strong>Projets :</strong> ${relations.projects.length}</p><p><strong>Décisions :</strong> ${relations.decisions.length}</p><p><strong>Rendez-vous :</strong> ${relations.meetings.length}</p></div><div class="card"><h3>Managers associés</h3><p>${relations.managers.length ? esc(relations.managers.map(manager => manager.name).join(" · ")) : "Aucun"}</p></div></div><div class="modal-actions"><button class="danger" type="button" onclick="confirmActionDelete('${esc(action.id)}')">Supprimer définitivement</button><button class="secondary" type="button" onclick="closeActionDeleteModal()">Annuler</button></div></div></div></div>`;
+}
+
+function renderActionModalOverlays() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".action-edit-modal, .action-delete-modal").forEach(node => node.remove());
+  if (actionEditDialog.open) root.insertAdjacentHTML("beforeend", renderActionEditModal());
+  if (actionDeleteDialog.open) root.insertAdjacentHTML("beforeend", renderActionDeleteModal());
+}
+
+function openActionEditModal(id) {
+  const action = byId("actions", id);
+  if (!action) return;
+  ensureActionModalHooks();
+  actionEditDialog = { open: true, actionId: String(id), error: "" };
+  renderActionModalOverlays();
+}
+
+function closeActionEditModal() {
+  if (!actionEditDialog.open) return;
+  actionEditDialog = { open: false, actionId: "", error: "" };
+  renderActionModalOverlays();
+}
+
+function openActionDeleteModal(id) {
+  const action = byId("actions", id);
+  if (!action) return;
+  ensureActionModalHooks();
+  actionDeleteDialog = { open: true, actionId: String(id), error: "" };
+  renderActionModalOverlays();
+}
+
+function closeActionDeleteModal() {
+  if (!actionDeleteDialog.open) return;
+  actionDeleteDialog = { open: false, actionId: "", error: "" };
+  renderActionModalOverlays();
+}
+
+function saveActionEdit(id) {
+  const i = indexById("actions", id);
+  if (i < 0) return false;
+  const current = state.actions[i];
+  const title = document.getElementById("eaTitle")?.value.trim() || "";
+  if (!title) {
+    actionEditDialog.error = "Le titre de l'action est obligatoire.";
+    renderActionModalOverlays();
+    return false;
+  }
+  const hasManagersField = Object.prototype.hasOwnProperty.call(current, "linkedManagers") || Object.prototype.hasOwnProperty.call(current, "linkedManagerIds");
+  const hasProgressField = Object.prototype.hasOwnProperty.call(current, "progress");
+  const next = {
+    ...current,
+    title,
+    link: document.getElementById("eaLink")?.value.trim() || "",
+    description: document.getElementById("eaDescription")?.value.trim() || "",
+    objective: document.getElementById("eaObjective")?.value.trim() || "",
+    expectedResults: document.getElementById("eaExpectedResults")?.value.trim() || "",
+    owner: document.getElementById("eaOwner")?.value.trim() || "",
+    level: document.getElementById("eaLevel")?.value || "orange",
+    done: document.getElementById("eaDone")?.checked || false,
+    due: document.getElementById("eaDue")?.value || "",
+    notes: document.getElementById("eaNotes")?.value.trim() || "",
+    note: document.getElementById("eaNotes")?.value.trim() || "",
+    risks: document.getElementById("eaRisks")?.value.trim() || "",
+    blockers: document.getElementById("eaRisks")?.value.trim() || "",
+    nextStep: document.getElementById("eaNextStep")?.value.trim() || "",
+    linkedFolders: normalizeLinkedIdArray(checkedValues("eaFolders")),
+    linkedProjects: normalizeLinkedIdArray(checkedValues("eaProjects")),
+    linkedDecisions: normalizeLinkedIdArray(checkedValues("eaDecisions"))
+  };
+  if (hasProgressField) next.progress = Number(document.getElementById("eaProgress")?.value || 0);
+  if (hasManagersField) {
+    const managerIds = normalizeLinkedManagerIds(checkedValues("eaManagers"));
+    next.linkedManagers = managerIds;
+    if (Object.prototype.hasOwnProperty.call(current, "linkedManagerIds")) next.linkedManagerIds = managerIds;
+  }
+  state.actions[i] = normalizeEntity("actions", next);
+  persist("actions");
+  addActivity("✅ Action modifiée", state.actions[i].title, state.actions[i].link || state.actions[i].owner || "", id);
+  if (a5SummaryDialog.open && a5SummaryDialog.type === "action" && sameId(a5SummaryDialog.sourceId, id)) {
+    a5SummaryDialog.model = buildActionA5Summary(id);
+  }
+  closeActionEditModal();
+  if (sameId(actionDetailId, id)) {
+    openAction(id);
+  } else {
+    renderActions();
+  }
+  return true;
+}
+
+function confirmActionDelete(id) {
+  const i = indexById("actions", id);
+  if (i < 0) return false;
+  const title = state.actions[i].title;
+  state.actions.splice(i, 1);
+  persist("actions");
+  addActivity("🗑️ Action supprimée", title);
+  if (a5SummaryDialog.open && a5SummaryDialog.type === "action" && sameId(a5SummaryDialog.sourceId, id)) {
+    closeA5SummaryPreview();
+  }
+  closeActionDeleteModal();
+  if (sameId(actionDetailId, id)) {
+    actionDetailId = "";
+    renderActions();
+  } else {
+    renderActions();
+  }
+  return true;
 }
 
 function toggleAgendaTimeFields() {
@@ -5735,6 +6330,7 @@ function linkedFoldersList(item) {
 }
 
 function renderActions() {
+  actionDetailId = "";
   appHtml(`<div class="card hero"><h2>Actions</h2><p class="muted">L'action fait avancer : suivez ici ce qui doit concrètement être fait, par qui et pour quand.</p></div><div class="card"><h2>Ajouter une action</h2><input id="aTitle" placeholder="Action"><input id="aLink" placeholder="Lien ou contexte"><div class="grid three manager-links"><div><label>Dossiers liés</label>${folderSelect("aFolders")}</div><div><label>Projets liés</label>${checkboxList("aProjects", state.projects, [], p => p.name)}</div><div><label>Décisions liées</label>${checkboxList("aDecisions", state.decisions, [], d => d.title)}</div></div><button class="action" onclick="addAction()">Ajouter</button></div>${state.actions.map(actionItem).join("") || `<div class="card empty">Aucune action.</div>`}`);
 }
 
@@ -5757,14 +6353,7 @@ function addAction() {
 }
 
 function editAction(id) {
-  const a = byId("actions", id);
-  if (!a) return;
-  const next = prompt("Modifier l'action", a.title || "");
-  if (next === null) return;
-  a.title = next.trim() || a.title;
-  persist("actions");
-  addActivity("? Action modifiée", a.title, a.link || "", a.id);
-  renderActions();
+  openActionEditModal(id);
 }
 
 function toggleAction(id) {
@@ -5777,24 +6366,27 @@ function toggleAction(id) {
 }
 
 function deleteAction(id) {
-  const i = indexById("actions", id);
-  if (i < 0 || !confirm("Supprimer cette action ?")) return;
-  const t = state.actions[i].title;
-  state.actions.splice(i, 1);
-  persist("actions");
-  addActivity("? Action supprimée", t);
-  renderActions();
+  openActionDeleteModal(id);
 }
 
 function openAction(id) {
   const a = byId("actions", id);
   if (!a) return renderActions();
+  actionDetailId = String(id);
   const linkedProjects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
   const linkedDecisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
   const linkedFolders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id));
   const linkedDocuments = state.documents.filter(d => ensureArray(d.linkedActions).includes(a.id));
   document.getElementById("viewTitle").textContent = a.title;
   appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderActions()">Retour Actions</button><h2>${esc(a.title)}</h2><p>${esc(a.link || "")}</p><span class="muted">${a.done ? "Terminée" : "En cours"}</span><div class="row-actions"><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div><div class="grid two"><div class="card"><h2>Dossiers liés</h2>${linkedFolders.map(f => `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.category || "")}</span></div>`).join("") || `<div class="empty">Aucun dossier lié.</div>`}</div><div class="card"><h2>Projets liés</h2>${linkedProjects.map(p => `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.next || "")}</span></div>`).join("") || `<div class="empty">Aucun projet lié.</div>`}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card"><h2>Documents liés</h2>${linkedDocuments.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${actionAgendaList(a)}</div></div>`);
+}
+
+function openActionModal(id) {
+  openAction(id);
+}
+
+function openDecisionModal(id) {
+  openDecision(id);
 }
 
 function managerMini(m) {
