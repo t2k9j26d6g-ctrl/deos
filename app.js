@@ -1826,11 +1826,13 @@ function a5List(items, renderItem, emptyText = "") {
 function projectRelationsForA5(project) {
   const projectId = String(project?.id || "");
   const linkedManagers = new Map();
-  ensureArray(project.linkedManagers).forEach(id => {
+  const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(project.linkedManagers).length ? project.linkedManagers : ensureArray(project.linkedManagerIds));
+  linkedManagerIds.forEach(id => {
     const manager = byId("managers", id);
     if (manager) linkedManagers.set(String(manager.id), manager);
   });
-  const owner = byId("managers", project.ownerId);
+  const owner = state.managers.find(manager => sameId(project.ownerId, manager.id)
+    || (project.owner && String(manager.name || "").trim().toLowerCase() === String(project.owner || "").trim().toLowerCase()));
   if (owner) linkedManagers.set(String(owner.id), owner);
   const actions = state.actions.filter(a => ensureArray(project.linkedActions).some(id => sameId(id, a.id)) || ensureArray(a.linkedProjects).some(id => sameId(id, projectId)));
   const decisions = state.decisions.filter(d => ensureArray(project.linkedDecisions).some(id => sameId(id, d.id)) || ensureArray(d.linkedProjects).some(id => sameId(id, projectId)));
@@ -1852,14 +1854,19 @@ function buildFolderA5Summary(folderId) {
   const folder = byId("folders", folderId);
   if (!folder) return null;
   const folderManagerIds = normalizeLinkedManagerIds(ensureArray(folder.linkedManagers).length ? folder.linkedManagers : ensureArray(folder.linkedManagerIds));
+  const linkedManagers = new Map();
+  folderManagerIds.forEach(id => {
+    const manager = byId("managers", id);
+    if (manager) linkedManagers.set(String(manager.id), manager);
+  });
+  const ownerManager = state.managers.find(manager => sameId(folder.ownerId, manager.id)
+    || (folder.owner && String(manager.name || "").trim().toLowerCase() === String(folder.owner || "").trim().toLowerCase()));
+  if (ownerManager) linkedManagers.set(String(ownerManager.id), ownerManager);
+  const managers = [...linkedManagers.values()];
+  const managerNames = normalizeLinkedIdArray(managers.map(manager => String(manager.name || "").trim()).filter(Boolean));
   const matchesFolder = (item) => ensureArray(item?.linkedFolders).some(id => sameId(id, folder.id));
   const projects = state.projects.filter(project => matchesFolder(project));
   const projectIds = projects.map(project => String(project.id));
-  const managers = state.managers.filter(manager => folderManagerIds.some(id => sameId(id, manager.id))
-    || projectIds.some(id => ensureArray(manager.linkedProjects).some(link => sameId(link, id)))
-    || projects.some(project => sameId(project.ownerId, manager.id) || ensureArray(project.linkedManagers).some(link => sameId(link, manager.id))));
-  const ownerManager = state.managers.find(manager => sameId(folder.ownerId, manager.id) || (folder.owner && String(manager.name || "").trim().toLowerCase() === String(folder.owner || "").trim().toLowerCase()));
-  if (ownerManager && !managers.some(manager => sameId(manager.id, ownerManager.id))) managers.push(ownerManager);
   const managerIds = managers.map(manager => String(manager.id));
   const actionsFromLinks = state.actions.filter(action => matchesFolder(action)
     || projectIds.some(id => ensureArray(action.linkedProjects).some(link => sameId(link, id)))
@@ -1944,8 +1951,9 @@ function buildFolderA5Summary(folderId) {
       overdueActions: overdueActions.length,
       linkedDecisions: rel.decisions.length,
       upcomingMeetings: upcomingMeetings.length,
-      linkedManagers: rel.managers.length
+      linkedManagers: managerNames.length
     },
+    managerNames,
     projects: sortedProjects.slice(0, 4).map(p => ({
       name: p.name,
       status: folderStatusLabel(p.status),
@@ -1981,6 +1989,7 @@ function buildProjectA5Summary(projectId) {
   const project = byId("projects", projectId);
   if (!project) return null;
   const rel = projectRelationsForA5(project);
+  const managerNames = normalizeLinkedIdArray(rel.managers.map(manager => String(manager.name || "").trim()).filter(Boolean));
   const openActions = rel.actions.filter(a => !a.done).sort(a5ActionSort);
   const actionPool = (openActions.length ? openActions : rel.actions.slice().sort(a5ActionSort));
   const decisions = rel.decisions.slice().sort(a5DecisionSort);
@@ -2037,8 +2046,9 @@ function buildProjectA5Summary(projectId) {
       linkedDecisions: decisions.length,
       milestones: milestones.length,
       upcomingMeetings: upcomingMeetings.length,
-      linkedManagers: rel.managers.length
+      linkedManagers: managerNames.length
     },
+    managerNames,
     milestones: milestones.slice(0, 4).map(m => {
       const d = daysUntil(m.date);
       return {
@@ -2107,29 +2117,67 @@ function setA5SummaryOrientation(orientation) {
 
 function a5PrintStyles(orientation) {
   const pageSize = orientation === "landscape" ? "A5 landscape" : "A5 portrait";
+  const pageWidth = orientation === "landscape" ? "210mm" : "148mm";
+  const sheetWidth = orientation === "landscape" ? "210mm" : "148mm";
   return `
-    html,body{margin:0!important;padding:0!important;height:auto!important;background:#fff!important;color:#0f172a!important;font-family:Arial,Helvetica,sans-serif!important}
-    @page{size:${pageSize};margin:8mm}
-    .a5-print-doc{margin:0!important;padding:0!important;position:static!important;transform:none!important;width:auto!important;min-height:0!important;break-before:auto!important;page-break-before:auto!important}
-    .a5-summary-sheet{box-shadow:none!important;border:0!important;border-radius:0!important;margin:0!important;break-before:auto!important;page-break-before:auto!important;min-height:0!important}
+    html,body{margin:0!important;padding:0!important;height:auto!important;width:${pageWidth}!important;min-width:${pageWidth}!important;max-width:${pageWidth}!important;background:#fff!important;color:#0f172a!important;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+    @page{size:${pageSize};margin:0}
+    .a5-print-root{display:flex!important;justify-content:center!important;align-items:stretch!important;margin:0!important;padding:0!important;position:static!important;transform:none!important;width:${pageWidth}!important;min-width:${pageWidth}!important;max-width:${pageWidth}!important;min-height:0!important;break-before:auto!important;page-break-before:auto!important;box-sizing:border-box!important}
+    .a5-summary-sheet{width:${sheetWidth}!important;min-width:${sheetWidth}!important;max-width:${sheetWidth}!important;margin:0!important;break-before:auto!important;page-break-before:auto!important;min-height:0!important;box-sizing:border-box!important}
+    .a5-summary-meta-badges{display:flex!important;flex-wrap:wrap!important;gap:6px!important;align-items:center!important}
+    .a5-summary-meta-badge{display:inline-flex!important;white-space:nowrap!important}
+    .a5-summary-metrics{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}
+    .a5-summary-metrics.is-landscape{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+    .a5-content.two-columns{display:grid!important;grid-template-columns:1fr 1fr!important;gap:8px!important;align-items:start!important}
+    .a5-content.one-column{display:grid!important;grid-template-columns:1fr!important;gap:8px!important}
     .a5-section,.a5-item{break-inside:avoid;page-break-inside:avoid}
+    @media (max-width:900px){
+      .a5-summary-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+      .a5-content.two-columns{grid-template-columns:1fr 1fr!important}
+      .a5-summary-meta-badges{display:flex!important}
+    }
+    @media (max-width:640px){
+      .a5-summary-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+      .a5-content.two-columns{grid-template-columns:1fr 1fr!important}
+      .a5-summary-meta-badge{display:inline-flex!important}
+    }
   `;
 }
 
-function buildA5PrintWindowHtml(sheetHtml, orientation) {
-  const sheetStyleHref = document.querySelector("link[rel='stylesheet']")?.getAttribute("href") || "style.css";
+function collectA5PrintHeadMarkup(orientation) {
+  const links = Array.from(document.querySelectorAll("link[rel='stylesheet']"))
+    .map(link => {
+      const href = link.getAttribute("href");
+      if (!href) return "";
+      const media = link.getAttribute("media");
+      return `<link rel="stylesheet" href="${esc(href)}"${media ? ` media="${esc(media)}"` : ""}>`;
+    })
+    .filter(Boolean)
+    .join("\n");
+  const styleBlocks = Array.from(document.querySelectorAll("style"))
+    .map(style => `<style>${style.textContent || ""}</style>`)
+    .join("\n");
+  let inlineCss = "";
+  Array.from(document.styleSheets || []).forEach(sheet => {
+    try {
+      inlineCss += Array.from(sheet.cssRules || []).map(rule => rule.cssText).join("\n");
+      inlineCss += "\n";
+    } catch {}
+  });
+  const extracted = inlineCss.trim() ? `<style>${inlineCss}</style>` : "";
+  return `${links}\n${styleBlocks}\n${extracted}\n<style>${a5PrintStyles(orientation)}</style>`;
+}
+
+function buildA5PrintWindowHtml(orientation) {
   return `<!doctype html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DEOS Synthese A5</title>
-  <link rel="stylesheet" href="${esc(sheetStyleHref)}">
-  <style>${a5PrintStyles(orientation)}</style>
+  <title>DEOS Synthèse A5</title>
+  ${collectA5PrintHeadMarkup(orientation)}
 </head>
-<body>
-  <div class="a5-print-doc">${sheetHtml}</div>
-</body>
+<body></body>
 </html>`;
 }
 
@@ -2151,7 +2199,8 @@ function bindA5IframeCleanup(frame, iframeWin, fallbackMs = 1400) {
   setTimeout(cleanup, fallbackMs);
 }
 
-function printA5ViaIframe(sheetHtml, orientation) {
+function printA5ViaIframe(previewNode, orientation) {
+  if (!previewNode) return;
   const frame = document.createElement("iframe");
   frame.setAttribute("aria-hidden", "true");
   frame.style.position = "fixed";
@@ -2167,8 +2216,39 @@ function printA5ViaIframe(sheetHtml, orientation) {
     return;
   }
   doc.open();
-  doc.write(buildA5PrintWindowHtml(sheetHtml, orientation));
+  doc.write(buildA5PrintWindowHtml(orientation));
   doc.close();
+  const clonedNode = doc.importNode(previewNode, true);
+  doc.body.appendChild(clonedNode);
+
+  const waitForStyles = (done) => {
+    const links = Array.from(doc.querySelectorAll("link[rel='stylesheet']"));
+    if (!links.length) {
+      setTimeout(done, 60);
+      return;
+    }
+    let pending = links.length;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      done();
+    };
+    const mark = () => {
+      pending -= 1;
+      if (pending <= 0) finish();
+    };
+    links.forEach(link => {
+      if (link.sheet) {
+        mark();
+        return;
+      }
+      link.addEventListener("load", mark, { once: true });
+      link.addEventListener("error", mark, { once: true });
+    });
+    setTimeout(finish, 500);
+  };
+
   let printed = false;
   const launch = () => {
     if (printed) return;
@@ -2185,18 +2265,19 @@ function printA5ViaIframe(sheetHtml, orientation) {
     } catch {}
   };
   if (doc.readyState === "complete") {
-    launch();
+    waitForStyles(launch);
   } else {
-    frame.addEventListener("load", launch, { once: true });
+    frame.addEventListener("load", () => waitForStyles(launch), { once: true });
   }
 }
 
 function printA5Summary() {
   if (!a5SummaryDialog.open) return;
-  const sheet = document.querySelector(".a5-summary-sheet");
-  if (!sheet) return;
+  const previewRoot = document.querySelector(".a5-summary-modal .a5-print-root");
+  if (!previewRoot) return;
   const orientation = a5SummaryDialog.orientation === "landscape" ? "landscape" : "portrait";
-  printA5ViaIframe(sheet.outerHTML, orientation);
+  const clone = previewRoot.cloneNode(true);
+  printA5ViaIframe(clone, orientation);
 }
 
 function a5SummaryBadge(label, value) {
@@ -2208,20 +2289,20 @@ function a5SummaryMetrics(model) {
   const metrics = model.metrics || {};
   const defs = model.type === "folder"
     ? [
-      { label: "Projets lies", value: metrics.linkedProjects || 0 },
+      { label: "Projets liés", value: metrics.linkedProjects || 0 },
       { label: "Actions ouvertes", value: metrics.openActions || 0 },
       { label: "Actions en retard", value: metrics.overdueActions || 0 },
-      { label: "Decisions liees", value: metrics.linkedDecisions || 0 },
-      { label: "Rendez-vous a venir", value: metrics.upcomingMeetings || 0 },
-      { label: "Managers lies", value: metrics.linkedManagers || 0 }
+      { label: "Décisions liées", value: metrics.linkedDecisions || 0 },
+      { label: "Rendez-vous à venir", value: metrics.upcomingMeetings || 0 },
+      { label: "Managers liés", value: metrics.linkedManagers || 0 }
     ]
     : [
       { label: "Actions ouvertes", value: metrics.openActions || 0 },
       { label: "Actions en retard", value: metrics.overdueActions || 0 },
-      { label: "Decisions liees", value: metrics.linkedDecisions || 0 },
+      { label: "Décisions liées", value: metrics.linkedDecisions || 0 },
       { label: "Jalons", value: metrics.milestones || 0 },
-      { label: "Rendez-vous a venir", value: metrics.upcomingMeetings || 0 },
-      { label: "Managers lies", value: metrics.linkedManagers || 0 }
+      { label: "Rendez-vous à venir", value: metrics.upcomingMeetings || 0 },
+      { label: "Managers liés", value: metrics.linkedManagers || 0 }
     ];
   return defs.map(d => `<article class="a5-summary-metric"><strong class="a5-summary-metric-value">${esc(String(d.value))}</strong><span class="a5-summary-metric-label"> ${esc(d.label)}</span></article>`).join("");
 }
@@ -2230,26 +2311,26 @@ function renderA5SummaryHeader(model, orientation) {
   const m = model.metadata || {};
   const badges = model.type === "folder"
     ? [
-      a5SummaryBadge("Categorie", m.category),
+      a5SummaryBadge("Catégorie", m.category),
       a5SummaryBadge("Statut", m.status),
-      a5SummaryBadge("Priorite", m.priority),
-      a5SummaryBadge("Echeance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
+      a5SummaryBadge("Priorité", m.priority),
+      a5SummaryBadge("Échéance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
     ]
     : [
       a5SummaryBadge("Statut", m.status),
-      a5SummaryBadge("Priorite", m.priority),
+      a5SummaryBadge("Priorité", m.priority),
       a5SummaryBadge("Avancement", `${Number(m.progress || 0)} %`),
-      a5SummaryBadge("Echeance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
+      a5SummaryBadge("Échéance", m.deadline ? (a5Date(m.deadline) || m.deadline) : "")
     ];
   const badgeHtml = badges.filter(Boolean).join("");
-  const generatedAt = m.generatedAt ? `Genere le ${m.generatedAt}` : "";
+  const generatedAt = m.generatedAt ? `Généré le ${m.generatedAt}` : "";
   return `
     <header class="a5-header a5-summary-head">
       <div class="a5-summary-kicker-row">
         <p class="a5-summary-kicker">${model.type === "folder" ? "DOSSIER" : "PROJET"}</p>
         <p class="a5-summary-version">DEOS ${esc(DEOS_VERSION)}</p>
       </div>
-      <h1 class="a5-summary-title">${esc(model.title || "Synthese")}</h1>
+      <h1 class="a5-summary-title">${esc(model.title || "Synthèse")}</h1>
       <div class="a5-summary-meta-badges">${badgeHtml}</div>
       <div class="a5-summary-metrics ${orientation === "landscape" ? "is-landscape" : "is-portrait"}">${a5SummaryMetrics(model)}</div>
       ${generatedAt ? `<p class="a5-summary-generated-at">${esc(generatedAt)}</p>` : ""}
@@ -2260,6 +2341,7 @@ function renderA5SummaryHeader(model, orientation) {
 
 function renderA5SummaryFolder(model) {
   const context = model.context || {};
+  const managerNames = ensureArray(model.managerNames).filter(Boolean);
   const contextBody = [
     context.description ? `<p><strong>Description:</strong> ${esc(a5SafeText(context.description, 300))}</p>` : "",
     context.context ? `<p><strong>Contexte:</strong> ${esc(a5SafeText(context.context, 260))}</p>` : "",
@@ -2269,22 +2351,25 @@ function renderA5SummaryFolder(model) {
   const projectsBody = a5List(model.projects, p => `<article class="a5-item"><strong>${esc(p.name)}</strong><p>${esc(p.status)} · ${esc(String(p.progress))}%${p.deadline ? " · Echeance " + esc(a5Date(p.deadline) || p.deadline) : ""}</p>${p.risk ? `<p class="muted">Risque: ${esc(p.risk)}</p>` : ""}</article>`);
   const actionsBody = a5List(model.actions, a => `<article class="a5-item"><strong>${esc(a5SafeText(a.title, 90))}</strong><p>${esc(a.owner || "Responsable a definir")} · ${esc(a.level)}${a.due ? " · " + esc(a5Date(a.due) || a.due) : ""}${a.overdue ? " · Retard " + esc(a.overdue) : ""}</p></article>`);
   const decisionsBody = a5List(model.decisions, d => `<article class="a5-item"><strong>${esc(a5SafeText(d.title, 90))}</strong><p>${esc(d.status)}${d.date ? " · " + esc(a5Date(d.date) || d.date) : ""}${d.owner ? " · " + esc(d.owner) : ""}</p></article>`);
+  const managersBody = a5List(managerNames, name => `<article class="a5-item"><p>${esc(name)}</p></article>`, "Aucun manager associé");
   const risksBody = a5List(model.risks, r => `<article class="a5-item"><p>${esc(r)}</p></article>`);
-  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnee renseignee.");
+  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnée renseignée.");
   const meetingsBody = a5List(model.meetings, m => `<article class="a5-item"><strong>${esc(m.label)}</strong><p>${esc(m.date)} · ${esc(m.time)} ${meetingConfidentialityBadge(m.confidentiality)}</p></article>`);
   return `
-    ${a5Section("Contexte", contextBody || `<p class="muted">Aucune donnee renseignee.</p>`) }
+    ${a5Section("Contexte", contextBody || `<p class="muted">Aucune donnée renseignée.</p>`) }
+    ${a5Section("MANAGERS ASSOCIÉS", managersBody)}
     ${a5Section("Rendez-vous", meetingsBody)}
-    ${a5Section("Projets cles", projectsBody)}
+    ${a5Section("Projets clés", projectsBody)}
     ${a5Section("Actions prioritaires", actionsBody)}
-    ${a5Section("Decisions", decisionsBody)}
+    ${a5Section("Décisions", decisionsBody)}
     ${a5Section("Risques / Points d'attention", risksBody)}
-    ${a5Section("Prochaines etapes", nextBody)}
+    ${a5Section("Prochaines étapes", nextBody)}
   `;
 }
 
 function renderA5SummaryProject(model) {
   const objective = model.objectiveBlock || {};
+  const managerNames = ensureArray(model.managerNames).filter(Boolean);
   const objectiveBody = [
     objective.description ? `<p><strong>Description:</strong> ${esc(a5SafeText(objective.description, 260))}</p>` : "",
     objective.context ? `<p><strong>Contexte:</strong> ${esc(a5SafeText(objective.context, 220))}</p>` : "",
@@ -2294,17 +2379,19 @@ function renderA5SummaryProject(model) {
   const milestonesBody = a5List(model.milestones, m => `<article class="a5-item"><strong>${esc(a5SafeText(m.title, 90))}</strong><p>${m.date ? esc(a5Date(m.date) || m.date) : "Sans date"} · ${esc(m.status)}${m.overdue ? " · Retard " + esc(m.overdue) : ""}</p></article>`);
   const actionsBody = a5List(model.actions, a => `<article class="a5-item"><strong>${esc(a5SafeText(a.title, 90))}</strong><p>${esc(a.owner || "Responsable a definir")} · ${esc(a.level)}${a.due ? " · " + esc(a5Date(a.due) || a.due) : ""}${a.overdue ? " · Retard " + esc(a.overdue) : ""}</p></article>`);
   const decisionsBody = a5List(model.decisions, d => `<article class="a5-item"><strong>${esc(a5SafeText(d.title, 90))}</strong><p>${esc(d.status)}${d.date ? " · " + esc(a5Date(d.date) || d.date) : ""} · ${esc(d.importance)}${d.owner ? " · " + esc(d.owner) : ""}</p></article>`);
+  const managersBody = a5List(managerNames, name => `<article class="a5-item"><p>${esc(name)}</p></article>`, "Aucun manager associé");
   const risksBody = a5List(model.risks, r => `<article class="a5-item"><p>${esc(r)}</p></article>`);
   const meetingsBody = a5List(model.meetings, m => `<article class="a5-item"><strong>${esc(m.label)}</strong><p>${esc(m.date)} · ${esc(m.time)} ${meetingConfidentialityBadge(m.confidentiality)}</p></article>`);
-  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnee renseignee.");
+  const nextBody = a5List(model.nextSteps, n => `<article class="a5-item"><p>${esc(n)}</p></article>`, "Aucune donnée renseignée.");
   return `
-    ${a5Section("Objectif", objectiveBody || `<p class="muted">Aucune donnee renseignee.</p>`) }
+    ${a5Section("Objectif", objectiveBody || `<p class="muted">Aucune donnée renseignée.</p>`) }
+    ${a5Section("MANAGERS ASSOCIÉS", managersBody)}
     ${a5Section("Jalons", milestonesBody)}
     ${a5Section("Actions prioritaires", actionsBody)}
-    ${a5Section("Decisions", decisionsBody)}
+    ${a5Section("Décisions", decisionsBody)}
     ${a5Section("Rendez-vous", meetingsBody)}
     ${a5Section("Risques et blocages", risksBody)}
-    ${a5Section("Prochaines etapes", nextBody)}
+    ${a5Section("Prochaines étapes", nextBody)}
   `;
 }
 
@@ -2316,7 +2403,7 @@ function renderA5SummaryModal() {
   return `<div class="modal-backdrop a5-summary-modal" onclick="closeA5SummaryPreview()">
     <div class="modal-panel a5-summary-panel" onclick="event.stopPropagation()">
       <div class="modal-head no-print">
-        <h2>Synthese A5 · ${model.type === "folder" ? "Dossier" : "Projet"}</h2>
+        <h2>Synthèse A5 · ${model.type === "folder" ? "Dossier" : "Projet"}</h2>
         <button class="icon-close" type="button" onclick="closeA5SummaryPreview()" aria-label="Fermer">×</button>
       </div>
       <div class="a5-summary-toolbar no-print">
