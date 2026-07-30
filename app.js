@@ -924,7 +924,9 @@ function normalizeEntity(name, item) {
   if (name === "folders") {
     const template = defaults.folders.find(f => f.id === base.id) || {};
     const merged = { name: "", category: "Autre", status: "orange", priorityLevel: "orange", owner: "", ownerId: "", linkedManagers: [], description: "", context: "", objectives: "", expectedResults: "", createdAt: isoToday(), deadline: "", tags: [], directorNotes: "", archived: false, ...template, ...base };
-    return { ...merged, linkedManagers: ensureArray(merged.linkedManagers), tags: ensureArray(merged.tags) };
+    const managerSource = ensureArray(merged.linkedManagers).length ? merged.linkedManagers : ensureArray(merged.linkedManagerIds);
+    const { linkedManagerIds: _legacyLinkedManagerIds, ...rest } = merged;
+    return { ...rest, linkedManagers: normalizeLinkedManagerIds(ensureArray(managerSource)), tags: ensureArray(merged.tags) };
   }
   return base;
 }
@@ -1849,12 +1851,15 @@ function projectRelationsForA5(project) {
 function buildFolderA5Summary(folderId) {
   const folder = byId("folders", folderId);
   if (!folder) return null;
+  const folderManagerIds = normalizeLinkedManagerIds(ensureArray(folder.linkedManagers).length ? folder.linkedManagers : ensureArray(folder.linkedManagerIds));
   const matchesFolder = (item) => ensureArray(item?.linkedFolders).some(id => sameId(id, folder.id));
   const projects = state.projects.filter(project => matchesFolder(project));
   const projectIds = projects.map(project => String(project.id));
-  const managers = state.managers.filter(manager => ensureArray(folder.linkedManagers).some(id => sameId(id, manager.id))
+  const managers = state.managers.filter(manager => folderManagerIds.some(id => sameId(id, manager.id))
     || projectIds.some(id => ensureArray(manager.linkedProjects).some(link => sameId(link, id)))
     || projects.some(project => sameId(project.ownerId, manager.id) || ensureArray(project.linkedManagers).some(link => sameId(link, manager.id))));
+  const ownerManager = state.managers.find(manager => sameId(folder.ownerId, manager.id) || (folder.owner && String(manager.name || "").trim().toLowerCase() === String(folder.owner || "").trim().toLowerCase()));
+  if (ownerManager && !managers.some(manager => sameId(manager.id, ownerManager.id))) managers.push(ownerManager);
   const managerIds = managers.map(manager => String(manager.id));
   const actionsFromLinks = state.actions.filter(action => matchesFolder(action)
     || projectIds.some(id => ensureArray(action.linkedProjects).some(link => sameId(link, id)))
@@ -2128,6 +2133,24 @@ function buildA5PrintWindowHtml(sheetHtml, orientation) {
 </html>`;
 }
 
+function bindA5IframeCleanup(frame, iframeWin, fallbackMs = 1400) {
+  let done = false;
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    try {
+      frame.remove();
+    } catch {}
+  };
+  try {
+    iframeWin.addEventListener("afterprint", cleanup, { once: true });
+  } catch {}
+  try {
+    iframeWin.onafterprint = cleanup;
+  } catch {}
+  setTimeout(cleanup, fallbackMs);
+}
+
 function printA5ViaIframe(sheetHtml, orientation) {
   const frame = document.createElement("iframe");
   frame.setAttribute("aria-hidden", "true");
@@ -2146,12 +2169,20 @@ function printA5ViaIframe(sheetHtml, orientation) {
   doc.open();
   doc.write(buildA5PrintWindowHtml(sheetHtml, orientation));
   doc.close();
+  let printed = false;
   const launch = () => {
+    if (printed) return;
+    printed = true;
+    const iframeWin = frame.contentWindow;
+    if (!iframeWin) {
+      frame.remove();
+      return;
+    }
+    bindA5IframeCleanup(frame, iframeWin, 1400);
     try {
-      frame.contentWindow?.focus();
-      frame.contentWindow?.print();
+      iframeWin.focus();
+      iframeWin.print();
     } catch {}
-    setTimeout(() => frame.remove(), 300);
   };
   if (doc.readyState === "complete") {
     launch();
@@ -2165,25 +2196,7 @@ function printA5Summary() {
   const sheet = document.querySelector(".a5-summary-sheet");
   if (!sheet) return;
   const orientation = a5SummaryDialog.orientation === "landscape" ? "landscape" : "portrait";
-  const win = window.open("", "_blank", "noopener,noreferrer");
-  if (!win) {
-    printA5ViaIframe(sheet.outerHTML, orientation);
-    return;
-  }
-  win.document.open();
-  win.document.write(buildA5PrintWindowHtml(sheet.outerHTML, orientation));
-  win.document.close();
-  const launch = () => {
-    try {
-      win.focus();
-      win.print();
-    } catch {}
-  };
-  if (win.document.readyState === "complete") {
-    launch();
-  } else {
-    win.addEventListener("load", launch, { once: true });
-  }
+  printA5ViaIframe(sheet.outerHTML, orientation);
 }
 
 function a5SummaryBadge(label, value) {
@@ -4731,9 +4744,12 @@ function itemLinkedToFolder(item, folder) {
 }
 
 function folderRelations(folder) {
+  const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(folder?.linkedManagers).length ? folder.linkedManagers : ensureArray(folder?.linkedManagerIds));
   const projects = state.projects.filter(p => itemLinkedToFolder(p, folder));
   const projectIds = projects.map(p => p.id);
-  const managers = state.managers.filter(m => ensureArray(folder.linkedManagers).includes(m.id) || projectIds.some(id => ensureArray(m.linkedProjects).includes(id)) || projects.some(p => p.ownerId === m.id || ensureArray(p.linkedManagers).includes(m.id)));
+  const managers = state.managers.filter(m => linkedManagerIds.some(id => sameId(id, m.id)) || projectIds.some(id => ensureArray(m.linkedProjects).some(link => sameId(link, id))) || projects.some(p => sameId(p.ownerId, m.id) || ensureArray(p.linkedManagers).some(link => sameId(link, m.id))));
+  const ownerManager = state.managers.find(m => sameId(folder.ownerId, m.id) || (folder.owner && String(m.name || "").trim().toLowerCase() === String(folder.owner || "").trim().toLowerCase()));
+  if (ownerManager && !managers.some(m => sameId(m.id, ownerManager.id))) managers.push(ownerManager);
   const managerIds = managers.map(m => m.id);
   const actions = state.actions.filter(a => itemLinkedToFolder(a, folder) || projectIds.some(id => ensureArray(a.linkedProjects).includes(id)) || projects.some(p => ensureArray(p.linkedActions).includes(a.id)));
   const priorities = state.priorities.filter(p => itemLinkedToFolder(p, folder));
@@ -5021,7 +5037,7 @@ function editFolder(id) {
 function folderForm(folder, mode) {
   const isEdit = mode === "edit";
   const deletionPanel = isEdit ? renderFolderDeletionPanel(folder) : "";
-  return `<div class="card"><h2>${mode === "create" ? "Nouveau dossier" : "Modifier dossier"}</h2><div class="form-grid"><input id="fName" value="${esc(folder.name)}" placeholder="Nom du dossier"><select id="fCategory">${folderCategories.map(c => `<option value="${esc(c)}" ${folder.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select><select id="fStatus"><option value="green" ${folder.status === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folder.status === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folder.status === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folder.status === "archived" ? "selected" : ""}>Archivé</option></select><select id="fPriority"><option value="green" ${folder.priorityLevel === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folder.priorityLevel === "orange" ? "selected" : ""}>Important</option><option value="red" ${folder.priorityLevel === "red" ? "selected" : ""}>Critique</option></select><input id="fOwner" value="${esc(folder.owner || "")}" placeholder="Responsable principal"><input id="fCreated" type="date" value="${esc(folder.createdAt || isoToday())}"><input id="fDeadline" type="date" value="${esc(folder.deadline || "")}"><input id="fTags" value="${esc((folder.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><div class="manager-links"><label>Managers associés</label>${checkboxList("fManagers", state.managers, folder.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><textarea id="fDescription" placeholder="Description">${esc(folder.description || "")}</textarea><textarea id="fContext" placeholder="Contexte">${esc(folder.context || "")}</textarea><textarea id="fObjectives" placeholder="Objectifs">${esc(folder.objectives || "")}</textarea><textarea id="fExpected" placeholder="Résultats attendus">${esc(folder.expectedResults || "")}</textarea><textarea id="fNotes" placeholder="Notes du directeur">${esc(folder.directorNotes || "")}</textarea><div class="row-actions"><button class="action" onclick="${mode === "create" ? "saveNewFolder()" : `saveFolder('${folder.id}')`}">Enregistrer</button><button class="secondary" onclick="${mode === "create" ? "renderFolders()" : `openFolder('${folder.id}')`}">Annuler</button></div>${isEdit ? `<div class="folder-delete-zone"><button class="danger" type="button" onclick="openFolderDeletionDialog('${folder.id}')">Supprimer le dossier</button><p class="muted">Action destructrice limitée au dossier. Les objets liés seront conservés.</p></div>` : ""}${deletionPanel}</div>`;
+  return `<div class="card"><h2>${mode === "create" ? "Nouveau dossier" : "Modifier dossier"}</h2><div class="form-grid"><input id="fName" value="${esc(folder.name)}" placeholder="Nom du dossier"><select id="fCategory">${folderCategories.map(c => `<option value="${esc(c)}" ${folder.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select><select id="fStatus"><option value="green" ${folder.status === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folder.status === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folder.status === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folder.status === "archived" ? "selected" : ""}>Archivé</option></select><select id="fPriority"><option value="green" ${folder.priorityLevel === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folder.priorityLevel === "orange" ? "selected" : ""}>Important</option><option value="red" ${folder.priorityLevel === "red" ? "selected" : ""}>Critique</option></select><input id="fOwner" value="${esc(folder.owner || "")}" placeholder="Responsable principal"><input id="fCreated" type="date" value="${esc(folder.createdAt || isoToday())}"><input id="fDeadline" type="date" value="${esc(folder.deadline || "")}"><input id="fTags" value="${esc((folder.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><div class="manager-links"><label>Managers associés</label>${checkboxList("fManagers", state.managers, normalizeLinkedManagerIds(ensureArray(folder.linkedManagers).length ? folder.linkedManagers : ensureArray(folder.linkedManagerIds)), m => `${m.name} ? ${m.role || ""}`)}</div><textarea id="fDescription" placeholder="Description">${esc(folder.description || "")}</textarea><textarea id="fContext" placeholder="Contexte">${esc(folder.context || "")}</textarea><textarea id="fObjectives" placeholder="Objectifs">${esc(folder.objectives || "")}</textarea><textarea id="fExpected" placeholder="Résultats attendus">${esc(folder.expectedResults || "")}</textarea><textarea id="fNotes" placeholder="Notes du directeur">${esc(folder.directorNotes || "")}</textarea><div class="row-actions"><button class="action" onclick="${mode === "create" ? "saveNewFolder()" : `saveFolder('${folder.id}')`}">Enregistrer</button><button class="secondary" onclick="${mode === "create" ? "renderFolders()" : `openFolder('${folder.id}')`}">Annuler</button></div>${isEdit ? `<div class="folder-delete-zone"><button class="danger" type="button" onclick="openFolderDeletionDialog('${folder.id}')">Supprimer le dossier</button><p class="muted">Action destructrice limitée au dossier. Les objets liés seront conservés.</p></div>` : ""}${deletionPanel}</div>`;
 }
 
 function resetFolderDeletionDialog() {
@@ -5338,15 +5354,35 @@ function confirmFolderDeletion(folderId) {
 }
 
 function readFolderForm(existing = {}) {
+  const { linkedManagerIds: _legacyLinkedManagerIds, ...safeExisting } = existing || {};
   const name = document.getElementById("fName").value.trim();
   if (!name) return null;
-  return { ...existing, name, category: document.getElementById("fCategory").value, status: document.getElementById("fStatus").value, priorityLevel: document.getElementById("fPriority").value, owner: document.getElementById("fOwner").value.trim(), createdAt: document.getElementById("fCreated").value || isoToday(), deadline: document.getElementById("fDeadline").value, tags: splitTags(document.getElementById("fTags").value), linkedManagers: checkedValues("fManagers"), description: document.getElementById("fDescription").value.trim(), context: document.getElementById("fContext").value.trim(), objectives: document.getElementById("fObjectives").value.trim(), expectedResults: document.getElementById("fExpected").value.trim(), directorNotes: document.getElementById("fNotes").value.trim() };
+  const owner = document.getElementById("fOwner").value.trim();
+  const ownerManager = state.managers.find(m => String(m.name || "").trim().toLowerCase() === owner.toLowerCase());
+  return {
+    ...safeExisting,
+    name,
+    category: document.getElementById("fCategory").value,
+    status: document.getElementById("fStatus").value,
+    priorityLevel: document.getElementById("fPriority").value,
+    owner,
+    ownerId: ownerManager?.id || safeExisting.ownerId || "",
+    createdAt: document.getElementById("fCreated").value || isoToday(),
+    deadline: document.getElementById("fDeadline").value,
+    tags: splitTags(document.getElementById("fTags").value),
+    linkedManagers: normalizeLinkedManagerIds(checkedValues("fManagers")),
+    description: document.getElementById("fDescription").value.trim(),
+    context: document.getElementById("fContext").value.trim(),
+    objectives: document.getElementById("fObjectives").value.trim(),
+    expectedResults: document.getElementById("fExpected").value.trim(),
+    directorNotes: document.getElementById("fNotes").value.trim()
+  };
 }
 
 function saveNewFolder() {
   const folder = readFolderForm({ id: newId("folder") });
   if (!folder) return;
-  state.folders.unshift(folder);
+  state.folders.unshift(normalizeEntity("folders", folder));
   persist("folders");
   addActivity("Dossier", folder.name, folder.category, folder.id);
   resetFolderDeletionDialog();
@@ -5358,7 +5394,7 @@ function saveFolder(id) {
   if (i < 0) return;
   const folder = readFolderForm(state.folders[i]);
   if (!folder) return;
-  state.folders[i] = folder;
+  state.folders[i] = normalizeEntity("folders", folder);
   persist("folders");
   addActivity("Dossier modifié", folder.name, folder.category, folder.id);
   resetFolderDeletionDialog();
@@ -5559,7 +5595,8 @@ function folderProjectsList(items, folderId) {
 }
 
 function folderManagersList(items, folder) {
-  return items.map(m => `<div class="item clickable" onclick="openManager('${m.id}')"><strong>${esc(m.name)}</strong><span class="muted">${esc(m.role || "")} · ${esc(ensureArray(folder.linkedManagers).includes(m.id) ? "Manager associé" : "Lié par contenu")}</span>${badge(m.status)}</div>`).join("") || `<div class="empty">Aucun manager concerné.</div>`;
+  const linkedManagerIds = normalizeLinkedManagerIds(ensureArray(folder?.linkedManagers).length ? folder.linkedManagers : ensureArray(folder?.linkedManagerIds));
+  return items.map(m => `<div class="item clickable" onclick="openManager('${m.id}')"><strong>${esc(m.name)}</strong><span class="muted">${esc(m.role || "")} · ${esc(linkedManagerIds.some(id => sameId(id, m.id)) ? "Manager associé" : "Lié par contenu")}</span>${badge(m.status)}</div>`).join("") || `<div class="empty">Aucun manager concerné.</div>`;
 }
 
 function folderActionsList(items, folderId) {
