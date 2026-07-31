@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.17.5.1";
+const DEOS_VERSION = "V5.18.1";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -8081,8 +8081,122 @@ const perfMonths = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juil
 const perfJobs = ["Préparation", "Réception", "Manutention", "Chargement", "Transit"];
 const perfAbsences = ["Maladie", "Accidents du travail", "Congés", "Formation", "Autres absences"];
 const perfQuality = ["Casse livraison", "Non livrés", "Litiges", "Casse entrepôt", "Périmés entrepôt", "Contrôle stock", "Dons", "Total Gains & Pertes"];
+const performanceImportTargetCatalog = [
+  { id: "complementary.generic", label: "KPI complémentaire", path: "complementary.generic", type: "complementary", unit: "", aliases: ["kpi complementaire", "kpi complémentaire"] },
+  { id: "ipo.total", label: "IPO Total", path: "ipo.total.actual", type: "existing", unit: "k€", aliases: ["ipo total", "couts exploitation logistique transport"] },
+  { id: "ipo.variable", label: "IPO Variable", path: "ipo.variable.actual", type: "existing", unit: "k€", aliases: ["ipo variable", "couts variables exploitation"] },
+  { id: "activity.colis_total", label: "Colis totaux préparés", path: "activity.actual", type: "existing", unit: "colis", aliases: ["colis totaux prepares", "colis prepares total", "total colis prepares", "colis prepares", "colis total prepares", "colis controles prepares", "colis heterogenes prepares", "colis homogenes prepares", "supports charges total", "palettes receptionnees"] },
+  { id: "quality.litiges", label: "Litiges", path: "quality.indicators.Litiges.actual", type: "existing", unit: "litige", aliases: ["litiges", "litige", "retours litiges"] },
+  { id: "productivity.reception", label: "Réception", path: "productivity.Réception.actual", type: "existing", unit: "colis", aliases: ["reception", "receptions"] },
+  { id: "productivity.manutention", label: "Manutention", path: "productivity.Manutention.actual", type: "existing", unit: "colis", aliases: ["manutention", "manutentions"] },
+  { id: "productivity.chargement", label: "Chargement", path: "productivity.Chargement.actual", type: "existing", unit: "colis", aliases: ["chargement", "chargements"] },
+  { id: "productivity.transit", label: "Transit", path: "productivity.Transit.actual", type: "existing", unit: "colis", aliases: ["transit", "eut transportes transit", "eut transportes", "transportes transit"] },
+  { id: "productivity.preparation", label: "Préparation", path: "productivity.Préparation.actual", type: "existing", unit: "colis", aliases: ["preparation", "preparations", "préparation"] },
+  { id: "complementary.gemed.direction_operationnelle", label: "Direction opérationnelle", path: "complementary.directionOperationnelle", type: "complementary", unit: "", aliases: ["direction operationnelle"] },
+  { id: "complementary.gemed.ressources_humaines", label: "Ressources humaines", path: "complementary.ressourcesHumaines", type: "complementary", unit: "", aliases: ["ressources humaines"] },
+  { id: "complementary.gemed.finance_gestion", label: "Finance / Gestion", path: "complementary.financeGestion", type: "complementary", unit: "", aliases: ["finance gestion", "finance / gestion"] }
+];
 let performanceEdit = false;
 let performanceSelectedId = "";
+
+function normalizePerformanceLabel(value) {
+  return normalizeText(value).replace(/\s+/g, " ").trim();
+}
+
+function performanceImportSettings() {
+  if (!state.settings || typeof state.settings !== "object") state.settings = ensureSettings({});
+  if (!state.settings.performanceImport || typeof state.settings.performanceImport !== "object") state.settings.performanceImport = { mappings: {} };
+  if (!state.settings.performanceImport.mappings || typeof state.settings.performanceImport.mappings !== "object") state.settings.performanceImport.mappings = {};
+  return state.settings.performanceImport;
+}
+
+function performanceImportCatalogEntry(label) {
+  const normalized = normalizePerformanceLabel(label);
+  return performanceImportTargetCatalog.find(entry => normalizePerformanceLabel(entry.label) === normalized || ensureArray(entry.aliases).some(alias => normalizePerformanceLabel(alias) === normalized)) || null;
+}
+
+function performanceImportRememberMapping(sourceLabel, targetId) {
+  const key = normalizePerformanceLabel(sourceLabel);
+  if (!key || !targetId) return;
+  const settings = performanceImportSettings();
+  settings.mappings[key] = targetId;
+  persistSettings();
+}
+
+function performanceImportMappingForLabel(sourceLabel) {
+  const key = normalizePerformanceLabel(sourceLabel);
+  if (!key) return null;
+  const stored = performanceImportSettings().mappings[key];
+  if (stored) {
+    const catalogEntry = performanceImportTargetCatalog.find(entry => entry.id === stored);
+    if (catalogEntry) return catalogEntry;
+  }
+  return performanceImportCatalogEntry(sourceLabel);
+}
+
+function performanceImportTargetOptions() {
+  return [
+    { id: "ignore", label: "Ne pas importer", type: "ignore", unit: "" },
+    ...performanceImportTargetCatalog
+  ];
+}
+
+function performanceImportTargetById(targetId) {
+  return performanceImportTargetOptions().find(entry => entry.id === targetId) || null;
+}
+
+function performanceImportTargetFromPath(path) {
+  const normalizedPath = String(path || "").trim();
+  if (!normalizedPath) return null;
+  return performanceImportTargetOptions().find(entry => entry.path === normalizedPath) || null;
+}
+
+function performanceImportConfidenceMeta(score) {
+  const value = Number(score || 0);
+  const label = value >= 85 ? "élevée" : value >= 60 ? "moyenne" : "faible";
+  return { score: value, label, text: `${label} (${value}%)` };
+}
+
+function performanceImportStatusLabel(status) {
+  return {
+    mapped: "Mappé",
+    mapped_complementary: "Donnée complémentaire",
+    manual: "Mappage manuel",
+    manual_complementary: "Complémentaire manuel",
+    conflict: "Conflit",
+    different: "Différente",
+    low_confidence: "À confirmer",
+    unmapped: "Non mappée",
+    ignored: "Ignorée"
+  }[status] || status || "À confirmer";
+}
+
+function performanceImportConfidenceScore(row) {
+  const indicator = normalizePerformanceLabel(row.indicator);
+  if (!indicator || row.action === "ignore") return 0;
+  if (row.targetType === "existing") return 92;
+  if (row.targetType === "complementary") return row.targetId === "complementary.generic" ? 62 : 74;
+  if (row.unit && /colis|heure|%|pourcentage|€|euro|kg/i.test(row.unit)) return 58;
+  return 40;
+}
+
+function performanceImportDestinationFromRow(row) {
+  const candidate = performanceImportMappingForLabel(row.indicator);
+  if (candidate) return candidate;
+  const normalized = normalizePerformanceLabel(row.indicator);
+  if (!normalized) return null;
+  if (normalized.includes("direction operationnelle")) return performanceImportTargetById("complementary.gemed.direction_operationnelle");
+  if (normalized.includes("ressources humaines")) return performanceImportTargetById("complementary.gemed.ressources_humaines");
+  if (normalized.includes("finance gestion") || normalized.includes("finance / gestion")) return performanceImportTargetById("complementary.gemed.finance_gestion");
+  if (normalized.includes("litige")) return performanceImportTargetById("quality.litiges");
+  if (normalized.includes("reception")) return performanceImportTargetById("productivity.reception");
+  if (normalized.includes("manutention")) return performanceImportTargetById("productivity.manutention");
+  if (normalized.includes("chargement")) return performanceImportTargetById("productivity.chargement");
+  if (normalized.includes("transit") || normalized.includes("transport")) return performanceImportTargetById("productivity.transit");
+  if (normalized.includes("preparation") || normalized.includes("prepare")) return performanceImportTargetById("productivity.preparation");
+  if (normalized.includes("colis") || normalized.includes("supports charges") || normalized.includes("palettes receptionnees") || normalized.includes("palettes recep")) return performanceImportTargetById("activity.colis_total");
+  return performanceImportTargetById("complementary.generic");
+}
 
 function perfMetric() {
   return { historical: "", budget: "", actual: "", comment: "", causes: "", actions: "" };
@@ -8602,9 +8716,17 @@ function buildPerformanceImportPreview() {
 
 function performanceImportStepPreview() {
   const periodSelector = performanceImportPeriodSelector();
-  const rows = performanceImportWizard.preview.map(row => `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${row.status === "Non mappée" ? "disabled" : ""}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(row.indicator)}</td><td>${esc(row.value)}</td><td>${esc(row.unit || "")}</td><td>${esc(row.pageSource || row.sourceRef || "")}</td><td>${esc(row.destinationLabel)}</td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidence)}</td><td>${esc(row.status)}${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ignorer</option></select>` : ""}</td></tr>`).join("");
+  const targetOptions = performanceImportTargetOptions();
+  const rows = performanceImportWizard.preview.map(row => {
+    const currentTargetId = row.targetId || row.destinationId || (performanceImportTargetFromPath(row.destinationPath)?.id || "");
+    const statusText = row.status || performanceImportStatusLabel(row.status);
+    const selectable = row.targetType !== "ignore";
+    const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
+    const selectHtml = targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(row.indicator)}</td><td>${esc(row.value)}</td><td>${esc(row.unit || "")}</td><td>${esc(row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td>${esc(statusText)}${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ignorer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ignorer</option></select>`}</td></tr>`;
+  }).join("");
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. En cas de différence, le choix est explicite ligne par ligne.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Indicateur source</th><th>Valeur détectée</th><th>Unité</th><th>Page source</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Statut</th></tr></thead><tbody>${rows || `<tr><td colspan="10">${emptyDiagnostic}</td></tr>`}</tbody></table><div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Indicateur source</th><th>Valeur détectée</th><th>Unité</th><th>Page source</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Statut</th></tr></thead><tbody>${rows || `<tr><td colspan="10">${emptyDiagnostic}</td></tr>`}</tbody></table><div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -8631,7 +8753,16 @@ function normalizePerformanceImportIndicators(rows, file) {
     const rawValue = firstImportValue(raw, ["value", "currentValue", "actual", "real", "reel", "detectedValue", "valeur"]);
     if (!indicator || rawValue === "") return null;
     const destinationPath = firstImportValue(raw, ["destinationPath", "path", "targetPath", "deosPath"]);
-    const destinationLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (destinationPath ? indicator : "KPI complémentaire — non mappé");
+    const destinationLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (destinationPath ? indicator : "KPI complémentaire");
+    const targetFromPath = performanceImportTargetFromPath(destinationPath);
+    const targetFromLabel = performanceImportDestinationFromRow({ indicator, unit: firstImportValue(raw, ["unit", "unite"]) || "" });
+    const target = targetFromPath || targetFromLabel;
+    const targetType = target ? target.type : (destinationPath ? "existing" : "complementary");
+    const targetId = firstImportValue(raw, ["targetId", "destinationId"]) || (target ? target.id : "");
+    const mappedPath = destinationPath || (target ? target.path : "");
+    const mappedLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (target ? target.label : "KPI complémentaire");
+    const confidenceMeta = performanceImportConfidenceMeta(targetType === "existing" ? 92 : targetType === "complementary" ? (targetId === "complementary.generic" ? 62 : 74) : 40);
+    const selected = raw.selected !== undefined ? Boolean(raw.selected) : targetType !== "ignore";
     return {
       ...raw,
       id: raw.id || newId("preview"),
@@ -8646,12 +8777,17 @@ function normalizePerformanceImportIndicators(rows, file) {
       sourceType: raw.sourceType || file.sourceType || file.source || "",
       pageSource: raw.pageSource || raw.sourcePage || raw.page || raw.sourceRef || "",
       sourceRef: raw.sourceRef || raw.pageSource || raw.sourcePage || raw.page || "",
-      destinationPath,
-      destinationLabel,
+      destinationPath: mappedPath,
+      destinationLabel: mappedLabel,
       destinationField: raw.destinationField || "",
-      confidence: raw.confidence || file.confidence || "moyenne",
-      selected: raw.selected !== undefined ? Boolean(raw.selected) : Boolean(destinationPath),
-      action: raw.action || "use"
+      destinationId: targetId,
+      targetId,
+      targetType,
+      confidenceScore: confidenceMeta.score,
+      confidenceLabel: confidenceMeta.label,
+      confidenceText: confidenceMeta.text,
+      selected,
+      action: raw.action || (targetType === "ignore" ? "ignore" : "use")
     };
   }).filter(row => row && row.indicator && row.value !== null && row.value !== undefined && String(row.value).trim() !== "");
 }
@@ -8697,6 +8833,9 @@ function setImportPreviewAction(id, action) {
   if (row) {
     row.action = action;
     row.selected = action === "use";
+    if (action === "use" && (row.targetId || row.destinationId)) performanceImportRememberMapping(row.indicator, row.targetId || row.destinationId);
+    if (action === "ignore") row.selected = false;
+    Object.assign(row, decoratePerformancePreviewRow(row));
     renderPerformanceImportWizard();
   }
 }
@@ -9140,7 +9279,15 @@ function analyzeZGemedRows(rows, detected, sourceFormat) {
 }
 
 function normalizeText(text) {
-  return String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[?‚Š…]/g, " ").toLowerCase();
+  return String(text || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’'`´]/g, " ")
+    .replace(/[?‚Š…]/g, " ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function cleanDisplayLabel(value) {
@@ -9205,7 +9352,9 @@ function extractZGemedIndicators(rows, headerIndex, period, sourceFormat) {
 }
 
 function parseZGemedNumber(value) {
-  const clean = String(value ?? "").replace(/[?\u00a0 ]/g, "").replace(",", ".").replace(/[^0-9.+-]/g, "");
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const clean = raw.replace(/[\u00a0\s]/g, "").replace(/(k€|€|eur|euro|h|hr|hrs|jours?|%)/gi, "").replace(/,/g, ".").replace(/[^0-9.+-]/g, "");
   if (!clean || clean === "-" || clean === "+") return "";
   const n = Number(clean);
   return Number.isFinite(n) ? n : "";
@@ -9217,21 +9366,27 @@ function zgemedUnit(label) {
 
 function mapZGemedIndicator(label) {
   const n = normalizeText(label);
+  const complementary = [
+    [/direction operationnelle/, "complementary.gemed.direction_operationnelle", "Direction opérationnelle"],
+    [/ressources humaines/, "complementary.gemed.ressources_humaines", "Ressources humaines"],
+    [/finance gestion|finance gestion/, "complementary.gemed.finance_gestion", "Finance / Gestion"]
+  ].find(([regex]) => regex.test(n));
+  if (complementary) return { path: complementary[1], label: complementary[2], confidence: "moyenne", targetId: complementary[1], targetType: "complementary" };
   const map = [
-    [/colis totaux prepares/, "activity", "Activité colis", "élevée"],
-    [/preparation$/, "productivity.Préparation", "Productivité Préparation", "moyenne"],
-    [/reception$/, "productivity.Réception", "Productivité Réception", "moyenne"],
-    [/manutention$/, "productivity.Manutention", "Productivité Manutention", "moyenne"],
-    [/chargement$/, "productivity.Chargement", "Productivité Chargement", "moyenne"],
-    [/eut transportes transit/, "productivity.Transit", "Productivité Transit", "moyenne"],
-    [/couts exploitation.*logistique.*transport/, "ipo.total", "IPO total", "moyenne"],
-    [/couts variables exploitation/, "ipo.variable", "IPO variable", "moyenne"],
-    [/couts demarque/, "quality.indicators.Total Gains & Pertes", "Total Gains & Pertes", "moyenne"],
-    [/demarque marchandises/, "quality.indicators.Périmés entrepôt", "Périmés entrepôt", "faible"],
-    [/litiges/, "quality.indicators.Litiges", "Litiges", "moyenne"]
+    [/colis totaux prepares|colis prepares total|colis total prepares|colis controles prepares|colis heterogenes prepares|colis homogenes prepares|supports charges total|palettes receptionnees/, "activity.actual", "Colis totaux préparés", "élevée", "activity.colis_total"],
+    [/preparation/, "productivity.Préparation.actual", "Préparation", "moyenne", "productivity.preparation"],
+    [/reception/, "productivity.Réception.actual", "Réception", "moyenne", "productivity.reception"],
+    [/manutention/, "productivity.Manutention.actual", "Manutention", "moyenne", "productivity.manutention"],
+    [/chargement/, "productivity.Chargement.actual", "Chargement", "moyenne", "productivity.chargement"],
+    [/eut transportes transit|transportes transit|transport transit/, "productivity.Transit.actual", "Transit", "moyenne", "productivity.transit"],
+    [/couts exploitation.*logistique.*transport/, "ipo.total.actual", "IPO total", "moyenne", "ipo.total"],
+    [/couts variables exploitation/, "ipo.variable.actual", "IPO variable", "moyenne", "ipo.variable"],
+    [/couts demarque/, "quality.indicators.Total Gains & Pertes.actual", "Total Gains & Pertes", "moyenne", "quality.total_gains_pertes"],
+    [/demarque marchandises/, "quality.indicators.Périmés entrepôt.actual", "Périmés entrepôt", "faible", "quality.perimes_entrepot"],
+    [/litiges/, "quality.indicators.Litiges.actual", "Litiges", "moyenne", "quality.litiges"]
   ];
   const hit = map.find(([regex]) => regex.test(n));
-  return hit ? { path: hit[1], label: hit[2], confidence: hit[3] } : { path: "", label: "KPI complémentaire — non mappé", confidence: "faible" };
+  return hit ? { path: hit[1], label: hit[2], confidence: hit[3], targetId: hit[4], targetType: hit[1].startsWith("complementary") ? "complementary" : "existing" } : { path: "", label: "KPI complémentaire — non mappé", confidence: "faible", targetId: "", targetType: "unknown" };
 }
 
 function decoratePerformancePreviewRow(row) {
@@ -9239,9 +9394,12 @@ function decoratePerformancePreviewRow(row) {
   const current = row.destinationPath ? getPerformanceCurrentValue(row.period, row.destinationPath, field) : "";
   const hasCurrent = current !== "";
   const same = hasCurrent && Number(current) === Number(row.value);
-  const status = !row.destinationPath ? "Non mappée" : !hasCurrent ? "Nouvelle donnée" : same ? "Identique" : (row.confidence === "faible" ? "Conflit" : "Différente");
-  const tone = status === "Non mappée" ? "gray" : status === "Conflit" ? "red" : status === "Différente" || row.confidence === "moyenne" ? "orange" : "green";
-  return { ...row, currentValue: current, status, tone, selected: row.destinationPath && (!hasCurrent || same), action: hasCurrent && !same ? "keep" : row.action || "use" };
+  const targetType = row.targetType || (row.destinationPath?.startsWith("complementary.") ? "complementary" : row.destinationPath ? "existing" : "ignore");
+  const confidenceScore = row.confidenceScore ?? performanceImportConfidenceScore(row);
+  const confidenceMeta = performanceImportConfidenceMeta(confidenceScore);
+  const status = row.action === "ignore" || targetType === "ignore" ? "Ne pas importer" : targetType === "complementary" ? "KPI complémentaire" : !row.destinationPath ? "À vérifier" : !hasCurrent ? "Mappé" : same ? "Identique" : (confidenceMeta.label === "faible" ? "Conflit" : "Différente");
+  const tone = status === "Ne pas importer" ? "gray" : status === "Conflit" ? "red" : status === "Différente" || confidenceMeta.label === "moyenne" ? "orange" : "green";
+  return { ...row, currentValue: current, status, tone, targetId: row.targetId || row.destinationId || "", targetType, confidenceScore: confidenceMeta.score, confidenceLabel: confidenceMeta.label, confidenceText: confidenceMeta.text, selected: row.selected !== undefined ? Boolean(row.selected) : targetType !== "ignore", action: row.action || (hasCurrent && !same ? "keep" : "use") };
 }
 
 function getPerformanceByPeriod(period) {
@@ -9266,7 +9424,50 @@ function toggleImportPeriod(fileId, period, checked) {
 
 function toggleImportPreviewRow(id, checked) {
   const row = performanceImportWizard.preview.find(x => x.id === id);
-  if (row) row.selected = checked;
+  if (row) {
+    row.selected = checked;
+    if (!checked) row.action = "ignore";
+    if (checked && row.action === "ignore") row.action = row.destinationPath ? "use" : "ignore";
+    Object.assign(row, decoratePerformancePreviewRow(row));
+  }
+}
+
+function setImportPreviewTarget(id, targetId) {
+  const row = performanceImportWizard.preview.find(x => x.id === id);
+  if (!row) return;
+  if (!targetId || targetId === "ignore") {
+    row.destinationPath = "";
+    row.destinationLabel = "KPI complémentaire";
+    row.destinationField = "";
+    row.targetId = "";
+    row.destinationId = "";
+    row.targetType = "ignore";
+    row.confidenceScore = 0;
+    row.confidenceLabel = "faible";
+    row.confidenceText = "faible (0%)";
+    row.action = "ignore";
+    row.selected = false;
+    Object.assign(row, decoratePerformancePreviewRow(row));
+    renderPerformanceImportWizard();
+    return;
+  }
+  const target = performanceImportTargetById(targetId);
+  if (!target) return;
+  row.destinationPath = target.path;
+  row.destinationLabel = target.label;
+  row.destinationField = row.destinationField || "actual";
+  row.targetId = target.id;
+  row.destinationId = target.id;
+  row.targetType = target.type;
+  const confidenceMeta = performanceImportConfidenceMeta(target.type === "existing" ? 92 : target.id === "complementary.generic" ? 62 : 74);
+  row.confidenceScore = confidenceMeta.score;
+  row.confidenceLabel = confidenceMeta.label;
+  row.confidenceText = confidenceMeta.text;
+  row.action = "use";
+  row.selected = true;
+  performanceImportRememberMapping(row.indicator, target.id);
+  Object.assign(row, decoratePerformancePreviewRow(row));
+  renderPerformanceImportWizard();
 }
 
 function applyPerformanceImportRows(rows, file, importDate) {
@@ -9297,6 +9498,21 @@ function applyPerformanceImportRows(rows, file, importDate) {
 }
 
 function applyImportedValueToPerformance(perf, row) {
+  if (row.targetType === "complementary" || String(row.destinationPath || "").startsWith("complementary.")) {
+    perf.complementaryKpis = ensureArray(perf.complementaryKpis);
+    perf.complementaryKpis.push({
+      indicator: row.indicator,
+      value: row.value,
+      unit: row.unit || "",
+      period: row.period,
+      source: row.source || "Import",
+      sourceRef: row.sourceRef || "",
+      destinationLabel: row.destinationLabel || row.indicator,
+      targetId: row.targetId || row.destinationId || "",
+      targetType: "complementary"
+    });
+    return;
+  }
   const target = perfPath(perf, row.destinationPath);
   if (!target) return;
   const field = row.destinationField || "actual";
@@ -9979,6 +10195,10 @@ function ensureSettings(raw = {}) {
     calendarConnection: {
       ...getDefaultCalendarConnectionSettings(),
       ...(raw.calendarConnection || {})
+    },
+    performanceImport: {
+      mappings: {},
+      ...(raw.performanceImport || {})
     }
   };
 }
