@@ -168,6 +168,13 @@ let projectDeleteDialog = {
   busy: false,
   impact: null
 };
+let managerDeleteDialog = {
+  open: false,
+  managerId: "",
+  error: "",
+  busy: false,
+  impact: null
+};
 let a5PrintCleanupBound = false;
 let modalEscapeBound = false;
 
@@ -2867,6 +2874,11 @@ function ensureActionModalHooks() {
   if (modalEscapeBound) return;
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
+    if (managerDeleteDialog.open) {
+      closeManagerDeleteModal();
+      event.preventDefault();
+      return;
+    }
     if (projectDeleteDialog.open) {
       closeProjectDeleteModal();
       event.preventDefault();
@@ -6132,6 +6144,76 @@ function readFolderForm(existing = {}) {
   };
 }
 
+function syncFolderManagersFromManager(managerId, previousFolderIds, nextFolderIds) {
+  const manager = String(managerId || "");
+  if (!manager) return false;
+  const before = normalizeLinkedIdArray(previousFolderIds);
+  const after = normalizeLinkedIdArray(nextFolderIds);
+  const added = after.filter(folderId => !before.some(prevId => sameId(prevId, folderId)));
+  const removed = before.filter(folderId => !after.some(nextId => sameId(nextId, folderId)));
+  if (!added.length && !removed.length) return false;
+
+  let changed = false;
+  state.folders = state.folders.map(folder => {
+    const folderId = String(folder.id || "");
+    const shouldAdd = added.some(id => sameId(id, folderId));
+    const shouldRemove = removed.some(id => sameId(id, folderId));
+    if (!shouldAdd && !shouldRemove) return folder;
+
+    const nextLinked = normalizeLinkedManagerIds(folder.linkedManagers);
+    const withAdded = shouldAdd && !nextLinked.some(id => sameId(id, manager))
+      ? [...nextLinked, manager]
+      : nextLinked;
+    const withRemoved = shouldRemove
+      ? withAdded.filter(id => !sameId(id, manager))
+      : withAdded;
+    const normalized = normalizeLinkedManagerIds(withRemoved);
+
+    const linkChanged = normalized.length !== nextLinked.length
+      || normalized.some((id, index) => String(id) !== String(nextLinked[index] || ""));
+    if (!linkChanged) return folder;
+    changed = true;
+    return { ...folder, linkedManagers: normalized };
+  });
+
+  return changed;
+}
+
+function syncManagerFoldersFromFolder(folderId, previousManagerIds, nextManagerIds) {
+  const folder = String(folderId || "");
+  if (!folder) return false;
+  const before = normalizeLinkedManagerIds(previousManagerIds);
+  const after = normalizeLinkedManagerIds(nextManagerIds);
+  const added = after.filter(managerId => !before.some(prevId => sameId(prevId, managerId)));
+  const removed = before.filter(managerId => !after.some(nextId => sameId(nextId, managerId)));
+  if (!added.length && !removed.length) return false;
+
+  let changed = false;
+  state.managers = state.managers.map(manager => {
+    const managerId = String(manager.id || "");
+    const shouldAdd = added.some(id => sameId(id, managerId));
+    const shouldRemove = removed.some(id => sameId(id, managerId));
+    if (!shouldAdd && !shouldRemove) return manager;
+
+    const currentFolders = normalizeLinkedIdArray(manager.linkedFolders);
+    const withAdded = shouldAdd && !currentFolders.some(id => sameId(id, folder))
+      ? [...currentFolders, folder]
+      : currentFolders;
+    const withRemoved = shouldRemove
+      ? withAdded.filter(id => !sameId(id, folder))
+      : withAdded;
+    const normalized = normalizeLinkedIdArray(withRemoved);
+
+    const folderChanged = normalized.length !== currentFolders.length
+      || normalized.some((id, index) => String(id) !== String(currentFolders[index] || ""));
+    if (!folderChanged) return manager;
+    changed = true;
+    return { ...manager, linkedFolders: normalized };
+  });
+
+  return changed;
+}
+
 function saveNewFolder() {
   const folder = readFolderForm({ id: newId("folder") });
   if (!folder) return;
@@ -6145,10 +6227,14 @@ function saveNewFolder() {
 function saveFolder(id) {
   const i = indexById("folders", id);
   if (i < 0) return;
+  const previousManagerIds = normalizeLinkedManagerIds(state.folders[i].linkedManagers);
   const folder = readFolderForm(state.folders[i]);
   if (!folder) return;
   state.folders[i] = normalizeEntity("folders", folder);
+  const nextManagerIds = normalizeLinkedManagerIds(state.folders[i].linkedManagers);
+  const managerSyncChanged = syncManagerFoldersFromFolder(id, previousManagerIds, nextManagerIds);
   persist("folders");
+  if (managerSyncChanged) persist("managers");
   addActivity("Dossier modifié", folder.name, folder.category, folder.id);
   resetFolderDeletionDialog();
   openFolder(id);
@@ -6590,6 +6676,7 @@ function saveManager(id) {
   const i = indexById("managers", id);
   if (i < 0) return false;
   try {
+    const previousFolderIds = normalizeLinkedIdArray(state.managers[i].linkedFolders);
     const parseLinkedIds = fieldId => {
       const field = document.getElementById(fieldId);
       if (!field) return [];
@@ -6610,7 +6697,7 @@ function saveManager(id) {
       linkedActions: parseLinkedIds("emLinkedActions").filter(actionId => byId("actions", actionId)),
       linkedProjects: parseLinkedIds("emLinkedProjects").filter(projectId => byId("projects", projectId)),
       linkedDecisions: parseLinkedIds("emLinkedDecisions").filter(decisionId => byId("decisions", decisionId)),
-      linkedFolders: checkedValues("emFolders")
+      linkedFolders: normalizeLinkedIdArray(checkedValues("emFolders"))
     };
     if (!values.name) {
       alert("Le nom du manager est obligatoire.");
@@ -6619,8 +6706,17 @@ function saveManager(id) {
 
     const next = { ...state.managers[i], ...values };
     state.managers[i] = next;
+    const folderSyncChanged = syncFolderManagersFromManager(id, previousFolderIds, normalizeLinkedIdArray(next.linkedFolders));
 
     persist("managers");
+    if (folderSyncChanged) persist("folders");
+    if (a5SummaryDialog.open && a5SummaryDialog.type === "folder") {
+      const openedFolderId = String(a5SummaryDialog.sourceId || "");
+      const touchedFolderIds = normalizeLinkedIdArray([...previousFolderIds, ...normalizeLinkedIdArray(next.linkedFolders)]);
+      if (touchedFolderIds.some(folderId => sameId(folderId, openedFolderId))) {
+        a5SummaryDialog.model = buildFolderA5Summary(openedFolderId);
+      }
+    }
     addActivity("👤 Manager modifié", next.name, next.role, id);
     openManager(id);
     return true;
@@ -6666,13 +6762,232 @@ function toggleLinkedManagerAction(managerId, actionId) {
 }
 
 function deleteManager(id) {
-  const i = indexById("managers", id);
-  if (i < 0 || !confirm("Supprimer ce manager ?")) return;
-  const t = state.managers[i].name;
-  state.managers.splice(i, 1);
-  persist("managers");
-  addActivity("👤 Manager supprimé", t);
-  renderManagers();
+  openManagerDeleteModal(id);
+}
+
+function objectReferencesManager(item, managerId) {
+  const target = String(managerId || "");
+  if (!target || !item || typeof item !== "object") return false;
+  if (sameId(item.ownerId, target)) return true;
+  if (sameId(item.managerId, target)) return true;
+  const linked = [
+    ...ensureArray(item.linkedManagers),
+    ...ensureArray(item.linkedManagerIds)
+  ].map(value => String(value));
+  return linked.some(value => sameId(value, target));
+}
+
+function getManagerDeletionImpact(managerId) {
+  const target = String(managerId || "");
+  if (!target) {
+    return {
+      folders: 0,
+      projects: 0,
+      actions: 0,
+      decisions: 0,
+      meetings: 0,
+      googleMeetings: 0
+    };
+  }
+  const uniqueCount = items => new Set(ensureArray(items).filter(item => objectReferencesManager(item, target)).map(item => String(item.id || item._key || ""))).size;
+  const googleMeetingCount = Object.values(state.externalEventEnrichments || {}).filter(enrichment => objectReferencesManager(enrichment, target)).length;
+  return {
+    folders: uniqueCount(state.folders),
+    projects: uniqueCount(state.projects),
+    actions: uniqueCount(state.actions),
+    decisions: uniqueCount(state.decisions),
+    meetings: uniqueCount(state.agenda),
+    googleMeetings: googleMeetingCount
+  };
+}
+
+function renderManagerDeleteModal() {
+  if (!managerDeleteDialog.open) return "";
+  const manager = byId("managers", managerDeleteDialog.managerId);
+  if (!manager) return "";
+  const impact = managerDeleteDialog.impact || getManagerDeletionImpact(manager.id);
+  const errorHtml = managerDeleteDialog.error ? `<p class="folder-delete-error">${esc(managerDeleteDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop manager-delete-modal" onclick="closeManagerDeleteModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>Supprimer le manager</h2><button class="icon-close" type="button" onclick="closeManagerDeleteModal()" aria-label="Fermer">×</button></div><p>Confirmer la suppression de <strong>${esc(manager.name || "Manager")}</strong>.</p><p class="muted">Le Manager sera supprimé. Les Dossiers, Projets, Actions, Décisions et Rendez-vous liés seront conservés, mais leur liaison avec ce Manager sera retirée.</p>${errorHtml}<div class="grid two"><div class="card"><h3>Objets liés conservés</h3><p><strong>Dossiers :</strong> ${impact.folders}</p><p><strong>Projets :</strong> ${impact.projects}</p><p><strong>Actions :</strong> ${impact.actions}</p><p><strong>Décisions :</strong> ${impact.decisions}</p><p><strong>Rendez-vous DEOS :</strong> ${impact.meetings}</p><p><strong>Rendez-vous Google :</strong> ${impact.googleMeetings}</p></div><div class="card"><h3>Rappel</h3><p>${esc(manager.role || manager.priority || "Manager sans détail complémentaire")}</p></div></div><div class="modal-actions"><button class="danger" type="button" ${managerDeleteDialog.busy ? "disabled" : ""} onclick="confirmManagerDelete('${esc(manager.id)}')">Supprimer</button><button class="secondary" type="button" onclick="closeManagerDeleteModal()">Annuler</button></div></div></div>`;
+}
+
+function renderManagerModalOverlays() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".manager-delete-modal").forEach(node => node.remove());
+  if (managerDeleteDialog.open) root.insertAdjacentHTML("beforeend", renderManagerDeleteModal());
+}
+
+function openManagerDeleteModal(id) {
+  const manager = byId("managers", id);
+  if (!manager) return;
+  ensureActionModalHooks();
+  managerDeleteDialog = {
+    open: true,
+    managerId: String(id),
+    error: "",
+    busy: false,
+    impact: getManagerDeletionImpact(id)
+  };
+  renderManagerModalOverlays();
+}
+
+function closeManagerDeleteModal() {
+  if (!managerDeleteDialog.open) return;
+  managerDeleteDialog = { open: false, managerId: "", error: "", busy: false, impact: null };
+  renderManagerModalOverlays();
+}
+
+function removeManagerReferencesFromItem(item, managerId, managerName = "") {
+  const target = String(managerId || "");
+  if (!target || !item || typeof item !== "object") return { item, changed: false };
+  let changed = false;
+  const next = { ...item };
+  if (Object.prototype.hasOwnProperty.call(next, "linkedManagers")) {
+    const before = ensureArray(next.linkedManagers);
+    const after = normalizeLinkedManagerIds(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedManagers = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "linkedManagerIds")) {
+    const before = ensureArray(next.linkedManagerIds);
+    const after = normalizeLinkedManagerIds(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedManagerIds = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "ownerId") && sameId(next.ownerId, target)) {
+    next.ownerId = "";
+    changed = true;
+  }
+  const normalizedManagerName = String(managerName || "").trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(next, "owner") && normalizedManagerName && String(next.owner || "").trim().toLowerCase() === normalizedManagerName) {
+    next.owner = "";
+    changed = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "managerId") && sameId(next.managerId, target)) {
+    next.managerId = "";
+    changed = true;
+  }
+  return { item: changed ? next : item, changed };
+}
+
+function sanitizeMeetingPreparationManagerLinks(prep, managerId, managerName) {
+  const cleanedPrep = removeManagerReferencesFromItem(prep, managerId, managerName);
+  let changed = cleanedPrep.changed;
+  const next = { ...cleanedPrep.item };
+  const cleanedIdeas = ensureArray(next.ideas).map(idea => {
+    const cleaned = removeManagerReferencesFromItem(idea, managerId, managerName);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  const cleanedTopics = ensureArray(next.agendaTopics).map(topic => {
+    const cleaned = removeManagerReferencesFromItem(topic, managerId, managerName);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  if (changed) {
+    next.ideas = cleanedIdeas;
+    next.agendaTopics = cleanedTopics;
+  }
+  return { item: changed ? next : prep, changed };
+}
+
+function deleteManagerSafely(managerId) {
+  const target = String(managerId || "");
+  const manager = byId("managers", target);
+  if (!manager) throw new Error("Manager introuvable.");
+
+  const snapshot = {
+    managers: JSON.parse(JSON.stringify(state.managers)),
+    folders: JSON.parse(JSON.stringify(state.folders)),
+    projects: JSON.parse(JSON.stringify(state.projects)),
+    actions: JSON.parse(JSON.stringify(state.actions)),
+    decisions: JSON.parse(JSON.stringify(state.decisions)),
+    agenda: JSON.parse(JSON.stringify(state.agenda)),
+    meetingPreparations: JSON.parse(JSON.stringify(state.meetingPreparations)),
+    externalEventEnrichments: JSON.parse(JSON.stringify(state.externalEventEnrichments || {}))
+  };
+
+  const changed = new Set();
+  const applyCollectionCleanup = (name, sanitizer) => {
+    let touched = false;
+    state[name] = state[name].map(item => {
+      const cleaned = sanitizer(item, target, manager.name || "");
+      if (cleaned.changed) touched = true;
+      return cleaned.item;
+    });
+    if (touched) changed.add(name);
+  };
+
+  try {
+    const index = indexById("managers", target);
+    if (index < 0) throw new Error("Manager introuvable.");
+    state.managers.splice(index, 1);
+    changed.add("managers");
+
+    const simpleSanitizer = (item, id, name) => removeManagerReferencesFromItem(item, id, name);
+    applyCollectionCleanup("folders", simpleSanitizer);
+    applyCollectionCleanup("projects", simpleSanitizer);
+    applyCollectionCleanup("actions", simpleSanitizer);
+    applyCollectionCleanup("decisions", simpleSanitizer);
+    applyCollectionCleanup("agenda", simpleSanitizer);
+    applyCollectionCleanup("meetingPreparations", (item, id, name) => sanitizeMeetingPreparationManagerLinks(item, id, name));
+
+    let externalChanged = false;
+    const nextEnrichments = {};
+    Object.entries(state.externalEventEnrichments || {}).forEach(([eventKey, enrichment]) => {
+      const cleaned = removeManagerReferencesFromItem(enrichment, target, manager.name || "");
+      if (cleaned.changed) externalChanged = true;
+      nextEnrichments[eventKey] = cleaned.item;
+    });
+    if (externalChanged) {
+      state.externalEventEnrichments = nextEnrichments;
+      changed.add("externalEventEnrichments");
+    }
+
+    changed.forEach(name => {
+      if (name === "externalEventEnrichments") {
+        persistExternalEventEnrichmentsOnly();
+      } else {
+        persist(name);
+      }
+    });
+
+    addActivity("👤 Manager supprimé", manager.name, "Suppression sécurisée sans cascade", manager.id);
+    closeManagerDeleteModal();
+    renderManagers();
+    return true;
+  } catch (error) {
+    state.managers = snapshot.managers;
+    state.folders = snapshot.folders;
+    state.projects = snapshot.projects;
+    state.actions = snapshot.actions;
+    state.decisions = snapshot.decisions;
+    state.agenda = snapshot.agenda;
+    state.meetingPreparations = snapshot.meetingPreparations;
+    state.externalEventEnrichments = snapshot.externalEventEnrichments;
+
+    persist("managers");
+    persist("folders");
+    persist("projects");
+    persist("actions");
+    persist("decisions");
+    persist("agenda");
+    persist("meetingPreparations");
+    persistExternalEventEnrichmentsOnly();
+
+    managerDeleteDialog.busy = false;
+    managerDeleteDialog.error = `Échec de suppression : ${error?.message || "Erreur inconnue"}`;
+    renderManagerModalOverlays();
+    return false;
+  }
+}
+
+function confirmManagerDelete(id) {
+  if (!managerDeleteDialog.open || !sameId(managerDeleteDialog.managerId, id)) return;
+  managerDeleteDialog.busy = true;
+  managerDeleteDialog.error = "";
+  renderManagerModalOverlays();
+  deleteManagerSafely(id);
 }
 
 function projectMini(p) {
