@@ -156,6 +156,25 @@ let decisionDeleteDialog = {
   decisionId: "",
   error: ""
 };
+let projectEditDialog = {
+  open: false,
+  projectId: "",
+  error: ""
+};
+let projectDeleteDialog = {
+  open: false,
+  projectId: "",
+  error: "",
+  busy: false,
+  impact: null
+};
+let managerDeleteDialog = {
+  open: false,
+  managerId: "",
+  error: "",
+  busy: false,
+  impact: null
+};
 let a5PrintCleanupBound = false;
 let modalEscapeBound = false;
 
@@ -2855,6 +2874,21 @@ function ensureActionModalHooks() {
   if (modalEscapeBound) return;
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
+    if (managerDeleteDialog.open) {
+      closeManagerDeleteModal();
+      event.preventDefault();
+      return;
+    }
+    if (projectDeleteDialog.open) {
+      closeProjectDeleteModal();
+      event.preventDefault();
+      return;
+    }
+    if (projectEditDialog.open) {
+      closeProjectEditModal();
+      event.preventDefault();
+      return;
+    }
     if (decisionDeleteDialog.open) {
       closeDecisionDeleteModal();
       event.preventDefault();
@@ -6110,6 +6144,76 @@ function readFolderForm(existing = {}) {
   };
 }
 
+function syncFolderManagersFromManager(managerId, previousFolderIds, nextFolderIds) {
+  const manager = String(managerId || "");
+  if (!manager) return false;
+  const before = normalizeLinkedIdArray(previousFolderIds);
+  const after = normalizeLinkedIdArray(nextFolderIds);
+  const added = after.filter(folderId => !before.some(prevId => sameId(prevId, folderId)));
+  const removed = before.filter(folderId => !after.some(nextId => sameId(nextId, folderId)));
+  if (!added.length && !removed.length) return false;
+
+  let changed = false;
+  state.folders = state.folders.map(folder => {
+    const folderId = String(folder.id || "");
+    const shouldAdd = added.some(id => sameId(id, folderId));
+    const shouldRemove = removed.some(id => sameId(id, folderId));
+    if (!shouldAdd && !shouldRemove) return folder;
+
+    const nextLinked = normalizeLinkedManagerIds(folder.linkedManagers);
+    const withAdded = shouldAdd && !nextLinked.some(id => sameId(id, manager))
+      ? [...nextLinked, manager]
+      : nextLinked;
+    const withRemoved = shouldRemove
+      ? withAdded.filter(id => !sameId(id, manager))
+      : withAdded;
+    const normalized = normalizeLinkedManagerIds(withRemoved);
+
+    const linkChanged = normalized.length !== nextLinked.length
+      || normalized.some((id, index) => String(id) !== String(nextLinked[index] || ""));
+    if (!linkChanged) return folder;
+    changed = true;
+    return { ...folder, linkedManagers: normalized };
+  });
+
+  return changed;
+}
+
+function syncManagerFoldersFromFolder(folderId, previousManagerIds, nextManagerIds) {
+  const folder = String(folderId || "");
+  if (!folder) return false;
+  const before = normalizeLinkedManagerIds(previousManagerIds);
+  const after = normalizeLinkedManagerIds(nextManagerIds);
+  const added = after.filter(managerId => !before.some(prevId => sameId(prevId, managerId)));
+  const removed = before.filter(managerId => !after.some(nextId => sameId(nextId, managerId)));
+  if (!added.length && !removed.length) return false;
+
+  let changed = false;
+  state.managers = state.managers.map(manager => {
+    const managerId = String(manager.id || "");
+    const shouldAdd = added.some(id => sameId(id, managerId));
+    const shouldRemove = removed.some(id => sameId(id, managerId));
+    if (!shouldAdd && !shouldRemove) return manager;
+
+    const currentFolders = normalizeLinkedIdArray(manager.linkedFolders);
+    const withAdded = shouldAdd && !currentFolders.some(id => sameId(id, folder))
+      ? [...currentFolders, folder]
+      : currentFolders;
+    const withRemoved = shouldRemove
+      ? withAdded.filter(id => !sameId(id, folder))
+      : withAdded;
+    const normalized = normalizeLinkedIdArray(withRemoved);
+
+    const folderChanged = normalized.length !== currentFolders.length
+      || normalized.some((id, index) => String(id) !== String(currentFolders[index] || ""));
+    if (!folderChanged) return manager;
+    changed = true;
+    return { ...manager, linkedFolders: normalized };
+  });
+
+  return changed;
+}
+
 function saveNewFolder() {
   const folder = readFolderForm({ id: newId("folder") });
   if (!folder) return;
@@ -6123,10 +6227,14 @@ function saveNewFolder() {
 function saveFolder(id) {
   const i = indexById("folders", id);
   if (i < 0) return;
+  const previousManagerIds = normalizeLinkedManagerIds(state.folders[i].linkedManagers);
   const folder = readFolderForm(state.folders[i]);
   if (!folder) return;
   state.folders[i] = normalizeEntity("folders", folder);
+  const nextManagerIds = normalizeLinkedManagerIds(state.folders[i].linkedManagers);
+  const managerSyncChanged = syncManagerFoldersFromFolder(id, previousManagerIds, nextManagerIds);
   persist("folders");
+  if (managerSyncChanged) persist("managers");
   addActivity("Dossier modifié", folder.name, folder.category, folder.id);
   resetFolderDeletionDialog();
   openFolder(id);
@@ -6568,6 +6676,7 @@ function saveManager(id) {
   const i = indexById("managers", id);
   if (i < 0) return false;
   try {
+    const previousFolderIds = normalizeLinkedIdArray(state.managers[i].linkedFolders);
     const parseLinkedIds = fieldId => {
       const field = document.getElementById(fieldId);
       if (!field) return [];
@@ -6588,7 +6697,7 @@ function saveManager(id) {
       linkedActions: parseLinkedIds("emLinkedActions").filter(actionId => byId("actions", actionId)),
       linkedProjects: parseLinkedIds("emLinkedProjects").filter(projectId => byId("projects", projectId)),
       linkedDecisions: parseLinkedIds("emLinkedDecisions").filter(decisionId => byId("decisions", decisionId)),
-      linkedFolders: checkedValues("emFolders")
+      linkedFolders: normalizeLinkedIdArray(checkedValues("emFolders"))
     };
     if (!values.name) {
       alert("Le nom du manager est obligatoire.");
@@ -6597,8 +6706,17 @@ function saveManager(id) {
 
     const next = { ...state.managers[i], ...values };
     state.managers[i] = next;
+    const folderSyncChanged = syncFolderManagersFromManager(id, previousFolderIds, normalizeLinkedIdArray(next.linkedFolders));
 
     persist("managers");
+    if (folderSyncChanged) persist("folders");
+    if (a5SummaryDialog.open && a5SummaryDialog.type === "folder") {
+      const openedFolderId = String(a5SummaryDialog.sourceId || "");
+      const touchedFolderIds = normalizeLinkedIdArray([...previousFolderIds, ...normalizeLinkedIdArray(next.linkedFolders)]);
+      if (touchedFolderIds.some(folderId => sameId(folderId, openedFolderId))) {
+        a5SummaryDialog.model = buildFolderA5Summary(openedFolderId);
+      }
+    }
     addActivity("👤 Manager modifié", next.name, next.role, id);
     openManager(id);
     return true;
@@ -6644,13 +6762,232 @@ function toggleLinkedManagerAction(managerId, actionId) {
 }
 
 function deleteManager(id) {
-  const i = indexById("managers", id);
-  if (i < 0 || !confirm("Supprimer ce manager ?")) return;
-  const t = state.managers[i].name;
-  state.managers.splice(i, 1);
-  persist("managers");
-  addActivity("👤 Manager supprimé", t);
-  renderManagers();
+  openManagerDeleteModal(id);
+}
+
+function objectReferencesManager(item, managerId) {
+  const target = String(managerId || "");
+  if (!target || !item || typeof item !== "object") return false;
+  if (sameId(item.ownerId, target)) return true;
+  if (sameId(item.managerId, target)) return true;
+  const linked = [
+    ...ensureArray(item.linkedManagers),
+    ...ensureArray(item.linkedManagerIds)
+  ].map(value => String(value));
+  return linked.some(value => sameId(value, target));
+}
+
+function getManagerDeletionImpact(managerId) {
+  const target = String(managerId || "");
+  if (!target) {
+    return {
+      folders: 0,
+      projects: 0,
+      actions: 0,
+      decisions: 0,
+      meetings: 0,
+      googleMeetings: 0
+    };
+  }
+  const uniqueCount = items => new Set(ensureArray(items).filter(item => objectReferencesManager(item, target)).map(item => String(item.id || item._key || ""))).size;
+  const googleMeetingCount = Object.values(state.externalEventEnrichments || {}).filter(enrichment => objectReferencesManager(enrichment, target)).length;
+  return {
+    folders: uniqueCount(state.folders),
+    projects: uniqueCount(state.projects),
+    actions: uniqueCount(state.actions),
+    decisions: uniqueCount(state.decisions),
+    meetings: uniqueCount(state.agenda),
+    googleMeetings: googleMeetingCount
+  };
+}
+
+function renderManagerDeleteModal() {
+  if (!managerDeleteDialog.open) return "";
+  const manager = byId("managers", managerDeleteDialog.managerId);
+  if (!manager) return "";
+  const impact = managerDeleteDialog.impact || getManagerDeletionImpact(manager.id);
+  const errorHtml = managerDeleteDialog.error ? `<p class="folder-delete-error">${esc(managerDeleteDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop manager-delete-modal" onclick="closeManagerDeleteModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>Supprimer le manager</h2><button class="icon-close" type="button" onclick="closeManagerDeleteModal()" aria-label="Fermer">×</button></div><p>Confirmer la suppression de <strong>${esc(manager.name || "Manager")}</strong>.</p><p class="muted">Le Manager sera supprimé. Les Dossiers, Projets, Actions, Décisions et Rendez-vous liés seront conservés, mais leur liaison avec ce Manager sera retirée.</p>${errorHtml}<div class="grid two"><div class="card"><h3>Objets liés conservés</h3><p><strong>Dossiers :</strong> ${impact.folders}</p><p><strong>Projets :</strong> ${impact.projects}</p><p><strong>Actions :</strong> ${impact.actions}</p><p><strong>Décisions :</strong> ${impact.decisions}</p><p><strong>Rendez-vous DEOS :</strong> ${impact.meetings}</p><p><strong>Rendez-vous Google :</strong> ${impact.googleMeetings}</p></div><div class="card"><h3>Rappel</h3><p>${esc(manager.role || manager.priority || "Manager sans détail complémentaire")}</p></div></div><div class="modal-actions"><button class="danger" type="button" ${managerDeleteDialog.busy ? "disabled" : ""} onclick="confirmManagerDelete('${esc(manager.id)}')">Supprimer</button><button class="secondary" type="button" onclick="closeManagerDeleteModal()">Annuler</button></div></div></div>`;
+}
+
+function renderManagerModalOverlays() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".manager-delete-modal").forEach(node => node.remove());
+  if (managerDeleteDialog.open) root.insertAdjacentHTML("beforeend", renderManagerDeleteModal());
+}
+
+function openManagerDeleteModal(id) {
+  const manager = byId("managers", id);
+  if (!manager) return;
+  ensureActionModalHooks();
+  managerDeleteDialog = {
+    open: true,
+    managerId: String(id),
+    error: "",
+    busy: false,
+    impact: getManagerDeletionImpact(id)
+  };
+  renderManagerModalOverlays();
+}
+
+function closeManagerDeleteModal() {
+  if (!managerDeleteDialog.open) return;
+  managerDeleteDialog = { open: false, managerId: "", error: "", busy: false, impact: null };
+  renderManagerModalOverlays();
+}
+
+function removeManagerReferencesFromItem(item, managerId, managerName = "") {
+  const target = String(managerId || "");
+  if (!target || !item || typeof item !== "object") return { item, changed: false };
+  let changed = false;
+  const next = { ...item };
+  if (Object.prototype.hasOwnProperty.call(next, "linkedManagers")) {
+    const before = ensureArray(next.linkedManagers);
+    const after = normalizeLinkedManagerIds(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedManagers = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "linkedManagerIds")) {
+    const before = ensureArray(next.linkedManagerIds);
+    const after = normalizeLinkedManagerIds(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedManagerIds = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "ownerId") && sameId(next.ownerId, target)) {
+    next.ownerId = "";
+    changed = true;
+  }
+  const normalizedManagerName = String(managerName || "").trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(next, "owner") && normalizedManagerName && String(next.owner || "").trim().toLowerCase() === normalizedManagerName) {
+    next.owner = "";
+    changed = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "managerId") && sameId(next.managerId, target)) {
+    next.managerId = "";
+    changed = true;
+  }
+  return { item: changed ? next : item, changed };
+}
+
+function sanitizeMeetingPreparationManagerLinks(prep, managerId, managerName) {
+  const cleanedPrep = removeManagerReferencesFromItem(prep, managerId, managerName);
+  let changed = cleanedPrep.changed;
+  const next = { ...cleanedPrep.item };
+  const cleanedIdeas = ensureArray(next.ideas).map(idea => {
+    const cleaned = removeManagerReferencesFromItem(idea, managerId, managerName);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  const cleanedTopics = ensureArray(next.agendaTopics).map(topic => {
+    const cleaned = removeManagerReferencesFromItem(topic, managerId, managerName);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  if (changed) {
+    next.ideas = cleanedIdeas;
+    next.agendaTopics = cleanedTopics;
+  }
+  return { item: changed ? next : prep, changed };
+}
+
+function deleteManagerSafely(managerId) {
+  const target = String(managerId || "");
+  const manager = byId("managers", target);
+  if (!manager) throw new Error("Manager introuvable.");
+
+  const snapshot = {
+    managers: JSON.parse(JSON.stringify(state.managers)),
+    folders: JSON.parse(JSON.stringify(state.folders)),
+    projects: JSON.parse(JSON.stringify(state.projects)),
+    actions: JSON.parse(JSON.stringify(state.actions)),
+    decisions: JSON.parse(JSON.stringify(state.decisions)),
+    agenda: JSON.parse(JSON.stringify(state.agenda)),
+    meetingPreparations: JSON.parse(JSON.stringify(state.meetingPreparations)),
+    externalEventEnrichments: JSON.parse(JSON.stringify(state.externalEventEnrichments || {}))
+  };
+
+  const changed = new Set();
+  const applyCollectionCleanup = (name, sanitizer) => {
+    let touched = false;
+    state[name] = state[name].map(item => {
+      const cleaned = sanitizer(item, target, manager.name || "");
+      if (cleaned.changed) touched = true;
+      return cleaned.item;
+    });
+    if (touched) changed.add(name);
+  };
+
+  try {
+    const index = indexById("managers", target);
+    if (index < 0) throw new Error("Manager introuvable.");
+    state.managers.splice(index, 1);
+    changed.add("managers");
+
+    const simpleSanitizer = (item, id, name) => removeManagerReferencesFromItem(item, id, name);
+    applyCollectionCleanup("folders", simpleSanitizer);
+    applyCollectionCleanup("projects", simpleSanitizer);
+    applyCollectionCleanup("actions", simpleSanitizer);
+    applyCollectionCleanup("decisions", simpleSanitizer);
+    applyCollectionCleanup("agenda", simpleSanitizer);
+    applyCollectionCleanup("meetingPreparations", (item, id, name) => sanitizeMeetingPreparationManagerLinks(item, id, name));
+
+    let externalChanged = false;
+    const nextEnrichments = {};
+    Object.entries(state.externalEventEnrichments || {}).forEach(([eventKey, enrichment]) => {
+      const cleaned = removeManagerReferencesFromItem(enrichment, target, manager.name || "");
+      if (cleaned.changed) externalChanged = true;
+      nextEnrichments[eventKey] = cleaned.item;
+    });
+    if (externalChanged) {
+      state.externalEventEnrichments = nextEnrichments;
+      changed.add("externalEventEnrichments");
+    }
+
+    changed.forEach(name => {
+      if (name === "externalEventEnrichments") {
+        persistExternalEventEnrichmentsOnly();
+      } else {
+        persist(name);
+      }
+    });
+
+    addActivity("👤 Manager supprimé", manager.name, "Suppression sécurisée sans cascade", manager.id);
+    closeManagerDeleteModal();
+    renderManagers();
+    return true;
+  } catch (error) {
+    state.managers = snapshot.managers;
+    state.folders = snapshot.folders;
+    state.projects = snapshot.projects;
+    state.actions = snapshot.actions;
+    state.decisions = snapshot.decisions;
+    state.agenda = snapshot.agenda;
+    state.meetingPreparations = snapshot.meetingPreparations;
+    state.externalEventEnrichments = snapshot.externalEventEnrichments;
+
+    persist("managers");
+    persist("folders");
+    persist("projects");
+    persist("actions");
+    persist("decisions");
+    persist("agenda");
+    persist("meetingPreparations");
+    persistExternalEventEnrichmentsOnly();
+
+    managerDeleteDialog.busy = false;
+    managerDeleteDialog.error = `Échec de suppression : ${error?.message || "Erreur inconnue"}`;
+    renderManagerModalOverlays();
+    return false;
+  }
+}
+
+function confirmManagerDelete(id) {
+  if (!managerDeleteDialog.open || !sameId(managerDeleteDialog.managerId, id)) return;
+  managerDeleteDialog.busy = true;
+  managerDeleteDialog.error = "";
+  renderManagerModalOverlays();
+  deleteManagerSafely(id);
 }
 
 function projectMini(p) {
@@ -6752,21 +7089,11 @@ function openProject(id, mode = "") {
 }
 
 function editProject(id) {
-  const p = byId("projects", id);
-  if (!p) return;
-  document.getElementById("viewTitle").textContent = "Modifier " + p.name;
-  appHtml(`<div class="card"><h2>Modifier projet</h2><input id="epName" value="${esc(p.name)}" placeholder="Nom du projet"><div class="form-grid"><select id="epStatus"><option value="green" ${p.status === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${p.status === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${p.status === "red" ? "selected" : ""}>Critique</option></select><input id="epProgress" type="number" min="0" max="100" value="${Number(p.progress || 0)}"><div><label>Responsable principal</label>${ownerSelect("epOwnerId", projectOwnerId(p))}</div><input id="epLaunch" value="${esc(p.launchDate || "")}" placeholder="Date de lancement"><input id="epDeadline" value="${esc(p.deadline || "")}" placeholder="Échéance cible"><select id="epPriority"><option value="green" ${p.priorityLevel === "green" ? "selected" : ""}>Priorité normale</option><option value="orange" ${p.priorityLevel === "orange" ? "selected" : ""}>Priorité importante</option><option value="red" ${p.priorityLevel === "red" ? "selected" : ""}>Priorité critique</option></select><input id="epNext" value="${esc(p.next || "")}" placeholder="Prochaine étape" class="full"></div><textarea id="epObjective" placeholder="Objectif">${esc(p.objective || "")}</textarea><textarea id="epContext" placeholder="Contexte">${esc(p.context || "")}</textarea><textarea id="epRisks" placeholder="Risques et points de vigilance">${esc(p.risks || "")}</textarea><textarea id="epDecisionsNote" placeholder="Note libre sur les décisions liées">${esc(p.decisions || "")}</textarea><textarea id="epActionsNote" placeholder="Note libre sur les actions liées">${esc(p.actions || "")}</textarea><div class="grid two manager-links"><div><label>Managers associés</label>${checkboxList("epManagers", state.managers, p.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Actions liées</label>${checkboxList("epActionsLinked", state.actions, p.linkedActions, a => a.title)}</div><div><label>Décisions liées</label>${checkboxList("epDecisionsLinked", state.decisions, p.linkedDecisions, d => d.title)}</div><div><label>Documents liés</label>${checkboxList("epDocumentsLinked", state.documents, p.linkedDocuments, d => d.title)}</div><div><label>Dossiers liés</label>${folderSelect("epFolders", p.linkedFolders || [])}</div></div><button class="action" onclick="saveProject('${p.id}')">Enregistrer</button><button class="secondary" onclick="openProject('${p.id}')">Annuler</button></div>`);
+  openProjectEditModal(id);
 }
 
 function saveProject(id) {
-  const i = indexById("projects", id);
-  if (i < 0) return;
-  const ownerId = document.getElementById("epOwnerId").value;
-  const owner = byId("managers", ownerId)?.name || "";
-  state.projects[i] = { ...state.projects[i], name: document.getElementById("epName").value.trim(), status: document.getElementById("epStatus").value, progress: Number(document.getElementById("epProgress").value || 0), owner, ownerId, launchDate: document.getElementById("epLaunch").value.trim(), deadline: document.getElementById("epDeadline").value.trim(), priorityLevel: document.getElementById("epPriority").value, next: document.getElementById("epNext").value.trim(), objective: document.getElementById("epObjective").value.trim(), context: document.getElementById("epContext").value.trim(), risks: document.getElementById("epRisks").value.trim(), decisions: document.getElementById("epDecisionsNote").value.trim(), actions: document.getElementById("epActionsNote").value.trim(), linkedManagers: checkedValues("epManagers"), linkedActions: checkedValues("epActionsLinked"), linkedDecisions: checkedValues("epDecisionsLinked"), linkedDocuments: checkedValues("epDocumentsLinked"), linkedFolders: checkedValues("epFolders") };
-  persist("projects");
-  addActivity("📦 Projet modifié", state.projects[i].name, state.projects[i].next, id);
-  openProject(id);
+  return saveProjectEdit(id);
 }
 
 function updateProjectProgress(id) {
@@ -6822,13 +7149,345 @@ function toggleLinkedProjectAction(projectId, actionId) {
 }
 
 function deleteProject(id) {
+  openProjectDeleteModal(id);
+}
+
+function projectEditModalBody(project) {
+  const description = project.description || project.context || "";
+  const expectedResults = project.expectedResults || project.actions || "";
+  return `
+    <div class="form-grid">
+      <input id="pepName" value="${esc(project.name || "")}" placeholder="Titre du projet" class="full">
+      <textarea id="pepDescription" placeholder="Description" class="full">${esc(description)}</textarea>
+      <select id="pepStatus">
+        <option value="green" ${project.status === "green" ? "selected" : ""}>Maîtrisé</option>
+        <option value="orange" ${project.status === "orange" ? "selected" : ""}>À suivre</option>
+        <option value="red" ${project.status === "red" ? "selected" : ""}>Critique</option>
+      </select>
+      <select id="pepPriority">
+        <option value="green" ${project.priorityLevel === "green" ? "selected" : ""}>Priorité normale</option>
+        <option value="orange" ${project.priorityLevel === "orange" || !project.priorityLevel ? "selected" : ""}>Priorité importante</option>
+        <option value="red" ${project.priorityLevel === "red" ? "selected" : ""}>Priorité critique</option>
+      </select>
+      <div><label>Responsable principal</label>${ownerSelect("pepOwnerId", projectOwnerId(project))}</div>
+      <input id="pepLaunch" type="date" value="${esc(project.launchDate || "")}" placeholder="Date de lancement">
+      <input id="pepDeadline" type="date" value="${esc(project.deadline || "")}" placeholder="Échéance">
+      <input id="pepProgress" type="number" min="0" max="100" value="${Number(project.progress || 0)}" placeholder="Avancement (%)">
+      <input id="pepObjective" value="${esc(project.objective || "")}" placeholder="Objectif" class="full">
+      <textarea id="pepExpectedResults" placeholder="Résultats attendus" class="full">${esc(expectedResults)}</textarea>
+      <textarea id="pepRisks" placeholder="Risques et blocages" class="full">${esc(project.risks || "")}</textarea>
+      <input id="pepNext" value="${esc(project.next || "")}" placeholder="Prochaines étapes" class="full">
+    </div>
+    <div class="grid two manager-links">
+      <div><label>Dossiers liés</label>${folderSelect("pepFolders", normalizeLinkedIdArray(project.linkedFolders))}</div>
+      <div><label>Actions liées</label>${checkboxList("pepActions", state.actions, normalizeLinkedIdArray(project.linkedActions), action => action.title)}</div>
+      <div><label>Décisions liées</label>${checkboxList("pepDecisions", state.decisions, normalizeLinkedIdArray(project.linkedDecisions), decision => decision.title)}</div>
+      <div><label>Managers associés</label>${checkboxList("pepManagers", state.managers, normalizeLinkedManagerIds(project.linkedManagers), manager => `${manager.name} · ${manager.role || ""}`)}</div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Rendez-vous liés</h3>
+      ${projectAgendaList(project)}
+    </div>
+    <div class="modal-actions">
+      <button class="action" type="button" onclick="saveProjectEdit('${esc(project.id)}')">Enregistrer</button>
+      <button class="secondary" type="button" onclick="closeProjectEditModal()">Annuler</button>
+    </div>
+  `;
+}
+
+function renderProjectEditModal() {
+  if (!projectEditDialog.open) return "";
+  const project = byId("projects", projectEditDialog.projectId);
+  if (!project) return "";
+  const errorHtml = projectEditDialog.error ? `<p class="folder-delete-error">${esc(projectEditDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop project-edit-modal" onclick="closeProjectEditModal()"><div class="modal-panel" style="max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()"><div class="modal-head"><h2>Modifier projet</h2><button class="icon-close" type="button" onclick="closeProjectEditModal()" aria-label="Fermer">×</button></div>${errorHtml}${projectEditModalBody(project)}</div></div>`;
+}
+
+function objectReferencesProject(item, projectId) {
+  const target = String(projectId || "");
+  if (!target || !item || typeof item !== "object") return false;
+  if (sameId(item.projectId, target)) return true;
+  const linked = [
+    ...ensureArray(item.linkedProjects),
+    ...ensureArray(item.linkedProjectIds)
+  ].map(value => String(value));
+  return linked.some(value => sameId(value, target));
+}
+
+function getProjectDeletionImpact(projectId) {
+  const target = String(projectId || "");
+  if (!target) {
+    return {
+      actions: 0,
+      decisions: 0,
+      managers: 0,
+      meetings: 0,
+      documents: 0,
+      journal: 0,
+      preparations: 0
+    };
+  }
+  const uniqueCount = items => new Set(ensureArray(items).filter(item => objectReferencesProject(item, target)).map(item => String(item.id || item._key || ""))).size;
+  const preparations = new Set(state.meetingPreparations.filter(prep => {
+    if (objectReferencesProject(prep, target)) return true;
+    const hasIdea = ensureArray(prep.ideas).some(idea => sameId(idea.projectId, target));
+    const hasTopic = ensureArray(prep.agendaTopics).some(topic => sameId(topic.projectId, target));
+    return hasIdea || hasTopic;
+  }).map(prep => String(prep.id)));
+  return {
+    actions: uniqueCount(state.actions),
+    decisions: uniqueCount(state.decisions),
+    managers: uniqueCount(state.managers),
+    meetings: uniqueCount(state.agenda),
+    documents: uniqueCount(state.documents),
+    journal: uniqueCount(state.journal),
+    preparations: preparations.size
+  };
+}
+
+function renderProjectDeleteModal() {
+  if (!projectDeleteDialog.open) return "";
+  const project = byId("projects", projectDeleteDialog.projectId);
+  if (!project) return "";
+  const impact = projectDeleteDialog.impact || getProjectDeletionImpact(project.id);
+  const errorHtml = projectDeleteDialog.error ? `<p class="folder-delete-error">${esc(projectDeleteDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop project-delete-modal" onclick="closeProjectDeleteModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>Supprimer le projet</h2><button class="icon-close" type="button" onclick="closeProjectDeleteModal()" aria-label="Fermer">×</button></div><p>Confirmer la suppression du projet <strong>${esc(project.name || "Projet")}</strong>.</p><p class="muted">Seul le Projet sera supprimé. Les objets liés seront conservés, mais leur liaison avec ce Projet sera retirée.</p>${errorHtml}<div class="grid two"><div class="card"><h3>Objets liés</h3><p><strong>Actions :</strong> ${impact.actions}</p><p><strong>Décisions :</strong> ${impact.decisions}</p><p><strong>Managers :</strong> ${impact.managers}</p><p><strong>Rendez-vous :</strong> ${impact.meetings}</p><p><strong>Documents :</strong> ${impact.documents}</p><p><strong>Journal :</strong> ${impact.journal}</p><p><strong>Préparations :</strong> ${impact.preparations}</p></div><div class="card"><h3>Rappel</h3><p>${esc(project.objective || project.next || "Projet sans descriptif")}</p></div></div><div class="modal-actions"><button class="danger" type="button" ${projectDeleteDialog.busy ? "disabled" : ""} onclick="confirmProjectDelete('${esc(project.id)}')">Supprimer</button><button class="secondary" type="button" onclick="closeProjectDeleteModal()">Annuler</button></div></div></div>`;
+}
+
+function renderProjectModalOverlays() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".project-edit-modal, .project-delete-modal").forEach(node => node.remove());
+  if (projectEditDialog.open) root.insertAdjacentHTML("beforeend", renderProjectEditModal());
+  if (projectDeleteDialog.open) root.insertAdjacentHTML("beforeend", renderProjectDeleteModal());
+}
+
+function openProjectEditModal(id) {
+  const project = byId("projects", id);
+  if (!project) return;
+  ensureActionModalHooks();
+  projectEditDialog = { open: true, projectId: String(id), error: "" };
+  renderProjectModalOverlays();
+}
+
+function closeProjectEditModal() {
+  if (!projectEditDialog.open) return;
+  projectEditDialog = { open: false, projectId: "", error: "" };
+  renderProjectModalOverlays();
+}
+
+function openProjectDeleteModal(id) {
+  const project = byId("projects", id);
+  if (!project) return;
+  ensureActionModalHooks();
+  projectDeleteDialog = {
+    open: true,
+    projectId: String(id),
+    error: "",
+    busy: false,
+    impact: getProjectDeletionImpact(id)
+  };
+  renderProjectModalOverlays();
+}
+
+function closeProjectDeleteModal() {
+  if (!projectDeleteDialog.open) return;
+  projectDeleteDialog = { open: false, projectId: "", error: "", busy: false, impact: null };
+  renderProjectModalOverlays();
+}
+
+function saveProjectEdit(id) {
   const i = indexById("projects", id);
-  if (i < 0 || !confirm("Supprimer ce projet ?")) return;
-  const t = state.projects[i].name;
-  state.projects.splice(i, 1);
+  if (i < 0) return false;
+  const current = state.projects[i];
+  const name = document.getElementById("pepName")?.value.trim() || "";
+  if (!name) {
+    projectEditDialog.error = "Le titre du projet est obligatoire.";
+    renderProjectModalOverlays();
+    return false;
+  }
+  const ownerId = String(document.getElementById("pepOwnerId")?.value || "");
+  const owner = byId("managers", ownerId)?.name || "";
+  const next = {
+    ...current,
+    name,
+    status: document.getElementById("pepStatus")?.value || current.status || "orange",
+    priorityLevel: document.getElementById("pepPriority")?.value || current.priorityLevel || "orange",
+    owner,
+    ownerId,
+    launchDate: document.getElementById("pepLaunch")?.value || "",
+    deadline: document.getElementById("pepDeadline")?.value || "",
+    progress: Math.max(0, Math.min(100, Number(document.getElementById("pepProgress")?.value || 0))),
+    objective: document.getElementById("pepObjective")?.value.trim() || "",
+    expectedResults: document.getElementById("pepExpectedResults")?.value.trim() || "",
+    actions: document.getElementById("pepExpectedResults")?.value.trim() || "",
+    risks: document.getElementById("pepRisks")?.value.trim() || "",
+    next: document.getElementById("pepNext")?.value.trim() || "",
+    description: document.getElementById("pepDescription")?.value.trim() || "",
+    context: document.getElementById("pepDescription")?.value.trim() || "",
+    linkedFolders: normalizeLinkedIdArray(checkedValues("pepFolders")),
+    linkedActions: normalizeLinkedIdArray(checkedValues("pepActions")),
+    linkedDecisions: normalizeLinkedIdArray(checkedValues("pepDecisions")),
+    linkedManagers: normalizeLinkedManagerIds(checkedValues("pepManagers"))
+  };
+  state.projects[i] = normalizeEntity("projects", next);
   persist("projects");
-  addActivity("📦 Projet supprimé", t);
-  renderProjects();
+  addActivity("📦 Projet modifié", state.projects[i].name, state.projects[i].next || "", id);
+  closeProjectEditModal();
+  openProject(id);
+  return true;
+}
+
+function removeProjectReferencesFromItem(item, projectId) {
+  const target = String(projectId || "");
+  if (!target || !item || typeof item !== "object") return { item, changed: false };
+  let changed = false;
+  const next = { ...item };
+  if (Object.prototype.hasOwnProperty.call(next, "linkedProjects")) {
+    const before = ensureArray(next.linkedProjects);
+    const after = normalizeLinkedIdArray(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedProjects = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "linkedProjectIds")) {
+    const before = ensureArray(next.linkedProjectIds);
+    const after = normalizeLinkedIdArray(before.filter(id => !sameId(id, target)));
+    if (before.length !== after.length || before.some((id, index) => String(id) !== String(after[index] || ""))) changed = true;
+    next.linkedProjectIds = after;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, "projectId") && sameId(next.projectId, target)) {
+    next.projectId = "";
+    changed = true;
+  }
+  return { item: changed ? next : item, changed };
+}
+
+function sanitizeMeetingPreparationProjectLinks(prep, projectId) {
+  const cleanedPrep = removeProjectReferencesFromItem(prep, projectId);
+  let changed = cleanedPrep.changed;
+  const next = { ...cleanedPrep.item };
+  const cleanedIdeas = ensureArray(next.ideas).map(idea => {
+    const cleaned = removeProjectReferencesFromItem(idea, projectId);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  const cleanedTopics = ensureArray(next.agendaTopics).map(topic => {
+    const cleaned = removeProjectReferencesFromItem(topic, projectId);
+    if (cleaned.changed) changed = true;
+    return cleaned.item;
+  });
+  if (changed) {
+    next.ideas = cleanedIdeas;
+    next.agendaTopics = cleanedTopics;
+  }
+  return { item: changed ? next : prep, changed };
+}
+
+function deleteProjectSafely(projectId) {
+  const target = String(projectId || "");
+  const project = byId("projects", target);
+  if (!project) throw new Error("Projet introuvable.");
+
+  const snapshot = {
+    projects: JSON.parse(JSON.stringify(state.projects)),
+    actions: JSON.parse(JSON.stringify(state.actions)),
+    decisions: JSON.parse(JSON.stringify(state.decisions)),
+    managers: JSON.parse(JSON.stringify(state.managers)),
+    journal: JSON.parse(JSON.stringify(state.journal)),
+    documents: JSON.parse(JSON.stringify(state.documents)),
+    agenda: JSON.parse(JSON.stringify(state.agenda)),
+    performance: JSON.parse(JSON.stringify(state.performance)),
+    meetingPreparations: JSON.parse(JSON.stringify(state.meetingPreparations)),
+    externalEventEnrichments: JSON.parse(JSON.stringify(state.externalEventEnrichments || {}))
+  };
+
+  const changed = new Set();
+  const applyCollectionCleanup = (name, sanitizer) => {
+    let touched = false;
+    state[name] = state[name].map(item => {
+      const cleaned = sanitizer(item, target);
+      if (cleaned.changed) touched = true;
+      return cleaned.item;
+    });
+    if (touched) changed.add(name);
+  };
+
+  try {
+    const index = indexById("projects", target);
+    if (index < 0) throw new Error("Projet introuvable.");
+    state.projects.splice(index, 1);
+    changed.add("projects");
+
+    const simpleSanitizer = (item, id) => removeProjectReferencesFromItem(item, id);
+    applyCollectionCleanup("actions", simpleSanitizer);
+    applyCollectionCleanup("decisions", simpleSanitizer);
+    applyCollectionCleanup("managers", simpleSanitizer);
+    applyCollectionCleanup("journal", simpleSanitizer);
+    applyCollectionCleanup("documents", simpleSanitizer);
+    applyCollectionCleanup("agenda", simpleSanitizer);
+    applyCollectionCleanup("performance", simpleSanitizer);
+    applyCollectionCleanup("meetingPreparations", sanitizeMeetingPreparationProjectLinks);
+
+    let externalChanged = false;
+    const nextEnrichments = {};
+    Object.entries(state.externalEventEnrichments || {}).forEach(([eventKey, enrichment]) => {
+      const cleaned = removeProjectReferencesFromItem(enrichment, target);
+      if (cleaned.changed) externalChanged = true;
+      nextEnrichments[eventKey] = cleaned.item;
+    });
+    if (externalChanged) {
+      state.externalEventEnrichments = nextEnrichments;
+      changed.add("externalEventEnrichments");
+    }
+
+    changed.forEach(name => {
+      if (name === "externalEventEnrichments") {
+        persistExternalEventEnrichmentsOnly();
+      } else {
+        persist(name);
+      }
+    });
+
+    addActivity("📦 Projet supprimé", project.name, "Suppression sécurisée sans cascade", project.id);
+    closeProjectDeleteModal();
+    renderProjects();
+    return true;
+  } catch (error) {
+    state.projects = snapshot.projects;
+    state.actions = snapshot.actions;
+    state.decisions = snapshot.decisions;
+    state.managers = snapshot.managers;
+    state.journal = snapshot.journal;
+    state.documents = snapshot.documents;
+    state.agenda = snapshot.agenda;
+    state.performance = snapshot.performance;
+    state.meetingPreparations = snapshot.meetingPreparations;
+    state.externalEventEnrichments = snapshot.externalEventEnrichments;
+
+    persist("projects");
+    persist("actions");
+    persist("decisions");
+    persist("managers");
+    persist("journal");
+    persist("documents");
+    persist("agenda");
+    persist("performance");
+    persist("meetingPreparations");
+    persistExternalEventEnrichmentsOnly();
+
+    projectDeleteDialog.busy = false;
+    projectDeleteDialog.error = `Échec de suppression : ${error?.message || "Erreur inconnue"}`;
+    renderProjectModalOverlays();
+    return false;
+  }
+}
+
+function confirmProjectDelete(id) {
+  if (!projectDeleteDialog.open || !sameId(projectDeleteDialog.projectId, id)) return;
+  projectDeleteDialog.busy = true;
+  projectDeleteDialog.error = "";
+  renderProjectModalOverlays();
+  deleteProjectSafely(id);
 }
 
 const decisionStatusLabels = { decided: "Décidée", applying: "En cours d'application", applied: "Appliquée", review: "À réexaminer" };
