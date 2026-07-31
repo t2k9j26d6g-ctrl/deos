@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.18.1";
+const DEOS_VERSION = "V5.18.2";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -8098,6 +8098,25 @@ const performanceImportTargetCatalog = [
 ];
 let performanceEdit = false;
 let performanceSelectedId = "";
+let performanceDashboardFilters = { period: "all", kpi: "all", category: "all", source: "all", scope: "all" };
+let performanceDashboardSelectedKpi = "";
+let performanceComplementaryExpanded = false;
+const performancePrimaryKpiCatalog = [
+  { id: "activity.colis_total", label: "Colis totaux préparés", metricPath: "activity", targetPath: "activity.actual", valueField: "actual", objectiveField: "budget", unit: "colis", category: "Activité", destinationLabels: ["Colis totaux préparés", "Activité colis", "Colis"] },
+  { id: "ipo.total", label: "IPO Total", metricPath: "ipo.total", targetPath: "ipo.total.actual", valueField: "actual", objectiveField: "budget", unit: "k€", category: "IPO", destinationLabels: ["IPO Total", "IPO total"] },
+  { id: "ipo.variable", label: "IPO Variable", metricPath: "ipo.variable", targetPath: "ipo.variable.actual", valueField: "actual", objectiveField: "budget", unit: "k€", category: "IPO", destinationLabels: ["IPO Variable", "IPO variable"] },
+  { id: "productivity.preparation", label: "Productivité Préparation", metricPath: "productivity.Préparation", targetPath: "productivity.Préparation.actual", valueField: "actual", objectiveField: "budget", unit: "colis/h", category: "Productivité", destinationLabels: ["Préparation", "Productivité Préparation"] },
+  { id: "productivity.reception", label: "Productivité Réception", metricPath: "productivity.Réception", targetPath: "productivity.Réception.actual", valueField: "actual", objectiveField: "budget", unit: "palettes/h", category: "Productivité", destinationLabels: ["Réception", "Productivité Réception"] },
+  { id: "productivity.manutention", label: "Productivité Manutention", metricPath: "productivity.Manutention", targetPath: "productivity.Manutention.actual", valueField: "actual", objectiveField: "budget", unit: "palettes/h", category: "Productivité", destinationLabels: ["Manutention", "Productivité Manutention"] },
+  { id: "productivity.chargement", label: "Productivité Chargement", metricPath: "productivity.Chargement", targetPath: "productivity.Chargement.actual", valueField: "actual", objectiveField: "budget", unit: "palettes/h", category: "Productivité", destinationLabels: ["Chargement", "Productivité Chargement"] },
+  { id: "productivity.transit", label: "Productivité Transit", metricPath: "productivity.Transit", targetPath: "productivity.Transit.actual", valueField: "actual", objectiveField: "budget", unit: "palettes/h", category: "Productivité", destinationLabels: ["Transit", "Productivité Transit"] },
+  { id: "hours.total", label: "Heures totales", metricPath: "hours.total", targetPath: "hours.total.actual", valueField: "actual", objectiveField: "budget", unit: "h", category: "Heures", destinationLabels: ["Heures totales"] },
+  { id: "hours.indirect", label: "Heures indirectes", metricPath: "hours.indirect", targetPath: "hours.indirect.actual", valueField: "actual", objectiveField: "budget", unit: "h", category: "Heures", destinationLabels: ["Heures indirectes"] },
+  { id: "absenteeism.total", label: "Absentéisme total", metricPath: "absenteeism.total", targetPath: "absenteeism.total.actual", valueField: "actual", objectiveField: "budget", unit: "%", category: "Absentéisme", destinationLabels: ["Absentéisme total"] },
+  { id: "quality.total_gains_pertes", label: "Total Gains & Pertes", metricPath: "quality.indicators.Total Gains & Pertes", targetPath: "quality.indicators.Total Gains & Pertes.actual", valueField: "actual", objectiveField: "budget", unit: "k€", category: "Qualité", destinationLabels: ["Total Gains & Pertes"] },
+  { id: "quality.litiges", label: "Litiges", metricPath: "quality.indicators.Litiges", targetPath: "quality.indicators.Litiges.actual", valueField: "actual", objectiveField: "budget", unit: "u.", category: "Qualité", destinationLabels: ["Litiges"] },
+  { id: "pallet.height", label: "Hauteur palette", metricPath: "palletHeight", targetPath: "palletHeight.actual", valueField: "actual", objectiveField: "objective", unit: "", category: "Hauteur palette", destinationLabels: ["Hauteur palette", "Hauteur Palette"] }
+];
 
 function normalizePerformanceLabel(value) {
   return normalizeText(value).replace(/\s+/g, " ").trim();
@@ -8272,6 +8291,496 @@ function perfSelected() {
   return byId("performance", performanceSelectedId) || state.performance[0] || null;
 }
 
+function performanceDashboardSettings() {
+  if (!state.settings || typeof state.settings !== "object") state.settings = ensureSettings({});
+  if (!state.settings.performanceDashboard || typeof state.settings.performanceDashboard !== "object") state.settings.performanceDashboard = { objectives: {} };
+  if (!state.settings.performanceDashboard.objectives || typeof state.settings.performanceDashboard.objectives !== "object") state.settings.performanceDashboard.objectives = {};
+  return state.settings.performanceDashboard;
+}
+
+function performanceObjectiveStore() {
+  return performanceDashboardSettings().objectives;
+}
+
+function performanceKpiIdFromLabel(label, prefix = "kpi") {
+  const key = normalizePerformanceLabel(label).replace(/\s+/g, "_");
+  return key ? `${prefix}.${key}` : `${prefix}.inconnu`;
+}
+
+function performancePeriodTitle(period) {
+  const [month, year] = String(period || "").split("/").map(Number);
+  return month && year ? `${perfMonths[month - 1]} ${year}` : (period || "Période à confirmer");
+}
+
+function performancePeriodSortValue(period) {
+  const [month, year] = String(period || "").split("/").map(Number);
+  return (Number(year) || 0) * 100 + (Number(month) || 0);
+}
+
+function performancePrimaryTargetOptions() {
+  return performanceImportTargetCatalog.filter(entry => entry.type === "existing");
+}
+
+function performanceOptionList(values) {
+  return [...new Set(values.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "fr", { sensitivity: "base" }));
+}
+
+function performanceNormalizedUnit(value) {
+  return normalizePerformanceLabel(String(value || "")).replace(/\s+/g, "");
+}
+
+function performanceSourceMatchesComment(comment, labels) {
+  const target = String(comment || "").split("->")[1] || "";
+  const normalizedTarget = normalizePerformanceLabel(target);
+  return labels.some(label => {
+    const normalizedLabel = normalizePerformanceLabel(label);
+    return normalizedLabel && (normalizedTarget === normalizedLabel || normalizedTarget.includes(normalizedLabel) || normalizedLabel.includes(normalizedTarget));
+  });
+}
+
+function performanceMatchingImportRows(record) {
+  const labels = [record.label, record.sourceLabel, ...(record.destinationLabels || [])].filter(Boolean).map(normalizePerformanceLabel);
+  return state.performance_imports.flatMap(item => ensureArray(item.indicators).filter(row => {
+    const rowPeriod = String(row.period || item.period || "").trim();
+    if (String(record.period || "") !== rowPeriod) return false;
+    if (record.scope === "principal") {
+      if (record.targetPath && String(row.destinationPath || "") === String(record.targetPath || "")) return true;
+      const rowTarget = normalizePerformanceLabel(row.destinationLabel || "");
+      return labels.some(label => label && rowTarget === label);
+    }
+    const rowIndicator = normalizePerformanceLabel(row.indicator || "");
+    return rowIndicator === normalizePerformanceLabel(record.sourceLabel || record.label || "") || String(row.targetId || row.destinationId || "") === String(record.targetId || "");
+  }).map(row => ({
+    source: row.source || item.sourceType || item.sourceFile || "Import",
+    value: row.value,
+    unit: row.unit || "",
+    sourceFile: item.sourceFile || "",
+    importDate: item.importDate || "",
+    row
+  })));
+}
+
+function performanceRecordSource(period, targetPath, labels) {
+  const imported = performanceMatchingImportRows({ period, targetPath, label: labels?.[0] || "", sourceLabel: labels?.[0] || "", destinationLabels: ensureArray(labels), scope: "principal" });
+  const importedSources = performanceOptionList(imported.map(item => item.source));
+  if (importedSources.length) return importedSources.join(" · ");
+  const perf = getPerformanceByPeriod(period);
+  const legacySources = ensureArray(perf?.importSources).filter(source => {
+    if (String(source.period || "") !== String(period || "")) return false;
+    return performanceSourceMatchesComment(source.comment, ensureArray(labels));
+  }).map(source => source.source || source.file || "Import");
+  return performanceOptionList(legacySources).join(" · ") || "Saisie / DEOS";
+}
+
+function performanceBuildPrimaryRecords() {
+  const periods = state.performance.slice().sort((a, b) => a.year - b.year || a.month - b.month);
+  return periods.flatMap(perf => performancePrimaryKpiCatalog.map(def => {
+    const metric = perfPath(perf, def.metricPath);
+    const value = metric?.[def.valueField || "actual"];
+    if (!perfHas(value)) return null;
+    const period = performancePeriodKey(perf);
+    return {
+      scope: "principal",
+      kpiId: def.id,
+      label: def.label,
+      sourceLabel: def.label,
+      destinationLabels: def.destinationLabels || [def.label],
+      category: def.category,
+      period,
+      periodTitle: performancePeriodTitle(period),
+      periodSort: performancePeriodSortValue(period),
+      value,
+      unit: def.unit || "",
+      expectedUnit: def.unit || "",
+      objective: perfHas(metric?.[def.objectiveField || "budget"]) ? metric[def.objectiveField || "budget"] : "",
+      source: performanceRecordSource(period, def.targetPath, def.destinationLabels || [def.label]),
+      targetPath: def.targetPath,
+      metricPath: def.metricPath,
+      targetId: def.id,
+      targetType: "existing",
+      sourceRef: "",
+      qualityFlags: []
+    };
+  }).filter(Boolean));
+}
+
+function performanceBuildComplementaryRecords() {
+  const periods = state.performance.slice().sort((a, b) => a.year - b.year || a.month - b.month);
+  return periods.flatMap(perf => ensureArray(perf.complementaryKpis).map(row => {
+    const period = row.period || performancePeriodKey(perf);
+    const label = String(row.indicator || row.destinationLabel || "KPI complémentaire").trim();
+    return {
+      scope: "complementary",
+      kpiId: row.targetId && row.targetId !== "complementary.generic" ? row.targetId : performanceKpiIdFromLabel(label, "complementary"),
+      label,
+      sourceLabel: label,
+      destinationLabels: [row.destinationLabel || "KPI complémentaire", label],
+      category: "KPI complémentaires",
+      period,
+      periodTitle: performancePeriodTitle(period),
+      periodSort: performancePeriodSortValue(period),
+      value: row.value,
+      unit: row.unit || "",
+      expectedUnit: row.unit || "",
+      objective: "",
+      source: row.source || "Import",
+      targetPath: String(row.destinationPath || row.targetId || ""),
+      metricPath: "",
+      targetId: row.targetId || "complementary.generic",
+      targetType: "complementary",
+      sourceRef: row.sourceRef || "",
+      qualityFlags: []
+    };
+  }));
+}
+
+function performanceIsValueSuspect(record) {
+  const num = Number(record.value);
+  if (!Number.isFinite(num)) return true;
+  const unit = String(record.unit || "").toLowerCase();
+  if (unit === "%" && (num < -100 || num > 100)) return true;
+  if (/(colis|u\.)/.test(unit) && num < 0) return true;
+  if (/\bh\b/.test(unit) && num < 0) return true;
+  if (Math.abs(num) > 100000000) return true;
+  return false;
+}
+
+function performanceAnnotateRecords(records) {
+  const groupedByPeriod = new Map();
+  const unitsByKpi = new Map();
+  records.forEach(record => {
+    const key = `${record.scope}|${record.kpiId}|${record.period}`;
+    const current = groupedByPeriod.get(key) || [];
+    current.push(record);
+    groupedByPeriod.set(key, current);
+    const unitKey = record.kpiId;
+    const units = unitsByKpi.get(unitKey) || new Set();
+    if (record.unit) units.add(record.unit);
+    unitsByKpi.set(unitKey, units);
+  });
+  return records.map(record => {
+    const flags = [...ensureArray(record.qualityFlags)];
+    if (!record.period) flags.push("Période absente");
+    if (!record.unit) flags.push("Unité absente");
+    if (performanceIsValueSuspect(record)) flags.push("Valeur suspecte");
+    if (record.expectedUnit && record.scope === "principal") {
+      const importedUnits = performanceOptionList(performanceMatchingImportRows(record).map(item => item.unit).filter(Boolean));
+      if (importedUnits.length && importedUnits.some(unit => performanceNormalizedUnit(unit) !== performanceNormalizedUnit(record.expectedUnit))) flags.push("Unité à vérifier");
+    }
+    if (record.scope === "complementary" && (!record.targetId || record.targetId === "complementary.generic")) flags.push("KPI non mappé");
+    const group = groupedByPeriod.get(`${record.scope}|${record.kpiId}|${record.period}`) || [];
+    const importRows = performanceMatchingImportRows(record);
+    const comparisonValues = [...group.map(item => item.value), ...importRows.map(item => item.value)].filter(v => perfHas(v)).map(v => Number(v));
+    const distinctValues = [...new Set(comparisonValues.filter(Number.isFinite).map(v => v.toString()))];
+    if (group.length > 1 || importRows.length > 1) flags.push("Doublon potentiel");
+    if (distinctValues.length > 1) flags.push("Conflit entre deux valeurs");
+    const units = unitsByKpi.get(record.kpiId) || new Set();
+    if (units.size > 1) flags.push("Unité incompatible");
+    const objectiveValue = perfHas(record.objective) ? Number(record.objective) : "";
+    const recordValue = perfHas(record.value) ? Number(record.value) : "";
+    const hasRule = performanceObjectiveDefinition(record).configured;
+    if (record.category === "IPO" && perfHas(record.objective) && !hasRule) {
+      if ((Number.isFinite(recordValue) && Number.isFinite(objectiveValue) && recordValue < 0 && objectiveValue > 0) ||
+          (Number.isFinite(recordValue) && Number.isFinite(objectiveValue) && Math.abs(objectiveValue) > 0 && (Math.abs(recordValue / objectiveValue) >= 10 || Math.abs(recordValue / objectiveValue) <= 0.1))) {
+        flags.push("Valeur à vérifier");
+      }
+    }
+    return { ...record, qualityFlags: [...new Set(flags)] };
+  });
+}
+
+function performanceAllRecords() {
+  return performanceAnnotateRecords([...performanceBuildPrimaryRecords(), ...performanceBuildComplementaryRecords()]);
+}
+
+function performanceFilterOptions(records) {
+  return {
+    periods: performanceOptionList(records.map(record => record.period)).sort((a, b) => performancePeriodSortValue(b) - performancePeriodSortValue(a)),
+    kpis: performanceOptionList(records.map(record => record.label)),
+    categories: performanceOptionList(records.map(record => record.category)),
+    sources: performanceOptionList(records.map(record => record.source))
+  };
+}
+
+function performanceApplyFilters(records) {
+  return records.filter(record => {
+    if (performanceDashboardFilters.period !== "all" && record.period !== performanceDashboardFilters.period) return false;
+    if (performanceDashboardFilters.category !== "all" && record.category !== performanceDashboardFilters.category) return false;
+    if (performanceDashboardFilters.source !== "all" && record.source !== performanceDashboardFilters.source) return false;
+    if (performanceDashboardFilters.scope !== "all" && record.scope !== performanceDashboardFilters.scope) return false;
+    if (performanceDashboardFilters.kpi !== "all" && record.label !== performanceDashboardFilters.kpi) return false;
+    return true;
+  });
+}
+
+function performanceLatestRecordByKpi(records) {
+  const latest = new Map();
+  records.forEach(record => {
+    const current = latest.get(record.kpiId);
+    if (!current || record.periodSort > current.periodSort) latest.set(record.kpiId, record);
+  });
+  return [...latest.values()].sort((a, b) => a.category.localeCompare(b.category, "fr", { sensitivity: "base" }) || a.label.localeCompare(b.label, "fr", { sensitivity: "base" }));
+}
+
+function performancePreviousRecord(records, record) {
+  return records.filter(item => item.kpiId === record.kpiId && item.periodSort < record.periodSort && (!record.unit || !item.unit || item.unit === record.unit)).sort((a, b) => b.periodSort - a.periodSort)[0] || null;
+}
+
+function performanceFormatSignedValue(value, unit = "") {
+  if (value === "" || value === null || value === undefined || Number.isNaN(Number(value))) return "À compléter";
+  const num = Number(value);
+  const prefix = num > 0 ? "+" : "";
+  return `${prefix}${perfFmt(num)}${unit ? ` ${unit}` : ""}`;
+}
+
+function performanceHasObjective(record) {
+  const definition = performanceObjectiveDefinition(record);
+  return definition.mode === "range"
+    ? perfHas(definition.min) || perfHas(definition.max)
+    : perfHas(definition.objective);
+}
+
+function performanceGapIsReliable(record) {
+  return !ensureArray(record.qualityFlags).includes("Valeur à vérifier");
+}
+
+function performanceObjectiveDefinition(record) {
+  const config = performanceObjectiveStore()[record.kpiId] || {};
+  const baseObjective = perfHas(config.objective) ? config.objective : record.objective;
+  const baseMin = perfHas(config.min) ? config.min : "";
+  const baseMax = perfHas(config.max) ? config.max : "";
+  const mode = config.mode || "";
+  const configured = Boolean(mode && ((mode === "range" && (perfHas(baseMin) || perfHas(baseMax))) || (mode !== "range" && perfHas(baseObjective))));
+  return {
+    mode,
+    objective: perfHas(baseObjective) ? Number(baseObjective) : "",
+    min: perfHas(baseMin) ? Number(baseMin) : "",
+    max: perfHas(baseMax) ? Number(baseMax) : "",
+    unit: config.unit || record.unit || "",
+    vigilance: perfHas(config.vigilance) ? Number(config.vigilance) : "",
+    critical: perfHas(config.critical) ? Number(config.critical) : "",
+    configured
+  };
+}
+
+function performanceObjectiveGap(record) {
+  const definition = performanceObjectiveDefinition(record);
+  if (definition.mode === "range") {
+    if (definition.min === "" && definition.max === "") return "";
+    const value = Number(record.value);
+    if (!Number.isFinite(value)) return "";
+    if (definition.min !== "" && value < definition.min) return value - definition.min;
+    if (definition.max !== "" && value > definition.max) return value - definition.max;
+    return 0;
+  }
+  if (!perfHas(definition.objective) || !perfHas(record.value)) return "";
+  return Number(record.value) - Number(definition.objective);
+}
+
+function performanceStatus(record) {
+  const definition = performanceObjectiveDefinition(record);
+  if (!perfHas(record.value)) return { key: "not_configured", label: "Non configuré", tone: "slate" };
+  if (!definition.configured && performanceHasObjective(record)) return { key: "thresholds_pending", label: "Seuils à configurer", tone: "orange" };
+  if (!definition.configured) return { key: "not_configured", label: "Non configuré", tone: "slate" };
+  const value = Number(record.value);
+  if (!Number.isFinite(value)) return { key: "not_configured", label: "Non configuré", tone: "slate" };
+  if (definition.mode === "higher") {
+    if (definition.critical !== "" && value < definition.critical) return { key: "critical", label: "Critique", tone: "red" };
+    if (definition.vigilance !== "" && value < definition.vigilance) return { key: "follow", label: "À suivre", tone: "orange" };
+    if (definition.objective !== "" && value >= definition.objective) return { key: "controlled", label: "Maîtrisé", tone: "green" };
+    return { key: "follow", label: "À suivre", tone: "orange" };
+  }
+  if (definition.mode === "lower") {
+    if (definition.critical !== "" && value > definition.critical) return { key: "critical", label: "Critique", tone: "red" };
+    if (definition.vigilance !== "" && value > definition.vigilance) return { key: "follow", label: "À suivre", tone: "orange" };
+    if (definition.objective !== "" && value <= definition.objective) return { key: "controlled", label: "Maîtrisé", tone: "green" };
+    return { key: "follow", label: "À suivre", tone: "orange" };
+  }
+  if (definition.mode === "target") {
+    const gap = Math.abs(performanceObjectiveGap(record));
+    if (definition.critical !== "" && gap > definition.critical) return { key: "critical", label: "Critique", tone: "red" };
+    if (definition.vigilance !== "" && gap > definition.vigilance) return { key: "follow", label: "À suivre", tone: "orange" };
+    if (gap === 0) return { key: "controlled", label: "Maîtrisé", tone: "green" };
+    return { key: "follow", label: "À suivre", tone: "orange" };
+  }
+  if (definition.mode === "range") {
+    const insideMin = definition.min === "" || value >= definition.min;
+    const insideMax = definition.max === "" || value <= definition.max;
+    if (insideMin && insideMax) return { key: "controlled", label: "Maîtrisé", tone: "green" };
+    const gap = Math.abs(performanceObjectiveGap(record));
+    if (definition.critical !== "" && gap > definition.critical) return { key: "critical", label: "Critique", tone: "red" };
+    return { key: "follow", label: "À suivre", tone: "orange" };
+  }
+  return { key: "not_configured", label: "Non configuré", tone: "slate" };
+}
+
+function performanceStatusBadge(record) {
+  const status = performanceStatus(record);
+  return `<span class="performance-status performance-status-${status.tone}">${esc(status.label)}</span>`;
+}
+
+function performanceFlagsBadges(flags) {
+  if (!flags.length) return `<span class="muted">Aucun signal</span>`;
+  return flags.map(flag => `<span class="performance-flag">${esc(flag)}</span>`).join("");
+}
+
+function performanceDashboardFilterBar(records) {
+  const options = performanceFilterOptions(records);
+  return `<div class="performance-dashboard-filters"><select onchange="setPerformanceDashboardFilter('period', this.value)"><option value="all">Toutes les périodes</option>${options.periods.map(period => `<option value="${esc(period)}" ${performanceDashboardFilters.period === period ? "selected" : ""}>${esc(performancePeriodTitle(period))}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('kpi', this.value)"><option value="all">Tous les KPI</option>${options.kpis.map(kpi => `<option value="${esc(kpi)}" ${performanceDashboardFilters.kpi === kpi ? "selected" : ""}>${esc(kpi)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('category', this.value)"><option value="all">Toutes les catégories</option>${options.categories.map(category => `<option value="${esc(category)}" ${performanceDashboardFilters.category === category ? "selected" : ""}>${esc(category)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('source', this.value)"><option value="all">Toutes les sources</option>${options.sources.map(source => `<option value="${esc(source)}" ${performanceDashboardFilters.source === source ? "selected" : ""}>${esc(source)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('scope', this.value)"><option value="all" ${performanceDashboardFilters.scope === "all" ? "selected" : ""}>Principaux + complémentaires</option><option value="principal" ${performanceDashboardFilters.scope === "principal" ? "selected" : ""}>Principaux uniquement</option><option value="complementary" ${performanceDashboardFilters.scope === "complementary" ? "selected" : ""}>Complémentaires uniquement</option></select></div>`;
+}
+
+function performanceSummaryCards(records) {
+  const latestPrimary = performanceLatestRecordByKpi(records.filter(record => record.scope === "principal"));
+  if (!latestPrimary.length) return `<div class="empty">Aucun KPI principal disponible avec les filtres en cours.</div>`;
+  return `<div class="performance-summary-grid">${latestPrimary.map(record => {
+    const previous = performancePreviousRecord(records, record);
+    const objective = performanceObjectiveDefinition(record);
+    const gap = performanceObjectiveGap(record);
+    const delta = previous && previous.unit === record.unit ? Number(record.value) - Number(previous.value) : "";
+    return `<div class="performance-summary-card"><div class="performance-summary-head"><strong>${esc(record.label)}</strong>${performanceStatusBadge(record)}</div><div class="performance-summary-value">${esc(perfFmt(record.value))}${record.unit ? ` <small>${esc(record.unit)}</small>` : ""}</div><div class="performance-summary-meta">${esc(record.periodTitle)} · ${esc(record.source || "Saisie / DEOS")}</div><div class="performance-summary-lines"><span>Objectif : ${objective.mode === "range" ? `${perfHas(objective.min) ? esc(perfFmt(objective.min)) : "-"} / ${perfHas(objective.max) ? esc(perfFmt(objective.max)) : "-"}` : perfHas(objective.objective) ? esc(perfFmt(objective.objective)) : "À compléter"}${objective.unit ? ` ${esc(objective.unit)}` : ""}</span><span>Écart : ${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || record.unit))}</span><span>Évolution : ${!previous ? "Historique insuffisant" : delta === "" ? "À compléter" : esc(performanceFormatSignedValue(delta, record.unit))}${previous ? ` · vs ${esc(previous.periodTitle)}` : ""}</span></div><div class="performance-summary-flags">${performanceFlagsBadges(record.qualityFlags)}</div></div>`;
+  }).join("")}</div>`;
+}
+
+function performanceResolveSelectedKpi(records) {
+  const explicit = performanceDashboardFilters.kpi !== "all" ? records.find(record => record.label === performanceDashboardFilters.kpi) : null;
+  if (explicit) {
+    performanceDashboardSelectedKpi = explicit.kpiId;
+    return explicit.kpiId;
+  }
+  if (records.some(record => record.kpiId === performanceDashboardSelectedKpi)) return performanceDashboardSelectedKpi;
+  performanceDashboardSelectedKpi = records[0]?.kpiId || "";
+  return performanceDashboardSelectedKpi;
+}
+
+function performanceCompatibleSeries(records) {
+  const units = performanceOptionList(records.map(record => record.unit));
+  if (units.length <= 1) return { unit: units[0] || "", records, warning: "" };
+  const latestUnit = records.slice().sort((a, b) => b.periodSort - a.periodSort).find(record => record.unit)?.unit || units[0];
+  return { unit: latestUnit, records: records.filter(record => record.unit === latestUnit), warning: `Unités incompatibles détectées (${units.join(", ")}). Courbe limitée à ${latestUnit || "l’unité principale"}.` };
+}
+
+function performanceTrendSvg(records) {
+  if (!records.length) return `<div class="empty">Aucune donnée disponible pour ce KPI.</div>`;
+  if (records.length === 1) return `<div class="performance-chart-single">Une seule donnée disponible : ${esc(records[0].periodTitle)} · ${esc(perfFmt(records[0].value))}${records[0].unit ? ` ${esc(records[0].unit)}` : ""}</div>`;
+  const width = 720;
+  const height = 260;
+  const paddingX = 48;
+  const paddingY = 24;
+  const plotWidth = width - paddingX * 2;
+  const plotHeight = height - 64;
+  const objectiveValues = records.map(record => {
+    const definition = performanceObjectiveDefinition(record);
+    if (definition.mode === "range") return perfHas(definition.max) ? Number(definition.max) : (perfHas(definition.min) ? Number(definition.min) : null);
+    return perfHas(definition.objective) ? Number(definition.objective) : null;
+  }).filter(Number.isFinite);
+  const values = [...records.map(record => Number(record.value)).filter(Number.isFinite), ...objectiveValues];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const spread = max - min || Math.max(Math.abs(max), 1);
+  const lower = min - spread * 0.12;
+  const upper = max + spread * 0.12;
+  const yFor = value => paddingY + ((upper - value) / (upper - lower || 1)) * plotHeight;
+  const xFor = index => paddingX + (plotWidth * index) / Math.max(records.length - 1, 1);
+  const valuePolyline = records.map((record, index) => `${xFor(index)},${yFor(Number(record.value))}`).join(" ");
+  const objectivePolyline = records.map((record, index) => {
+    const definition = performanceObjectiveDefinition(record);
+    const currentObjective = definition.mode === "range"
+      ? (perfHas(definition.max) ? Number(definition.max) : (perfHas(definition.min) ? Number(definition.min) : null))
+      : (perfHas(definition.objective) ? Number(definition.objective) : null);
+    return currentObjective === null ? null : `${xFor(index)},${yFor(currentObjective)}`;
+  }).filter(Boolean).join(" ");
+  const zeroLine = lower <= 0 && upper >= 0 ? yFor(0) : height - 40;
+  return `<svg class="performance-trend-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Évolution du KPI"><line x1="${paddingX}" y1="${zeroLine}" x2="${width - paddingX}" y2="${zeroLine}" class="performance-axis"></line><polyline fill="none" class="performance-line" points="${valuePolyline}"></polyline>${objectivePolyline ? `<polyline fill="none" class="performance-line performance-line-objective" points="${objectivePolyline}"></polyline>` : ""}${records.map((record, index) => `<g><circle cx="${xFor(index)}" cy="${yFor(Number(record.value))}" r="4" class="performance-point"></circle><text x="${xFor(index)}" y="${height - 18}" text-anchor="middle" class="performance-label">${esc(record.periodTitle)}</text></g>`).join("")}</svg>`;
+}
+
+function performanceObjectiveForm(record) {
+  if (!record) return `<div class="empty">Aucun KPI sélectionné.</div>`;
+  const objective = performanceObjectiveDefinition(record);
+  return `<div class="performance-objective-card"><h3>Objectif et seuils</h3><input id="perfObjectiveKpiId" type="hidden" value="${esc(record.kpiId)}"><div class="form-grid"><select id="perfObjectiveMode"><option value="" ${!objective.mode ? "selected" : ""}>Aucun statut configuré</option><option value="higher" ${objective.mode === "higher" ? "selected" : ""}>Plus haut est meilleur</option><option value="lower" ${objective.mode === "lower" ? "selected" : ""}>Plus bas est meilleur</option><option value="target" ${objective.mode === "target" ? "selected" : ""}>Cible exacte</option><option value="range" ${objective.mode === "range" ? "selected" : ""}>Plage cible</option></select><input id="perfObjectiveValue" value="${perfHas(objective.objective) ? esc(objective.objective) : ""}" placeholder="Objectif"><input id="perfObjectiveMin" value="${perfHas(objective.min) ? esc(objective.min) : ""}" placeholder="Min plage"><input id="perfObjectiveMax" value="${perfHas(objective.max) ? esc(objective.max) : ""}" placeholder="Max plage"><input id="perfObjectiveUnit" value="${esc(objective.unit || record.unit || "")}" placeholder="Unité"><input id="perfObjectiveVigilance" value="${perfHas(objective.vigilance) ? esc(objective.vigilance) : ""}" placeholder="Seuil vigilance"><input id="perfObjectiveCritical" value="${perfHas(objective.critical) ? esc(objective.critical) : ""}" placeholder="Seuil critique"></div><div class="row-actions"><button class="action" onclick="savePerformanceDashboardObjective()">Enregistrer</button><button class="secondary" onclick="resetPerformanceDashboardObjective()">Réinitialiser</button></div></div>`;
+}
+
+function performanceAnalysisPanel(records) {
+  const filtered = performanceApplyFilters(records);
+  const selectedKpiId = performanceResolveSelectedKpi(filtered);
+  const selectableKpis = performanceLatestRecordByKpi(filtered);
+  const series = filtered.filter(record => record.kpiId === selectedKpiId).sort((a, b) => a.periodSort - b.periodSort);
+  const compatible = performanceCompatibleSeries(series);
+  const current = series.slice().sort((a, b) => b.periodSort - a.periodSort)[0] || null;
+  return `<div class="performance-analysis-shell"><div class="performance-analysis-toolbar"><select onchange="setPerformanceAnalysisKpi(this.value)">${selectableKpis.map(record => `<option value="${esc(record.kpiId)}" ${record.kpiId === selectedKpiId ? "selected" : ""}>${esc(record.label)}</option>`).join("")}</select><span class="muted">${current ? `${esc(current.label)} · ${esc(current.category)}` : "Aucun KPI sélectionné"}</span></div><div class="performance-analysis-grid"><div class="performance-analysis-panel"><h3>Courbe d'évolution</h3>${compatible.warning ? `<p class="muted">${esc(compatible.warning)}</p>` : ""}${current ? performanceTrendSvg(compatible.records) : `<div class="empty">Aucune donnée disponible.</div>`}</div><div class="performance-analysis-panel"><h3>Configuration</h3>${performanceObjectiveForm(current)}</div></div><div class="performance-analysis-panel"><h3>Historique du KPI</h3><div class="performance-history-table"><table class="perf-table"><thead><tr><th>Période</th><th>Valeur</th><th>Objectif</th><th>Écart</th><th>Source</th><th>Qualité</th></tr></thead><tbody>${series.length ? series.map(record => {
+    const objective = performanceObjectiveDefinition(record);
+    const objectiveLabel = objective.mode === "range"
+      ? `${perfHas(objective.min) ? perfFmt(objective.min) : "-"} / ${perfHas(objective.max) ? perfFmt(objective.max) : "-"}${objective.unit ? ` ${objective.unit}` : ""}`
+      : (perfHas(objective.objective) ? `${perfFmt(objective.objective)}${objective.unit ? ` ${objective.unit}` : ""}` : "À compléter");
+    const gap = performanceObjectiveGap(record);
+    return `<tr><td>${esc(record.periodTitle)}</td><td>${esc(perfFmt(record.value))}${record.unit ? ` ${esc(record.unit)}` : ""}</td><td>${esc(objectiveLabel)}</td><td>${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || record.unit))}</td><td>${esc(record.source || "Saisie / DEOS")}</td><td>${performanceFlagsBadges(record.qualityFlags)}</td></tr>`;
+  }).join("") : `<tr><td colspan="6">Aucune donnée disponible.</td></tr>`}</tbody></table></div></div></div>`;
+}
+
+function performanceComplementarySection(records) {
+  const filtered = performanceApplyFilters(records);
+  const complementary = filtered.filter(record => record.scope === "complementary");
+  const latestComplementary = performanceLatestRecordByKpi(complementary);
+  return `<div class="card full-span"><div class="row"><div><h2>KPI complémentaires</h2><p class="muted">Restitution dédiée des KPI hors catalogue principal. Le remappage ci-dessous prépare les prochains imports sans réécrire l'historique.</p></div><div class="row-actions"><button class="secondary" onclick="togglePerformanceComplementarySection()">${performanceComplementaryExpanded ? "Masquer" : "Afficher"}</button></div></div>${performanceComplementaryExpanded ? `<div class="performance-history-table"><table class="perf-table"><thead><tr><th>Libellé source</th><th>Dernière valeur</th><th>Période</th><th>Historique</th><th>Source</th><th>Remappage futur</th><th>Qualité</th></tr></thead><tbody>${latestComplementary.length ? latestComplementary.map(record => {
+    const historyCount = complementary.filter(item => item.kpiId === record.kpiId).length;
+    const suggested = performanceImportMappingForLabel(record.sourceLabel);
+    const options = [{ id: "complementary.generic", label: "KPI complémentaire" }, ...performancePrimaryTargetOptions()].map(option => `<option value="${esc(option.id)}" ${(suggested?.id || record.targetId || "complementary.generic") === option.id ? "selected" : ""}>${esc(option.label)}</option>`).join("");
+    return `<tr><td>${esc(record.sourceLabel)}</td><td>${esc(perfFmt(record.value))}${record.unit ? ` ${esc(record.unit)}` : ""}</td><td>${esc(record.periodTitle)}</td><td>${historyCount} période(s)</td><td>${esc(record.source || "Import")}</td><td><select onchange="setComplementaryKpiMapping(this.dataset.label, this.value)" data-label="${esc(record.sourceLabel)}">${options}</select></td><td>${performanceFlagsBadges(record.qualityFlags)}</td></tr>`;
+  }).join("") : `<tr><td colspan="7">Aucun KPI complémentaire avec les filtres en cours.</td></tr>`}</tbody></table></div>` : `<div class="muted">${latestComplementary.length} KPI complémentaire(s) disponible(s).</div>`}</div>`;
+}
+
+function performanceOverviewSection() {
+  const allRecords = performanceAllRecords();
+  const filtered = performanceApplyFilters(allRecords);
+  return `<div class="card full-span"><div class="row"><div><h2>Synthèse Performance</h2><p class="muted">Vue consolidée des KPI disponibles, des objectifs configurés et des signaux de qualité.</p></div></div>${performanceDashboardFilterBar(allRecords)}${performanceSummaryCards(filtered)}</div><div class="card full-span"><h2>Historique et tendances</h2>${performanceAnalysisPanel(allRecords)}</div>${performanceComplementarySection(allRecords)}`;
+}
+
+function setPerformanceDashboardFilter(name, value) {
+  performanceDashboardFilters[name] = value || "all";
+  if (name === "kpi") performanceDashboardSelectedKpi = "";
+  renderPerformance();
+}
+
+function setPerformanceAnalysisKpi(kpiId) {
+  performanceDashboardSelectedKpi = kpiId || "";
+  renderPerformance();
+}
+
+function savePerformanceDashboardObjective() {
+  const kpiId = document.getElementById("perfObjectiveKpiId")?.value || "";
+  if (!kpiId) return;
+  const mode = document.getElementById("perfObjectiveMode")?.value || "";
+  const objective = document.getElementById("perfObjectiveValue")?.value.trim() || "";
+  const min = document.getElementById("perfObjectiveMin")?.value.trim() || "";
+  const max = document.getElementById("perfObjectiveMax")?.value.trim() || "";
+  const unit = document.getElementById("perfObjectiveUnit")?.value.trim() || "";
+  const vigilance = document.getElementById("perfObjectiveVigilance")?.value.trim() || "";
+  const critical = document.getElementById("perfObjectiveCritical")?.value.trim() || "";
+  const store = performanceObjectiveStore();
+  if (!mode && !objective && !min && !max && !unit && !vigilance && !critical) delete store[kpiId];
+  else store[kpiId] = { mode, objective, min, max, unit, vigilance, critical };
+  persistSettings();
+  renderPerformance();
+}
+
+function resetPerformanceDashboardObjective() {
+  const kpiId = document.getElementById("perfObjectiveKpiId")?.value || "";
+  if (!kpiId) return;
+  delete performanceObjectiveStore()[kpiId];
+  persistSettings();
+  renderPerformance();
+}
+
+function togglePerformanceComplementarySection() {
+  performanceComplementaryExpanded = !performanceComplementaryExpanded;
+  renderPerformance();
+}
+
+function setComplementaryKpiMapping(sourceLabel, targetId) {
+  if (!sourceLabel) return;
+  performanceImportRememberMapping(sourceLabel, targetId || "complementary.generic");
+  renderPerformance();
+}
+
 function renderPerformance() {
   document.getElementById("viewTitle").textContent = "Performance";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "performance"));
@@ -8332,6 +8841,7 @@ function performanceView(p) {
   const actions = state.actions.filter(a => (a.linkedPerformance || []).includes(p.id) || (p.link || "").includes(perfPeriodLabel(p)));
   const decisions = state.decisions.filter(d => (d.linkedPerformance || []).includes(p.id));
   const documents = state.documents.filter(d => (d.linkedPerformance || []).includes(p.id));
+  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} · Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two">${performanceOverviewSection()}<div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", p.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", p.ipo.total)}${perfMetricBlock("IPO variable", p.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(p)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", p.hours.total)}${perfMetricBlock("Heures indirectes", p.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", p.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(p)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(p)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(p))}</p></div>${performanceSourceBlock(p)}<div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="openDocument('${d.id}')"><strong>${esc(d.title || d.name || "Document")}</strong><span class="muted">${esc(d.type || d.category || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div></div>`;
   return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} ? Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two"><div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", p.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", p.ipo.total)}${perfMetricBlock("IPO variable", p.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(p)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", p.hours.total)}${perfMetricBlock("Heures indirectes", p.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", p.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(p)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(p)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(p))}</p></div><div class="card full-span"><h2>Historique et tendances</h2>${perfCharts()}</div><div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")} · ${esc(d.category || "")} · ${esc(d.status || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div>${performanceSourceBlock(p)}<div class="card full-span">${performanceImportHistory()}</div></div>`;
 }
 
