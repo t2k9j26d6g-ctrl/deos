@@ -31,6 +31,26 @@ let googleSyncTimerId = null;          // ID du timer automatique (V5.6)
 let googleLastSyncAt = null;           // timestamp dernière synchro (V5.6)
 let googleNextSyncAt = null;           // timestamp prochaine synchro (V5.6)
 
+let decisionDetailId = "";
+let decisionEditDialog = {
+  open: false,
+  decisionId: "",
+  error: ""
+};
+
+function editDecision(id) {
+  decisionDetailId = String(id);
+  openDecisionEditModal(id);
+}
+
+function saveDecision(id) {
+  return saveDecisionEdit(id);
+}
+
+function deleteDecision(id) {
+  openDecisionDeleteModal(id);
+}
+
 const identityDefaults = {
   appName: "DEOS",
   appVersion: DEOS_VERSION,
@@ -129,6 +149,11 @@ let actionEditDialog = {
 let actionDeleteDialog = {
   open: false,
   actionId: "",
+  error: ""
+};
+let decisionDeleteDialog = {
+  open: false,
+  decisionId: "",
   error: ""
 };
 let a5PrintCleanupBound = false;
@@ -298,6 +323,7 @@ function appHtml(html) {
   injectA5SummaryButtons();
   renderA5SummaryOverlay();
   renderActionModalOverlays();
+  renderDecisionModalOverlays();
 }
 
 function badge(status) {
@@ -2829,6 +2855,16 @@ function ensureActionModalHooks() {
   if (modalEscapeBound) return;
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
+    if (decisionDeleteDialog.open) {
+      closeDecisionDeleteModal();
+      event.preventDefault();
+      return;
+    }
+    if (decisionEditDialog.open) {
+      closeDecisionEditModal();
+      event.preventDefault();
+      return;
+    }
     if (actionDeleteDialog.open) {
       closeActionDeleteModal();
       event.preventDefault();
@@ -3222,6 +3258,19 @@ function setCockpitFocus(focus) {
   renderCockpit();
 }
 
+
+function editDecision(id) {
+  decisionDetailId = String(id);
+  openDecisionEditModal(id);
+}
+
+function saveDecision(id) {
+  return saveDecisionEdit(id);
+}
+
+function deleteDecision(id) {
+  openDecisionDeleteModal(id);
+}
 function cockpitFocusItems(focus, todayItems, alertItems, upcomingItems) {
   if (focus === "today") return todayItems;
   if (focus === "alerts") return alertItems;
@@ -6893,6 +6942,201 @@ function saveDecision(id) {
   openDecision(id);
 }
 
+
+function decisionEditableManagerIds(decision) {
+  return normalizeLinkedManagerIds(ensureArray(decision?.linkedManagers).length ? decision.linkedManagers : ensureArray(decision?.linkedManagerIds));
+}
+
+function decisionRenderRelatedMeetings(decision) {
+  const meetings = decisionRelationsForA5(decision).meetings.map(a5MeetingDisplay);
+  return a5List(meetings, meeting => `<article class="a5-item"><strong>${esc(meeting.label)}</strong><p>${esc(meeting.date)} · ${esc(meeting.time)} ${meetingConfidentialityBadge(meeting.confidentiality)}</p></article>`, "Aucun rendez-vous lié.");
+}
+
+function decisionEditModalBody(decision) {
+  const relations = decisionRelationsForA5(decision);
+  const hasManagersField = Object.prototype.hasOwnProperty.call(decision, "linkedManagers") || Object.prototype.hasOwnProperty.call(decision, "linkedManagerIds");
+  const managerIds = decisionEditableManagerIds(decision);
+  const relatedManagersHtml = hasManagersField
+    ? `<div><label>Managers associés</label>${checkboxList("deManagers", state.managers, managerIds, manager => `${manager.name} · ${manager.role || ""}`)}</div>`
+    : `<div><label>Managers associés</label>${a5List(relations.managers, manager => `<article class="a5-item"><p>${esc(manager.name || "Manager")}${manager.role ? " · " + esc(manager.role) : ""}</p></article>`, "Aucun manager associé.")}</div>`;
+
+  return `
+    <div class="form-grid">
+      <input id="deTitle" value="${esc(decision.title || "")}" placeholder="Titre ou libellé" class="full">
+      <input id="deDate" type="date" value="${esc(decision.date || "")}" placeholder="Date">
+      <select id="deStatus">
+        <option value="decided" ${decision.status === "decided" ? "selected" : ""}>Décidée</option>
+        <option value="applying" ${decision.status === "applying" ? "selected" : ""}>En cours d'application</option>
+        <option value="applied" ${decision.status === "applied" ? "selected" : ""}>Appliquée</option>
+        <option value="review" ${decision.status === "review" ? "selected" : ""}>À réexaminer</option>
+      </select>
+      <select id="deImportance">
+        <option value="green" ${decision.importance === "green" ? "selected" : ""}>Normal</option>
+        <option value="orange" ${decision.importance === "orange" || !decision.importance ? "selected" : ""}>Important</option>
+        <option value="red" ${decision.importance === "red" ? "selected" : ""}>Critique</option>
+      </select>
+      <input id="deOwner" value="${esc(decision.owner || "")}" placeholder="Responsable ou décideur">
+      <input id="deReview" value="${esc(decision.reviewDate || "")}" placeholder="Date de revue">
+      <input id="deTags" value="${esc((decision.tags || []).join(", "))}" placeholder="Mots-clés" class="full">
+    </div>
+    <textarea id="deContext" placeholder="Contexte">${esc(decision.context || "")}</textarea>
+    <textarea id="deProblem" placeholder="Problème à résoudre">${esc(decision.problem || "")}</textarea>
+    <textarea id="deDecisionText" placeholder="Décision prise">${esc(decision.decision || decision.nextStep || "")}</textarea>
+    <textarea id="deRationale" placeholder="Justification">${esc(decision.rationale || "")}</textarea>
+    <textarea id="deAlternatives" placeholder="Alternatives étudiées">${esc(decision.alternatives || "")}</textarea>
+    <textarea id="deImpacts" placeholder="Impacts">${esc(decision.impacts || decision.impact || "")}</textarea>
+    <textarea id="deRisks" placeholder="Risques">${esc(decision.risks || "")}</textarea>
+    <textarea id="deNextStep" placeholder="Prochaine étape">${esc(decision.nextStep || "")}</textarea>
+    <div class="grid two manager-links">
+      <div><label>Dossiers liés</label>${checkboxList("deFolders", state.folders, normalizeLinkedIdArray(decision.linkedFolders), folder => folder.name)}</div>
+      <div><label>Projets liés</label>${checkboxList("deProjects", state.projects, normalizeLinkedIdArray(decision.linkedProjects), project => project.name)}</div>
+      <div><label>Actions liées</label>${checkboxList("deActions", state.actions, normalizeLinkedIdArray(decision.linkedActions), action => action.title)}</div>
+      <div><label>Documents liés</label>${checkboxList("deDocuments", state.documents, normalizeLinkedIdArray(decision.linkedDocuments), document => document.title)}</div>
+      ${relatedManagersHtml}
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Rendez-vous liés</h3>
+      ${decisionRenderRelatedMeetings(decision)}
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>Notes du directeur</h3>
+      ${decisionNotesList(decision)}
+    </div>
+    <div class="modal-actions">
+      <button class="action" type="button" onclick="saveDecisionEdit('${esc(decision.id)}')">Enregistrer</button>
+      <button class="secondary" type="button" onclick="closeDecisionEditModal()">Annuler</button>
+    </div>
+  `;
+}
+
+function renderDecisionEditModal() {
+  if (!decisionEditDialog.open) return "";
+  const decision = byId("decisions", decisionEditDialog.decisionId);
+  if (!decision) return "";
+  const errorHtml = decisionEditDialog.error ? `<p class="folder-delete-error">${esc(decisionEditDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop decision-edit-modal" onclick="closeDecisionEditModal()"><div class="modal-panel" style="max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()"><div class="modal-head"><h2>Modifier décision</h2><button class="icon-close" type="button" onclick="closeDecisionEditModal()" aria-label="Fermer">×</button></div>${errorHtml}${decisionEditModalBody(decision)}</div></div>`;
+}
+
+function renderDecisionDeleteModal() {
+  if (!decisionDeleteDialog.open) return "";
+  const decision = byId("decisions", decisionDeleteDialog.decisionId);
+  if (!decision) return "";
+  const errorHtml = decisionDeleteDialog.error ? `<p class="folder-delete-error">${esc(decisionDeleteDialog.error)}</p>` : "";
+  return `<div class="modal-backdrop decision-delete-modal" onclick="closeDecisionDeleteModal()"><div class="modal-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>Supprimer la décision</h2><button class="icon-close" type="button" onclick="closeDecisionDeleteModal()" aria-label="Fermer">×</button></div><p>Confirmer la suppression de <strong>${esc(decision.title || "Décision")}</strong>.</p><p class="muted">Aucune suppression ne sera effectuée si vous annulez.</p>${errorHtml}<div class="grid two"><div class="card"><h3>Relations</h3><p><strong>Dossiers :</strong> ${normalizeLinkedIdArray(decision.linkedFolders).length}</p><p><strong>Projets :</strong> ${normalizeLinkedIdArray(decision.linkedProjects).length}</p><p><strong>Actions :</strong> ${normalizeLinkedIdArray(decision.linkedActions).length}</p><p><strong>Documents :</strong> ${normalizeLinkedIdArray(decision.linkedDocuments).length}</p><p><strong>Managers :</strong> ${decisionEditableManagerIds(decision).length}</p></div><div class="card"><h3>Rappel</h3><p>${esc(decision.context || decision.problem || "Décision à confirmer avant suppression.")}</p></div></div><div class="modal-actions"><button class="danger" type="button" onclick="confirmDecisionDelete('${esc(decision.id)}')">Supprimer</button><button class="secondary" type="button" onclick="closeDecisionDeleteModal()">Annuler</button></div></div></div></div>`;
+}
+
+function renderDecisionModalOverlays() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".decision-edit-modal, .decision-delete-modal").forEach(node => node.remove());
+  if (decisionEditDialog.open) root.insertAdjacentHTML("beforeend", renderDecisionEditModal());
+  if (decisionDeleteDialog.open) root.insertAdjacentHTML("beforeend", renderDecisionDeleteModal());
+}
+
+function openDecisionEditModal(id) {
+  const decision = byId("decisions", id);
+  if (!decision) return;
+  ensureActionModalHooks();
+  decisionEditDialog = { open: true, decisionId: String(id), error: "" };
+  renderDecisionModalOverlays();
+}
+
+function closeDecisionEditModal() {
+  if (!decisionEditDialog.open) return;
+  decisionEditDialog = { open: false, decisionId: "", error: "" };
+  renderDecisionModalOverlays();
+}
+
+function openDecisionDeleteModal(id) {
+  const decision = byId("decisions", id);
+  if (!decision) return;
+  ensureActionModalHooks();
+  decisionDeleteDialog = { open: true, decisionId: String(id), error: "" };
+  renderDecisionModalOverlays();
+}
+
+function closeDecisionDeleteModal() {
+  if (!decisionDeleteDialog.open) return;
+  decisionDeleteDialog = { open: false, decisionId: "", error: "" };
+  renderDecisionModalOverlays();
+}
+
+function saveDecisionEdit(id) {
+  const i = indexById("decisions", id);
+  if (i < 0) return false;
+  const current = state.decisions[i];
+  const title = document.getElementById("deTitle")?.value.trim() || "";
+  if (!title) {
+    decisionEditDialog.error = "Le titre de la décision est obligatoire.";
+    renderDecisionModalOverlays();
+    return false;
+  }
+  const next = {
+    ...current,
+    title,
+    date: document.getElementById("deDate")?.value || "",
+    status: document.getElementById("deStatus")?.value || "decided",
+    importance: document.getElementById("deImportance")?.value || "orange",
+    owner: document.getElementById("deOwner")?.value.trim() || "",
+    reviewDate: document.getElementById("deReview")?.value || "",
+    tags: splitTags(document.getElementById("deTags")?.value || ""),
+    context: document.getElementById("deContext")?.value.trim() || "",
+    problem: document.getElementById("deProblem")?.value.trim() || "",
+    decision: document.getElementById("deDecisionText")?.value.trim() || "",
+    rationale: document.getElementById("deRationale")?.value.trim() || "",
+    alternatives: document.getElementById("deAlternatives")?.value.trim() || "",
+    impacts: document.getElementById("deImpacts")?.value.trim() || "",
+    impact: document.getElementById("deImpacts")?.value.trim() || "",
+    risks: document.getElementById("deRisks")?.value.trim() || "",
+    nextStep: document.getElementById("deNextStep")?.value.trim() || "",
+    linkedFolders: normalizeLinkedIdArray(checkedValues("deFolders")),
+    linkedProjects: normalizeLinkedIdArray(checkedValues("deProjects")),
+    linkedActions: normalizeLinkedIdArray(checkedValues("deActions")),
+    linkedDocuments: normalizeLinkedIdArray(checkedValues("deDocuments"))
+  };
+  const managerIds = decisionEditableManagerIds(current);
+  const selectedManagers = normalizeLinkedManagerIds(checkedValues("deManagers"));
+  next.linkedManagers = selectedManagers.length ? selectedManagers : managerIds;
+  if (Object.prototype.hasOwnProperty.call(current, "linkedManagerIds")) next.linkedManagerIds = next.linkedManagers;
+  state.decisions[i] = normalizeEntity("decisions", next);
+  persist("decisions");
+  syncDecisionBacklinks(state.decisions[i]);
+  addActivity("📌 Décision modifiée", state.decisions[i].title, state.decisions[i].nextStep || state.decisions[i].decision || "", id);
+  if (a5SummaryDialog.open && a5SummaryDialog.type === "decision" && sameId(a5SummaryDialog.sourceId, id)) {
+    a5SummaryDialog.model = buildDecisionA5Summary(id);
+  }
+  closeDecisionEditModal();
+  if (sameId(decisionDetailId, id)) {
+    openDecision(id);
+  } else {
+    renderDecisions();
+  }
+  return true;
+}
+
+function confirmDecisionDelete(id) {
+  const i = indexById("decisions", id);
+  if (i < 0) return false;
+  const title = state.decisions[i].title;
+  state.decisions.splice(i, 1);
+  state.managers.forEach(manager => manager.linkedDecisions = ensureArray(manager.linkedDecisions).filter(linkedId => linkedId !== id));
+  state.projects.forEach(project => project.linkedDecisions = ensureArray(project.linkedDecisions).filter(linkedId => linkedId !== id));
+  persist("decisions");
+  persist("managers");
+  persist("projects");
+  addActivity("📌 Décision supprimée", title);
+  if (a5SummaryDialog.open && a5SummaryDialog.type === "decision" && sameId(a5SummaryDialog.sourceId, id)) {
+    closeA5SummaryPreview();
+  }
+  closeDecisionDeleteModal();
+  if (sameId(decisionDetailId, id)) {
+    decisionDetailId = "";
+    renderDecisions();
+  } else {
+    renderDecisions();
+  }
+  return true;
+}
 function saveDecisionNote(id) {
   const d = byId("decisions", id);
   if (!d) return;
@@ -10446,6 +10690,19 @@ function markExternalEventSourceMissing(eventKey, missing = true) {
   enrichment.sourceUnavailable = !!missing;
   saveExternalEventEnrichment(eventKey, enrichment);
   console.log("[DEOS V5.7] Event", eventKey, "marked as source unavailable:", missing);
+}
+
+function editDecision(id) {
+  decisionDetailId = String(id);
+  openDecisionEditModal(id);
+}
+
+function saveDecision(id) {
+  return saveDecisionEdit(id);
+}
+
+function deleteDecision(id) {
+  openDecisionDeleteModal(id);
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
