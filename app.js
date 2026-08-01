@@ -9132,6 +9132,59 @@ function detectImportPeriod(name = "") {
   return fr ? `${fr[1]} ${fr[2]}` : "";
 }
 
+function periodMonthFromFrenchLabel(label = "") {
+  const monthMap = { janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12 };
+  return monthMap[normalizeText(label)] || 0;
+}
+
+function canonicalPerformancePeriod(period = "") {
+  const raw = String(period || "").trim();
+  if (!raw) return "";
+  const mmYyyy = raw.match(/^(0?[1-9]|1[0-2])\/(20\d{2})$/);
+  if (mmYyyy) return `${String(Number(mmYyyy[1])).padStart(2, "0")}/${mmYyyy[2]}`;
+  const yyyyMm = raw.match(/^(20\d{2})[-\/.](0?[1-9]|1[0-2])$/);
+  if (yyyyMm) return `${String(Number(yyyyMm[2])).padStart(2, "0")}/${yyyyMm[1]}`;
+  const fr = raw.match(/(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s*(20\d{2})/i);
+  if (fr) {
+    const month = periodMonthFromFrenchLabel(fr[1]);
+    if (month) return `${String(month).padStart(2, "0")}/${fr[2]}`;
+  }
+  return "";
+}
+
+function parsePerformancePeriod(period = "") {
+  const canonical = canonicalPerformancePeriod(period);
+  if (!canonical) return null;
+  const [month, year] = canonical.split("/").map(Number);
+  if (!month || !year) return null;
+  return { month, year, key: canonical };
+}
+
+function performanceRecordPeriod(record = {}) {
+  const month = Number(record.month);
+  const year = Number(record.year);
+  if (month >= 1 && month <= 12 && year >= 1900) {
+    return { month, year, key: `${String(month).padStart(2, "0")}/${year}` };
+  }
+  return parsePerformancePeriod(record.period || "");
+}
+
+function performanceEnsurePeriodIdentity(record = {}) {
+  const parsed = performanceRecordPeriod(record);
+  if (!parsed) return record;
+  const sameMonth = Number(record.month) === parsed.month;
+  const sameYear = Number(record.year) === parsed.year;
+  const samePeriod = String(record.period || "") === parsed.key;
+  if (sameMonth && sameYear && samePeriod) return record;
+  return { ...record, month: parsed.month, year: parsed.year, period: parsed.key };
+}
+
+function performancePeriodSortStamp(record = {}) {
+  const parsed = performanceRecordPeriod(record);
+  if (!parsed) return 0;
+  return parsed.year * 100 + parsed.month;
+}
+
 function detectPerformanceImportFile(file) {
   const base = { id: newId("file"), name: file.name || "Fichier", size: file.size || 0, extension: (String(file.name || "").split(".").pop() || "").toLowerCase(), typeDetected: detectImportType(file.name || "") };
   if (base.typeDetected === "GPO PDF") return detectGpoPdf(base);
@@ -9484,12 +9537,7 @@ function detectGpoPeriod(text, fileName = "") {
 
 function normalizeImportPeriod(period = "") {
   if (!period) return "";
-  const numeric = String(period).match(/^(0?[1-9]|1[0-2])\/(20\d{2})$/);
-  if (numeric) return `${String(Number(numeric[1])).padStart(2, "0")}/${numeric[2]}`;
-  const fr = String(period).match(/(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s*(20\d{2})/i);
-  if (!fr) return period;
-  const monthMap = { janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12 };
-  return `${String(monthMap[normalizeText(fr[1])] || 0).padStart(2, "0")}/${fr[2]}`;
+  return canonicalPerformancePeriod(period) || period;
 }
 
 function extractGpoIndicators(pages, period) {
@@ -9913,8 +9961,12 @@ function decoratePerformancePreviewRow(row) {
 }
 
 function getPerformanceByPeriod(period) {
-  const [month, year] = String(period || "").split("/").map(Number);
-  return state.performance.find(p => Number(p.month) === month && Number(p.year) === year);
+  const parsed = parsePerformancePeriod(period || "");
+  if (!parsed) return null;
+  return state.performance.find(p => {
+    const row = performanceRecordPeriod(p);
+    return row && row.month === parsed.month && row.year === parsed.year;
+  }) || null;
 }
 
 function getPerformanceCurrentValue(period, path, key = "actual") {
@@ -9981,15 +10033,24 @@ function setImportPreviewTarget(id, targetId) {
 }
 
 function applyPerformanceImportRows(rows, file, importDate) {
+  state.performance = ensureArray(state.performance).map(performanceEnsurePeriodIdentity);
   const periods = new Set();
   let importedCount = 0;
   rows.forEach(row => {
-    const [month, year] = String(row.period || "").split("/").map(Number);
-    if (!month || !year) return;
-    let perf = state.performance.find(p => Number(p.month) === month && Number(p.year) === year);
+    const parsedPeriod = parsePerformancePeriod(row.period || "");
+    if (!parsedPeriod) return;
+    const normalizedPeriod = parsedPeriod.key;
+    row.period = normalizedPeriod;
+    let perf = state.performance.find(p => {
+      const ref = performanceRecordPeriod(p);
+      return ref && ref.month === parsedPeriod.month && ref.year === parsedPeriod.year;
+    });
     if (!perf) {
-      perf = perfDefaultPeriod(year, month);
+      perf = perfDefaultPeriod(parsedPeriod.year, parsedPeriod.month);
+      perf.period = normalizedPeriod;
       state.performance.unshift(perf);
+    } else if (String(perf.period || "") !== normalizedPeriod) {
+      perf.period = normalizedPeriod;
     }
     applyImportedValueToPerformance(perf, row);
     perf.status = "En cours d'analyse";
@@ -10000,27 +10061,43 @@ function applyPerformanceImportRows(rows, file, importDate) {
     perf.importSources = ensureArray(perf.importSources);
     perf.importSources.unshift({ source: sourceLabel, file: file.name || "", importDate, period: row.period, importedCount: 1, comment: `${row.indicator} -> ${row.destinationLabel}` });
     if (!row.destinationPath) perf.complementaryKpis = [...ensureArray(perf.complementaryKpis), row];
-    periods.add(row.period);
+    periods.add(normalizedPeriod);
     importedCount++;
   });
-  state.performance = state.performance.map(normalizePerformance).sort((a, b) => b.year - a.year || b.month - a.month);
+  state.performance = state.performance.slice().sort((a, b) => performancePeriodSortStamp(b) - performancePeriodSortStamp(a));
   return { importedCount, periods: [...periods] };
 }
 
 function applyImportedValueToPerformance(perf, row) {
   if (row.targetType === "complementary" || String(row.destinationPath || "").startsWith("complementary.")) {
     perf.complementaryKpis = ensureArray(perf.complementaryKpis);
-    perf.complementaryKpis.push({
+    const targetKey = String(row.targetId || row.destinationId || normalizePerformanceLabel(row.destinationLabel || row.indicator) || "complementary.generic").trim();
+    const sourceKey = normalizeText(row.source || "import");
+    const normalizedPeriod = canonicalPerformancePeriod(row.period || "") || String(row.period || "");
+    const existingIndex = perf.complementaryKpis.findIndex(item => {
+      const itemTarget = String(item.targetId || normalizePerformanceLabel(item.destinationLabel || item.indicator) || "").trim();
+      const itemPeriod = canonicalPerformancePeriod(item.period || "") || String(item.period || "");
+      const itemSource = normalizeText(item.source || "import");
+      return itemTarget === targetKey && itemPeriod === normalizedPeriod && itemSource === sourceKey;
+    });
+    const nextValue = {
       indicator: row.indicator,
       value: row.value,
       unit: row.unit || "",
-      period: row.period,
+      period: normalizedPeriod,
       source: row.source || "Import",
       sourceRef: row.sourceRef || "",
       destinationLabel: row.destinationLabel || row.indicator,
-      targetId: row.targetId || row.destinationId || "",
+      targetId: row.targetId || row.destinationId || targetKey,
       targetType: "complementary"
-    });
+    };
+    if (existingIndex >= 0) {
+      const existing = perf.complementaryKpis[existingIndex] || {};
+      if (String(existing.value ?? "") === String(nextValue.value ?? "") && String(existing.unit || "") === String(nextValue.unit || "")) return;
+      perf.complementaryKpis[existingIndex] = { ...existing, ...nextValue };
+      return;
+    }
+    perf.complementaryKpis.push(nextValue);
     return;
   }
   const target = perfPath(perf, row.destinationPath);
