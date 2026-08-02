@@ -9221,9 +9221,9 @@ const performanceImportSources = [
   { key: "gpo", label: "GPO PDF", accept: ".pdf" },
   { key: "guide", label: "Guide performance PDF", accept: ".pdf" },
   { key: "zgemed", label: "Z GEMED Excel", accept: ".xls,.xlsx,.xlsb,.csv" },
-  { key: "cgtab", label: "CGTAB", accept: ".xls,.xlsx,.csv,.txt" },
+  { key: "cgtab", label: "CGTAB", accept: ".xls,.xlsx,.xlsb,.csv,.txt" },
   { key: "ga", label: "GA", accept: ".xls,.xlsx,.xlsb,.csv,.pdf" },
-  { key: "tbag", label: "T-Bag", accept: ".xls,.xlsx,.csv,.txt" },
+  { key: "tbag", label: "T-Bag", accept: ".xls,.xlsx,.xlsb,.csv,.txt" },
   { key: "litiges", label: "Litiges", accept: ".xls,.xlsx,.csv,.pdf" }
 ];
 const IMPORT_PERIOD_PENDING = "Période à confirmer";
@@ -9248,7 +9248,20 @@ function detectZGemedExcel(file) {
     message: binary ? "Fichier Z GEMED binaire détecté. Extraction navigateur disponible après export Excel .xlsx ou CSV." : "analyse réelle disponible après lecture locale"
   };
 }
-function detectCgtab(file) { return importDetection(file, "CGTAB", "extraction à développer"); }
+function detectCgtab(file) {
+  const ext = String(file.extension || file.name || "").toLowerCase();
+  const isXlsb = ext.endsWith("xlsb") || ext === "xlsb";
+  return {
+    ...importDetection(file, "CGTAB", "analyse locale agrégée (anonymisée)"),
+    source: "CGTAB",
+    sourceType: "CGTAB XLSB",
+    status: isXlsb ? "à confirmer" : "probablement reconnu",
+    confidence: isXlsb ? "moyenne" : "faible",
+    message: isXlsb
+      ? "Format XLSB détecté. V5.18.6 agrège uniquement des KPI RH anonymisés (aucune donnée nominative persistée)."
+      : "Format détecté. Pour V5.18.6, l'extraction validée cible le classeur XLSB CGTAB Saint-Gilles."
+  };
+}
 function detectGa(file) {
   const ext = String(file.extension || file.name || "").toLowerCase();
   const isXlsb = ext.endsWith("xlsb") || ext === "xlsb";
@@ -9263,7 +9276,20 @@ function detectGa(file) {
       : "Format détecté. Pour V5.18.5, l'extraction validée cible le classeur XLSB St Gilles."
   };
 }
-function detectTBag(file) { return importDetection(file, "T-Bag", "extraction à développer"); }
+function detectTBag(file) {
+  const ext = String(file.extension || file.name || "").toLowerCase();
+  const isXlsb = ext.endsWith("xlsb") || ext === "xlsb";
+  return {
+    ...importDetection(file, "T-Bag", "analyse locale préparation détaillée"),
+    source: "T_BAG",
+    sourceType: "T-Bag XLSB",
+    status: isXlsb ? "à confirmer" : "probablement reconnu",
+    confidence: isXlsb ? "moyenne" : "faible",
+    message: isXlsb
+      ? "Format XLSB détecté. Analyse détaillée Préparation (agrégée, non nominative)."
+      : "Format détecté. Pour V5.18.7, l'extraction validée cible le classeur XLSB T-Bag."
+  };
+}
 function detectLitiges(file) { return importDetection(file, "Litiges", "extraction à développer"); }
 
 function importDetection(file, source, message) {
@@ -9446,6 +9472,10 @@ function performanceImportStepPreview() {
   const targetOptions = performanceImportTargetOptions();
   const mappedRows = performanceImportWizard.preview.filter(row => row.destinationPath);
   const unmappedRows = performanceImportWizard.preview.filter(row => !row.destinationPath && row.targetType !== "ignore");
+  const hasAggregatedPrivacyRows = performanceImportWizard.preview.some(row => String(row.privacyLevel || "") === "aggregated" || /CGTAB/i.test(String(row.source || row.sourceType || "")));
+  const hasTbagRows = performanceImportWizard.preview.some(row => /T_BAG|T-Bag/i.test(String(row.source || row.sourceType || "")));
+  const privacyBanner = hasAggregatedPrivacyRows ? `<div class="item alert-blue"><strong>Données individuelles non conservées — import agrégé uniquement</strong><span class="muted">Aucun nom, matricule ou ligne salarié n'est persisté. Seules des sommes/comptages agrégés sont proposés.</span></div>` : "";
+  const tbagPrivacyBanner = hasTbagRows ? `<div class="item alert-blue"><strong>Données agrégées Préparation — aucune donnée individuelle conservée</strong><span class="muted">Les informations T-Bag sont normalisées en agrégats par période, population et bannière.</span></div>` : "";
   const typeLabel = row => row.periodType === "cumulative" ? "Cumul" : "Mensuel";
   const deltaLabel = (value, percent) => {
     const base = value === null || value === undefined || value === "" ? "" : perfFmt(value);
@@ -9466,11 +9496,11 @@ function performanceImportStepPreview() {
     const selectable = row.targetType !== "ignore";
     const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
     const selectHtml = targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
-  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
+  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="19">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${privacyBanner}${tbagPrivacyBanner}${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="25">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -9551,6 +9581,8 @@ function normalizePerformanceImportIndicators(rows, file) {
     const selected = raw.selected !== undefined ? Boolean(raw.selected) : targetType !== "ignore";
     const period = normalizeImportPeriod(raw.period || raw.date || file.period || ensureArray(file.periods)[0]) || IMPORT_PERIOD_PENDING;
     const source = /gpo/i.test(sourceType) ? "GPO" : (isZGemedSourceLabel(raw.source || file.source || file.sourceType || "") ? "Z_GEMED" : (raw.source || file.source || file.sourceType || "Import"));
+    const population = firstImportValue(raw, ["population", "populationType"]) || "";
+    const banner = firstImportValue(raw, ["banner", "brand"]) || "";
     const actual = normalizeImportNullableNumericValue(rawValue);
     const budget = normalizeImportNullableNumericValue(firstImportValue(raw, ["budget", "target", "objective", "objectif"]));
     const historical = normalizeImportNullableNumericValue(firstImportValue(raw, ["historical", "histo", "history"]));
@@ -9570,6 +9602,8 @@ function normalizePerformanceImportIndicators(rows, file) {
       metricKey,
       category: firstImportValue(raw, ["category", "group"]) || "Autre",
       scope: firstImportValue(raw, ["scope"]) || "global",
+      population,
+      banner,
       actual,
       value: actual,
       budget,
@@ -9579,6 +9613,10 @@ function normalizePerformanceImportIndicators(rows, file) {
       deltaBudgetPercent: normalizeImportNullableNumericValue(firstImportValue(raw, ["deltaBudgetPercent", "budgetGapPercent"])),
       deltaHistoricalPercent: normalizeImportNullableNumericValue(firstImportValue(raw, ["deltaHistoricalPercent", "historicalGapPercent"])),
       objective: normalizeImportNullableNumericValue(firstImportValue(raw, ["objective", "target", "objectif"])),
+      aggregationType: firstImportValue(raw, ["aggregationType"]) || "",
+      employeeCount: normalizeImportNullableNumericValue(firstImportValue(raw, ["employeeCount", "contributors"])),
+      sourceColumns: firstImportValue(raw, ["sourceColumns"]) || "",
+      privacyLevel: firstImportValue(raw, ["privacyLevel"]) || "",
       unit,
       source,
       sourceType,
@@ -9685,12 +9723,39 @@ function validatePerformanceImport() {
     conflictCount: performanceImportWizard.preview.filter(x => x.status === "Conflit" || x.status === "Différente").length,
     periods: imported.periods
   });
+  const containsCgtab = performanceImportWizard.preview.some(row => /CGTAB/i.test(String(row.source || row.sourceType || "")));
+  if (containsCgtab) payload.privacyAudit = performancePrivacyAuditForSensitiveData();
   state.performance_imports.unshift(payload);
   persist("performance");
   persist("performance_imports");
   addActivity("Performance", "Import de données", `${payload.status} · ${payload.sourceFile}`, payload.id);
   performanceImportWizard = null;
   renderPerformance();
+}
+
+function performancePrivacyAuditForSensitiveData() {
+  const patterns = [/matricule/i, /nomprenom/i, /date.?nai/i, /matr\.?\s*baps/i, /code\s*sal/i, /salari[ée]/i];
+  const matchSensitive = value => patterns.some(regex => regex.test(String(value || "")));
+  const scan = value => {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return matchSensitive(value);
+    if (Array.isArray(value)) return value.some(scan);
+    return Object.entries(value).some(([key, val]) => matchSensitive(key) || scan(val));
+  };
+  const perfLeak = scan(state.performance || []);
+  const importsLeak = scan(state.performance_imports || []);
+  const localPerf = localStorage.getItem("deos_performance") || "";
+  const localImports = localStorage.getItem("deos_performance_imports") || "";
+  const localLeak = patterns.some(regex => regex.test(localPerf) || regex.test(localImports));
+  return {
+    checkedAt: new Date().toISOString(),
+    leaked: Boolean(perfLeak || importsLeak || localLeak),
+    checks: {
+      statePerformance: !perfLeak,
+      statePerformanceImports: !importsLeak,
+      localStoragePerformance: !localLeak
+    }
+  };
 }
 
 function performanceImportHistory() {
@@ -9723,6 +9788,22 @@ async function analyzePerformanceImportFile(file, sourceKey) {
     } catch (error) {
       performanceImportWizard.errors.push({ title: "Analyse Suivi GA impossible", detail: error.message || String(error) });
       return { ...detected, status: "non reconnu", confidence: "faible", message: error.message || "fichier GA non exploitable" };
+    }
+  }
+  if (sourceKey === "cgtab") {
+    try {
+      return await analyzeCgtabFile(file, detected);
+    } catch (error) {
+      performanceImportWizard.errors.push({ title: "Analyse CGTAB impossible", detail: error.message || String(error) });
+      return { ...detected, status: "non reconnu", confidence: "faible", message: error.message || "fichier CGTAB non exploitable" };
+    }
+  }
+  if (sourceKey === "tbag") {
+    try {
+      return await analyzeTBagFile(file, detected);
+    } catch (error) {
+      performanceImportWizard.errors.push({ title: "Analyse T-Bag impossible", detail: error.message || String(error) });
+      return { ...detected, status: "non reconnu", confidence: "faible", message: error.message || "fichier T-Bag non exploitable" };
     }
   }
   if (sourceKey !== "zgemed") return detected;
@@ -10050,6 +10131,486 @@ function matchNumberAround(text, regex) {
   return after[0] ?? "";
 }
 
+const CGTAB_ST_GILLES_KNOWN_SHA256 = "6001F182CDE70C9D14EC3438E6941D22F59E129C4639501E03738DCEDAAA6BE7";
+const CGTAB_EXCLUDED_NOMINATIVE_COLUMNS = ["Matricule", "NomPrenom", "DateNai", "Matr.BAPS", "Code Sal."];
+const TBAG_SENSITIVE_MARKERS = ["Matricule", "NomPrenom", "DateNai", "Matr.BAPS", "Code Sal.", "Identifiant salarié"];
+
+function tbagSlug(value = "") {
+  const normalized = normalizePerformanceLabel(String(value || "")).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || "unknown";
+}
+
+function tbagReadCell(sheet, row1Based, col1Based) {
+  const ref = window.XLSX.utils.encode_cell({ r: row1Based - 1, c: col1Based - 1 });
+  return sheet[ref] || null;
+}
+
+function tbagCellText(sheet, row1Based, col1Based) {
+  const cell = tbagReadCell(sheet, row1Based, col1Based);
+  if (!cell) return "";
+  const value = cell.w ?? cell.v ?? "";
+  return String(value || "").trim();
+}
+
+function tbagCellNumber(sheet, row1Based, col1Based) {
+  const cell = tbagReadCell(sheet, row1Based, col1Based);
+  if (!cell) return null;
+  const numeric = normalizeImportNullableNumericValue(cell.v);
+  return typeof numeric === "number" && Number.isFinite(numeric) ? numeric : null;
+}
+
+function tbagCellFormula(sheet, row1Based, col1Based) {
+  const cell = tbagReadCell(sheet, row1Based, col1Based);
+  return cell?.f ? `=${cell.f}` : "";
+}
+
+function tbagCanonicalPeriod(mmToken = "", year = "") {
+  const hit = String(mmToken || "").match(/MM[-_ ]?(\d{1,2})/i);
+  if (!hit) return "";
+  const mm = String(Number(hit[1])).padStart(2, "0");
+  const yyyy = String(year || "").trim();
+  if (!/^(20\d{2})$/.test(yyyy)) return "";
+  return `${mm}/${yyyy}`;
+}
+
+function tbagDestinationPath(metricKey = "", population = "", banner = "") {
+  const metricPart = normalizePerformanceLabel(metricKey).replace(/\s+/g, "_") || "metric";
+  const popPart = population ? `.pop_${tbagSlug(population)}` : "";
+  const bannerPart = banner ? `.banner_${tbagSlug(banner)}` : "";
+  return `complementary.tbag.${metricPart}${popPart}${bannerPart}`;
+}
+
+function tbagIdentityKey(population = "", banner = "") {
+  const pop = population ? `pop:${tbagSlug(population)}` : "pop:all";
+  const ban = banner ? `banner:${tbagSlug(banner)}` : "banner:all";
+  return `${pop}|${ban}`;
+}
+
+function tbagBuildRow({ period, metricKey, label, value, unit, population = "", banner = "", aggregationType = "sum", confidence = "élevée", sourceSheet, sourceCell, sourceColumns, sourceFormula = "" }) {
+  const destinationPath = tbagDestinationPath(metricKey, population, banner);
+  const category = metricKey.includes("productivity") ? "preparation_productivity" : metricKey.includes("volume") ? "preparation_volume" : "preparation_hours";
+  return {
+    id: newId("preview"),
+    period,
+    periodType: "monthly",
+    source: "T_BAG",
+    sourceType: "T-Bag XLSB",
+    category,
+    metricKey,
+    indicator: label,
+    label,
+    actual: normalizeImportNullableNumericValue(value),
+    value: normalizeImportNullableNumericValue(value),
+    budget: null,
+    historical: null,
+    unit,
+    scope: "Préparation",
+    population,
+    banner,
+    directness: banner || "",
+    costCenter: tbagIdentityKey(population, banner),
+    aggregationType,
+    employeeCount: null,
+    sourceColumns,
+    sourceFormula,
+    privacyLevel: "aggregated",
+    confidence,
+    sourceSheet,
+    sourceCell,
+    sourceRef: `${sourceSheet} · ${sourceCell}`,
+    destinationPath,
+    destinationLabel: `${label} · Préparation`,
+    destinationId: destinationPath,
+    targetId: destinationPath,
+    targetType: "complementary",
+    selected: true,
+    action: ""
+  };
+}
+
+function tbagFindPrimarySheet(workbook) {
+  const names = ensureArray(workbook?.SheetNames || []);
+  for (const name of names) {
+    const sheet = workbook.Sheets?.[name];
+    if (!sheet || !sheet["!ref"]) continue;
+    for (let r = 1; r <= 8; r++) {
+      const a = tbagCellText(sheet, r, 1).toUpperCase();
+      const b = tbagCellText(sheet, r, 2).toUpperCase();
+      const c = tbagCellText(sheet, r, 3).toUpperCase();
+      const d = tbagCellText(sheet, r, 4).toUpperCase();
+      const e = tbagCellText(sheet, r, 5).toUpperCase();
+      if (a === "AL" && b === "HYBRIDE" && c === "BANNIERE" && d === "NATURE" && /^MM[-_ ]?\d+/.test(e)) {
+        return { sheetName: name, headerRow: r };
+      }
+    }
+  }
+  return null;
+}
+
+function tbagExtractYear(sheet) {
+  for (let r = 1; r <= 6; r++) {
+    for (let c = 1; c <= 4; c++) {
+      const text = tbagCellText(sheet, r, c);
+      const hit = text.match(/(20\d{2})/);
+      if (hit) return hit[1];
+    }
+  }
+  return "";
+}
+
+function tbagMonthColumns(sheet, headerRow, range) {
+  const cols = [];
+  for (let c = 5; c <= range.e.c + 1; c++) {
+    const token = tbagCellText(sheet, headerRow, c);
+    if (/^MM[-_ ]?\d{1,2}$/i.test(token)) cols.push({ col: c, token });
+  }
+  return cols;
+}
+
+function tbagPopulationFromNature(nature = "") {
+  const n = normalizeText(nature);
+  if (/\bcdi\b/.test(n)) return "CDI";
+  if (/\bcdd\b/.test(n)) return "CDD";
+  if (/\bett\b|interim/.test(n)) return "ETT";
+  return "";
+}
+
+function tbagIsSensitiveText(value = "") {
+  const text = normalizeText(value);
+  return /matricule|nomprenom|prenom|date.?nai|baps|code.?sal|identifiant|badge/.test(text);
+}
+
+function tbagNormalizeBanner(value = "") {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function tbagAnalyzeRows(sheet, sheetName, headerRow, year, monthCols, range) {
+  const rows = [];
+  const populations = new Set();
+  const banners = new Set();
+  const periods = new Set();
+  const excludedSensitiveHits = [];
+
+  const totalsByPeriod = {};
+  const volumeByPopPeriod = {};
+
+  for (let r = headerRow + 1; r <= range.e.r + 1; r++) {
+    const hybrid = tbagCellText(sheet, r, 2);
+    const bannerRaw = tbagCellText(sheet, r, 3);
+    const nature = tbagCellText(sheet, r, 4);
+    if (!nature) continue;
+    if (tbagIsSensitiveText(`${hybrid} ${bannerRaw} ${nature}`)) {
+      if (excludedSensitiveHits.length < 25) excludedSensitiveHits.push(`row ${r}`);
+      continue;
+    }
+    const banner = tbagNormalizeBanner(bannerRaw);
+    const normalizedNature = normalizeText(nature);
+    const isPrepDirect = normalizedNature === normalizeText("PREP HEURES DIRECTES");
+    const pop = tbagPopulationFromNature(nature);
+    const isVolumePop = /^colis\s+/i.test(nature) && Boolean(pop);
+    const isHoursPop = /^heures\s+/i.test(nature) && /prepa|prépa|preparation|préparation/i.test(nature) && Boolean(pop);
+    const isProdPop = /^prod\s+/i.test(nature) && Boolean(pop);
+
+    if (!isPrepDirect && !isVolumePop && !isHoursPop && !isProdPop) continue;
+
+    if (pop) populations.add(pop);
+    if (isPrepDirect && banner && normalizeText(banner) !== normalizeText("TOTAL BANNIERE")) banners.add(banner);
+
+    for (const monthCol of monthCols) {
+      const period = tbagCanonicalPeriod(monthCol.token, year);
+      if (!period) continue;
+      const value = tbagCellNumber(sheet, r, monthCol.col);
+      if (value === null) continue;
+      periods.add(period);
+      const sourceCell = `${cgtabColLetter(monthCol.col)}${r}`;
+      const sourceFormula = tbagCellFormula(sheet, r, monthCol.col);
+
+      if (isPrepDirect && normalizeText(banner) === normalizeText("TOTAL BANNIERE")) {
+        totalsByPeriod[period] = totalsByPeriod[period] || {};
+        totalsByPeriod[period].hours = value;
+        rows.push(tbagBuildRow({ period, metricKey: "preparation.hours.total", label: "Préparation - Heures directes", value, unit: "h", population: "TOTAL", banner: "TOTAL BANNIERE", aggregationType: "sum", confidence: "élevée", sourceSheet: sheetName, sourceCell, sourceColumns: "NATURE=PREP HEURES DIRECTES|BANNIERE=TOTAL BANNIERE", sourceFormula }));
+      }
+
+      if (isPrepDirect && banner && normalizeText(banner) !== normalizeText("TOTAL BANNIERE")) {
+        rows.push(tbagBuildRow({ period, metricKey: "preparation.banner.hours", label: "Préparation - Heures directes bannière", value, unit: "h", population: "TOTAL", banner, aggregationType: "sum", confidence: "élevée", sourceSheet: sheetName, sourceCell, sourceColumns: "NATURE=PREP HEURES DIRECTES", sourceFormula }));
+      }
+
+      if (isVolumePop && pop) {
+        volumeByPopPeriod[period] = volumeByPopPeriod[period] || {};
+        volumeByPopPeriod[period][pop] = value;
+        rows.push(tbagBuildRow({ period, metricKey: `preparation.volume.${pop.toLowerCase()}`, label: `Préparation - Volume ${pop}`, value, unit: "colis", population: pop, banner: "TOTAL BANNIERE", aggregationType: "sum", confidence: "élevée", sourceSheet: sheetName, sourceCell, sourceColumns: `NATURE=${nature}`, sourceFormula }));
+      }
+
+      if (isHoursPop && pop) {
+        rows.push(tbagBuildRow({ period, metricKey: `preparation.hours.${pop.toLowerCase()}`, label: `Préparation - Heures ${pop}`, value, unit: "h", population: pop, banner: "TOTAL BANNIERE", aggregationType: "sum", confidence: "élevée", sourceSheet: sheetName, sourceCell, sourceColumns: `NATURE=${nature}`, sourceFormula }));
+      }
+
+      if (isProdPop && pop) {
+        rows.push(tbagBuildRow({ period, metricKey: `preparation.productivity.${pop.toLowerCase()}`, label: `Préparation - Productivité ${pop}`, value, unit: "colis/h", population: pop, banner: "TOTAL BANNIERE", aggregationType: "ratio", confidence: sourceFormula ? "élevée" : "moyenne", sourceSheet: sheetName, sourceCell, sourceColumns: `NATURE=${nature}`, sourceFormula }));
+      }
+    }
+  }
+
+  for (const period of periods) {
+    const popVolumes = volumeByPopPeriod[period] || {};
+    const totalVolume = ["CDI", "CDD", "ETT"].reduce((sum, key) => sum + (Number(popVolumes[key]) || 0), 0);
+    if (totalVolume > 0) {
+      rows.push(tbagBuildRow({ period, metricKey: "preparation.volume.total", label: "Préparation - Volume total", value: Number(totalVolume.toFixed(2)), unit: "colis", population: "TOTAL", banner: "TOTAL BANNIERE", aggregationType: "sum", confidence: "moyenne", sourceSheet: sheetName, sourceCell: "derived", sourceColumns: "Colis CDI|Colis CDD|Colis ETT", sourceFormula: "sum(populations)" }));
+    }
+    const totalHours = Number((totalsByPeriod[period] || {}).hours);
+    if (totalVolume > 0 && Number.isFinite(totalHours) && totalHours > 0) {
+      rows.push(tbagBuildRow({ period, metricKey: "preparation.productivity.total", label: "Préparation - Productivité globale", value: Number((totalVolume / totalHours).toFixed(2)), unit: "colis/h", population: "TOTAL", banner: "TOTAL BANNIERE", aggregationType: "ratio", confidence: "moyenne", sourceSheet: sheetName, sourceCell: "derived", sourceColumns: "Volume total / Heures directes total", sourceFormula: "(Colis CDI+CDD+ETT)/PREP HEURES DIRECTES" }));
+    }
+  }
+
+  return {
+    rows: dedupeImportRows(rows),
+    periods: [...periods].sort(),
+    populations: [...populations].sort(),
+    banners: [...banners].sort(),
+    excludedSensitiveHits
+  };
+}
+
+async function analyzeTBagFile(file, detected) {
+  const ext = (detected.extension || "").toLowerCase();
+  if (ext !== "xlsb" && !String(file.name || "").toLowerCase().endsWith(".xlsb")) {
+    return {
+      ...detected,
+      source: "T_BAG",
+      sourceType: "T-Bag XLSB",
+      status: "non reconnu",
+      confidence: "faible",
+      message: "V5.18.7 cible le classeur XLSB T-Bag validé."
+    };
+  }
+  if (!window.XLSX?.read || !window.XLSX?.utils?.decode_range) {
+    throw new Error("Bibliothèque XLSX indisponible pour lire le classeur T-Bag.");
+  }
+  const buffer = await readFileArrayBuffer(file);
+  const workbook = window.XLSX.read(buffer, { type: "array", cellFormula: true, cellText: false, raw: true });
+  const primary = tbagFindPrimarySheet(workbook);
+  if (!primary) throw new Error("Structure T-Bag non reconnue (en-tête AL/HYBRIDE/BANNIERE/NATURE/MM-xx introuvable).");
+  const sheet = workbook.Sheets[primary.sheetName];
+  const range = window.XLSX.utils.decode_range(sheet["!ref"]);
+  const year = tbagExtractYear(sheet) || "2026";
+  const monthCols = tbagMonthColumns(sheet, primary.headerRow, range);
+  if (!monthCols.length) throw new Error("Aucune colonne mensuelle MM-xx détectée dans T-Bag.");
+  const analyzed = tbagAnalyzeRows(sheet, primary.sheetName, primary.headerRow, year, monthCols, range);
+  return {
+    ...detected,
+    source: "T_BAG",
+    sourceType: "T-Bag XLSB",
+    status: analyzed.rows.length ? "reconnu" : "probablement reconnu",
+    confidence: analyzed.rows.length ? "élevée" : "moyenne",
+    site: "Saint-Gilles",
+    scope: "Préparation",
+    period: analyzed.periods[0] || "",
+    periods: analyzed.periods,
+    selectedPeriods: analyzed.periods,
+    sheets: ensureArray(workbook.SheetNames || []),
+    selectedSheet: primary.sheetName,
+    detectedIndicators: analyzed.rows,
+    excludedNominativeColumns: TBAG_SENSITIVE_MARKERS,
+    message: `${analyzed.rows.length} indicateur(s) Préparation agrégé(s) extrait(s) depuis ${primary.sheetName}. Populations: ${analyzed.populations.join(", ") || "aucune"}. Bannières: ${analyzed.banners.join(", ") || "aucune"}.`
+  };
+}
+
+const CGTAB_HEADER_ROW_1_BASED = 4;
+const CGTAB_REQUIRED_SHEET = "CGTAB";
+const CGTAB_SCOPE = "Saint-Gilles";
+const CGTAB_PERIOD = "06/2026";
+const CGTAB_KPI_DEFINITIONS = [
+  { metricKey: "hours.paid", label: "Hrs Payees", category: "hours", unit: "h", aggregationType: "sum", headers: ["Hrs Payees"] },
+  { metricKey: "hours.theoretical", label: "Theorique", category: "hours", unit: "h", aggregationType: "sum", headers: ["Theorique"] },
+  { metricKey: "hours.presence", label: "T,Presence", category: "hours", unit: "h", aggregationType: "sum", headers: ["T,Presence"] },
+  { metricKey: "hours.absence", label: "Hrs Abs", category: "hours", unit: "h", aggregationType: "sum", headers: ["Hrs Abs"] },
+  { metricKey: "hours.productive", label: "Hrs Prod", category: "hours", unit: "h", aggregationType: "sum", headers: ["Hrs Prod"] },
+  { metricKey: "hours.non_productive", label: "Hrs N Prod", category: "hours", unit: "h", aggregationType: "sum", headers: ["Hrs N Prod"] },
+  { metricKey: "absence.paid_leave_hours", label: "Cong,Payes", category: "absence", unit: "h", aggregationType: "sum", headers: ["Cong,Payes"] },
+  { metricKey: "absence.rtt_hours", label: "RTT", category: "absence", unit: "h", aggregationType: "sum", headers: ["RTT"] },
+  { metricKey: "absence.public_holiday_not_worked_hours", label: "FerieNTrav", category: "absence", unit: "h", aggregationType: "sum", headers: ["FerieNTrav"] },
+  { metricKey: "absence.training_hours", label: "Formation", category: "absence", unit: "h", aggregationType: "sum", headers: ["Formation"] },
+  { metricKey: "absence.sickness_hours", label: "Maladie", category: "absence", unit: "h", aggregationType: "sum", headers: ["Maladie"] },
+  { metricKey: "absence.work_accident_hours", label: "AT", category: "absence", unit: "h", aggregationType: "sum", headers: ["AT"] },
+  { metricKey: "absence.unpaid_absence_hours", label: "Abs no Pay", category: "absence", unit: "h", aggregationType: "sum", headers: ["Abs no Pay"] },
+  { metricKey: "premium_hours.night_10", label: "Nuit10%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit10%"] },
+  { metricKey: "premium_hours.night_20", label: "Nuit20%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit20%"] },
+  { metricKey: "premium_hours.night_30", label: "Nuit30%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit30%"] },
+  { metricKey: "premium_hours.night_60", label: "Nuit60%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit60%"] },
+  { metricKey: "premium_hours.additional_hours", label: "Hrs Compl", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Hrs Compl"] },
+  { metricKey: "premium_hours.overtime_25", label: "HS25", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["HS25"] },
+  { metricKey: "premium_hours.overtime_50", label: "HS50", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["HS50"] },
+  { metricKey: "premium_hours.sunday_100", label: "Dim 100%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Dim 100%"] },
+  { metricKey: "premium_hours.sunday_200", label: "Dim 200%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Dim 200%"] },
+  { metricKey: "premium_hours.public_holiday_worked", label: "FerieTrav", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["FerieTrav"] },
+  { metricKey: "workforce.total", label: "Effectif total", category: "workforce", unit: "employees", aggregationType: "count", headers: [] },
+  { metricKey: "workforce.with_presence", label: "Effectif avec présence", category: "workforce", unit: "employees", aggregationType: "count", headers: ["Nb present|Nb présent"] },
+  { metricKey: "workforce.with_overtime", label: "Effectif avec heures supplémentaires", category: "workforce", unit: "employees", aggregationType: "count", headers: ["HS25", "HS50"] },
+  { metricKey: "workforce.with_night_hours", label: "Effectif avec heures de nuit", category: "workforce", unit: "employees", aggregationType: "count", headers: ["Nuit10%", "Nuit20%", "Nuit30%", "Nuit60%"] }
+];
+
+function cgtabColLetter(col1Based) {
+  let n = Number(col1Based || 0);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  let out = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+function cgtabRound(value, digits = 2) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return 0;
+  return Number(n.toFixed(digits));
+}
+
+function cgtabCellValue(sheet, rowIndex1Based, colIndex1Based) {
+  const ref = window.XLSX.utils.encode_cell({ r: rowIndex1Based - 1, c: colIndex1Based - 1 });
+  const cell = sheet[ref];
+  if (!cell) return null;
+  if (cell.v === null || cell.v === undefined || String(cell.v).trim() === "") return null;
+  return cell.v;
+}
+
+function cgtabNumeric(value) {
+  const normalized = normalizeImportNullableNumericValue(value);
+  return typeof normalized === "number" && Number.isFinite(normalized) ? normalized : null;
+}
+
+function cgtabResolveHeaders(sheet, range) {
+  const map = new Map();
+  for (let c = range.s.c + 1; c <= range.e.c + 1; c++) {
+    const raw = cgtabCellValue(sheet, CGTAB_HEADER_ROW_1_BASED, c);
+    const header = String(raw ?? "").trim();
+    if (!header) continue;
+    if (!map.has(header)) map.set(header, []);
+    map.get(header).push(c);
+  }
+  return map;
+}
+
+function cgtabFindEmployeeRows(sheet, range, headerMap) {
+  const matriculeCol = headerMap.get("Matricule")?.[0] || 1;
+  const nomCol = headerMap.get("NomPrenom")?.[0] || 2;
+  const rows = [];
+  for (let r = CGTAB_HEADER_ROW_1_BASED + 1; r <= range.e.r + 1; r++) {
+    const matricule = String(cgtabCellValue(sheet, r, matriculeCol) ?? "").trim();
+    const nomPrenom = String(cgtabCellValue(sheet, r, nomCol) ?? "").trim();
+    if (matricule || nomPrenom) rows.push(r);
+  }
+  return rows;
+}
+
+function cgtabResolveHeaderToken(token, headerMap) {
+  const candidates = String(token || "").split("|").map(value => value.trim()).filter(Boolean);
+  for (const candidate of candidates) {
+    const col = headerMap.get(candidate)?.[0] || 0;
+    if (col) return { header: candidate, col };
+  }
+  return { header: candidates[0] || String(token || ""), col: 0 };
+}
+
+function cgtabBuildSourceColumns(headers, headerMap) {
+  return headers.map(token => {
+    const { header, col } = cgtabResolveHeaderToken(token, headerMap);
+    const letter = cgtabColLetter(col);
+    return `${header} [${letter}${col}]`;
+  }).join(" | ");
+}
+
+function cgtabAggregateForMetric(definition, employeeRows, sheet, headerMap) {
+  if (definition.metricKey === "workforce.total") {
+    return {
+      actual: employeeRows.length,
+      contributors: employeeRows.length,
+      sourceColumns: "CGTAB rows with employee identity",
+      sourceCell: "A/B"
+    };
+  }
+  const resolvedCols = definition.headers.map(token => cgtabResolveHeaderToken(token, headerMap));
+  const missing = resolvedCols.filter(item => !item.col);
+  if (missing.length) {
+    throw new Error(`CGTAB: en-tête introuvable (${missing.map(item => item.header).join(", ")})`);
+  }
+  let sum = 0;
+  let contributors = 0;
+  for (const rowIndex of employeeRows) {
+    let rowValue = 0;
+    let rowHasNonZero = false;
+    for (const item of resolvedCols) {
+      const raw = cgtabCellValue(sheet, rowIndex, item.col);
+      const numeric = cgtabNumeric(raw);
+      if (numeric === null) continue;
+      rowValue += numeric;
+      if (numeric !== 0) rowHasNonZero = true;
+    }
+    sum += rowValue;
+    if (rowHasNonZero) contributors++;
+  }
+  const firstCol = resolvedCols[0].col;
+  return {
+    actual: definition.aggregationType === "count" ? contributors : cgtabRound(sum, 2),
+    contributors,
+    sourceColumns: cgtabBuildSourceColumns(definition.headers, headerMap),
+    sourceCell: `${cgtabColLetter(firstCol)}${CGTAB_HEADER_ROW_1_BASED}`
+  };
+}
+
+function cgtabDestinationPath(metricKey = "") {
+  const key = normalizePerformanceLabel(metricKey).replace(/\s+/g, "_") || "metric";
+  return `complementary.cgtab.${key}`;
+}
+
+function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap) {
+  return CGTAB_KPI_DEFINITIONS.map(definition => {
+    const destinationPath = cgtabDestinationPath(definition.metricKey);
+    const aggregate = cgtabAggregateForMetric(definition, employeeRows, sheet, headerMap);
+    return {
+      id: newId("preview"),
+      period,
+      periodType: "monthly",
+      source: "CGTAB",
+      sourceType: "CGTAB XLSB",
+      category: definition.category,
+      metricKey: definition.metricKey,
+      indicator: definition.label,
+      label: definition.label,
+      actual: normalizeImportNullableNumericValue(aggregate.actual),
+      value: normalizeImportNullableNumericValue(aggregate.actual),
+      budget: null,
+      historical: null,
+      deltaBudget: null,
+      deltaHistorical: null,
+      deltaBudgetPercent: null,
+      deltaHistoricalPercent: null,
+      unit: definition.unit,
+      scope: CGTAB_SCOPE,
+      activityType: definition.category === "workforce" ? "workforce" : "aggregated",
+      directness: "",
+      costCenter: "",
+      aggregationType: definition.aggregationType,
+      employeeCount: normalizeImportNullableNumericValue(aggregate.contributors),
+      sourceColumns: aggregate.sourceColumns,
+      privacyLevel: "aggregated",
+      confidence: "élevée",
+      sourceSheet: CGTAB_REQUIRED_SHEET,
+      sourceCell: aggregate.sourceCell,
+      sourceRef: `CGTAB · ${aggregate.sourceColumns}`,
+      destinationPath,
+      destinationLabel: `${definition.label} · ${CGTAB_SCOPE}`,
+      destinationId: destinationPath,
+      targetId: destinationPath,
+      targetType: "complementary",
+      selected: true,
+      action: ""
+    };
+  });
+}
+
 const GA_ST_GILLES_KNOWN_SHA256 = "D000A9940051F314AAE81B8B73FEFB2683341E6B978C25423C9A936BBDC110B5";
 const GA_ST_GILLES_SHEETS = ["Accueil", "Ajustement GA vs Palma", "Cumul annuel", "Salon AB", "Salon PF", "Salon FL", "Salon Marée", "Salon SRG", "St Gilles", "Salon Site", "BDD", "panne info"];
 
@@ -10246,6 +10807,63 @@ function gaBuildIndicatorRow(row, period) {
     targetType: mapping ? "complementary" : "ignore",
     selected: Boolean(mapping),
     action: mapping ? "" : "ignore"
+  };
+}
+
+async function analyzeCgtabFile(file, detected) {
+  const ext = (detected.extension || "").toLowerCase();
+  if (ext !== "xlsb" && !String(file.name || "").toLowerCase().endsWith(".xlsb")) {
+    return {
+      ...detected,
+      source: "CGTAB",
+      sourceType: "CGTAB XLSB",
+      status: "non reconnu",
+      confidence: "faible",
+      message: "V5.18.6 cible le classeur XLSB CGTAB Saint-Gilles validé."
+    };
+  }
+  const buffer = await readFileArrayBuffer(file);
+  const sha = await sha256HexFromArrayBuffer(buffer);
+  if (sha !== CGTAB_ST_GILLES_KNOWN_SHA256) {
+    return {
+      ...detected,
+      source: "CGTAB",
+      sourceType: "CGTAB XLSB",
+      status: "non reconnu",
+      confidence: "faible",
+      message: "Format XLSB BIFF12 détecté. Le connecteur minimal V5.18.6 est limité au classeur validé (empreinte différente)."
+    };
+  }
+  if (!window.XLSX?.read || !window.XLSX?.utils?.decode_range) {
+    throw new Error("Bibliothèque XLSX indisponible pour lire le classeur CGTAB.");
+  }
+  const workbook = window.XLSX.read(buffer, { type: "array", cellFormula: false, cellText: false, raw: true });
+  const sheet = workbook?.Sheets?.[CGTAB_REQUIRED_SHEET];
+  if (!sheet) throw new Error("Feuille CGTAB introuvable dans le classeur.");
+  const ref = sheet["!ref"];
+  if (!ref) throw new Error("Feuille CGTAB vide ou illisible.");
+  const range = window.XLSX.utils.decode_range(ref);
+  const headerMap = cgtabResolveHeaders(sheet, range);
+  const employeeRows = cgtabFindEmployeeRows(sheet, range, headerMap);
+  const period = CGTAB_PERIOD;
+  const indicators = buildCgtabAggregateRows(period, employeeRows, sheet, headerMap);
+  return {
+    ...detected,
+    source: "CGTAB",
+    sourceType: "CGTAB XLSB",
+    status: "reconnu",
+    confidence: "élevée",
+    site: CGTAB_SCOPE,
+    scope: CGTAB_SCOPE,
+    period,
+    periods: [period],
+    selectedPeriods: [period],
+    sheets: [CGTAB_REQUIRED_SHEET],
+    selectedSheet: CGTAB_REQUIRED_SHEET,
+    sourceRowCount: employeeRows.length,
+    excludedNominativeColumns: CGTAB_EXCLUDED_NOMINATIVE_COLUMNS,
+    detectedIndicators: dedupeImportRows(indicators),
+    message: `${indicators.length} agrégat(s) RH anonymisé(s) depuis CGTAB (${employeeRows.length} lignes salariés, scope ${CGTAB_SCOPE}). Colonnes nominatives exclues : ${CGTAB_EXCLUDED_NOMINATIVE_COLUMNS.join(", ")}.`
   };
 }
 
@@ -10823,6 +11441,8 @@ function applyImportedValueToPerformance(perf, row) {
     const metricKey = String(row.metricKey || "").trim();
     const scope = String(row.scope || "").trim();
     const costCenter = String(row.costCenter || "").trim();
+    const population = String(row.population || "").trim();
+    const banner = String(row.banner || "").trim();
     const existingIndex = perf.complementaryKpis.findIndex(item => {
       const itemTarget = String(item.targetId || normalizePerformanceLabel(item.destinationLabel || item.indicator) || "").trim();
       const itemPeriod = canonicalPerformancePeriod(item.period || "") || String(item.period || "");
@@ -10833,7 +11453,9 @@ function applyImportedValueToPerformance(perf, row) {
         && String(item.periodType || "monthly") === periodType
         && String(item.metricKey || "").trim() === metricKey
         && String(item.scope || "").trim() === scope
-        && String(item.costCenter || "").trim() === costCenter;
+        && String(item.costCenter || "").trim() === costCenter
+        && String(item.population || "").trim() === population
+        && String(item.banner || "").trim() === banner;
     });
     const nextValue = {
       indicator: row.indicator,
@@ -10852,6 +11474,8 @@ function applyImportedValueToPerformance(perf, row) {
       unit: row.unit || "",
       scope,
       costCenter,
+      population,
+      banner,
       period: normalizedPeriod,
       source: row.source || "Import",
       sourceRef: row.sourceRef || "",
