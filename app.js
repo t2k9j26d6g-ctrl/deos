@@ -8081,10 +8081,11 @@ const perfMonths = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juil
 const perfJobs = ["Préparation", "Réception", "Manutention", "Chargement", "Transit"];
 const perfAbsences = ["Maladie", "Accidents du travail", "Congés", "Formation", "Autres absences"];
 const perfQuality = ["Casse livraison", "Non livrés", "Litiges", "Casse entrepôt", "Périmés entrepôt", "Contrôle stock", "Dons", "Total Gains & Pertes"];
+const IPO_UNIT = "indice";
 const performanceImportTargetCatalog = [
   { id: "complementary.generic", label: "KPI complémentaire", path: "complementary.generic", type: "complementary", unit: "", aliases: ["kpi complementaire", "kpi complémentaire"] },
-  { id: "ipo.total", label: "IPO Total", path: "ipo.total.actual", type: "existing", unit: "k€", aliases: ["ipo total", "couts exploitation logistique transport"] },
-  { id: "ipo.variable", label: "IPO Variable", path: "ipo.variable.actual", type: "existing", unit: "k€", aliases: ["ipo variable", "couts variables exploitation"] },
+  { id: "ipo.total", label: "IPO Total", path: "ipo.total.actual", type: "existing", unit: IPO_UNIT, aliases: ["ipo total", "couts exploitation logistique transport"] },
+  { id: "ipo.variable", label: "IPO Variable", path: "ipo.variable.actual", type: "existing", unit: IPO_UNIT, aliases: ["ipo variable", "couts variables exploitation"] },
   { id: "activity.colis_total", label: "Colis totaux préparés", path: "activity.actual", type: "existing", unit: "colis", aliases: ["colis totaux prepares", "colis prepares total", "total colis prepares", "colis prepares", "colis total prepares", "colis controles prepares", "colis heterogenes prepares", "colis homogenes prepares", "supports charges total", "palettes receptionnees"] },
   { id: "quality.litiges", label: "Litiges", path: "quality.indicators.Litiges.actual", type: "existing", unit: "litige", aliases: ["litiges", "litige", "retours litiges"] },
   { id: "productivity.reception", label: "Réception", path: "productivity.Réception.actual", type: "existing", unit: "colis", aliases: ["reception", "receptions"] },
@@ -8113,8 +8114,8 @@ let performanceDashboardSelectedKpi = "";
 let performanceComplementaryExpanded = false;
 const performancePrimaryKpiCatalog = [
   { id: "activity.colis_total", label: "Colis totaux préparés", metricPath: "activity", targetPath: "activity.actual", valueField: "actual", objectiveField: "budget", unit: "colis", category: "Activité", destinationLabels: ["Colis totaux préparés", "Activité colis", "Colis"] },
-  { id: "ipo.total", label: "IPO Total", metricPath: "ipo.total", targetPath: "ipo.total.actual", valueField: "actual", objectiveField: "budget", unit: "k€", category: "IPO", destinationLabels: ["IPO Total", "IPO total"] },
-  { id: "ipo.variable", label: "IPO Variable", metricPath: "ipo.variable", targetPath: "ipo.variable.actual", valueField: "actual", objectiveField: "budget", unit: "k€", category: "IPO", destinationLabels: ["IPO Variable", "IPO variable"] },
+  { id: "ipo.total", label: "IPO Total", metricPath: "ipo.total", targetPath: "ipo.total.actual", valueField: "actual", objectiveField: "budget", unit: IPO_UNIT, category: "IPO", destinationLabels: ["IPO Total", "IPO total"] },
+  { id: "ipo.variable", label: "IPO Variable", metricPath: "ipo.variable", targetPath: "ipo.variable.actual", valueField: "actual", objectiveField: "budget", unit: IPO_UNIT, category: "IPO", destinationLabels: ["IPO Variable", "IPO variable"] },
   { id: "productivity.preparation", label: "Productivité Préparation", metricPath: "productivity.Préparation", targetPath: "productivity.Préparation.actual", valueField: "actual", objectiveField: "budget", unit: "colis/h", category: "Productivité", destinationLabels: ["Préparation", "Productivité Préparation"] },
   { id: "productivity.reception", label: "Productivité Réception", metricPath: "productivity.Réception", targetPath: "productivity.Réception.actual", valueField: "actual", objectiveField: "budget", unit: "palettes/h", category: "Productivité", destinationLabels: ["Réception", "Productivité Réception"] },
   { id: "productivity.manutention", label: "Productivité Manutention", metricPath: "productivity.Manutention", targetPath: "productivity.Manutention.actual", valueField: "actual", objectiveField: "budget", unit: "palettes/h", category: "Productivité", destinationLabels: ["Manutention", "Productivité Manutention"] },
@@ -8543,6 +8544,11 @@ function performanceFormatSignedValue(value, unit = "") {
   return `${prefix}${perfFmt(num)}${unit ? ` ${unit}` : ""}`;
 }
 
+function performanceDeltaUnit(record = {}) {
+  if (isIpoMetricDescriptor({ metricKey: record.kpiId || record.metricKey, destinationPath: record.targetPath, label: record.label, category: record.category })) return "points";
+  return record.unit || "";
+}
+
 function performanceHasObjective(record) {
   const definition = performanceObjectiveDefinition(record);
   return definition.mode === "range"
@@ -8647,7 +8653,7 @@ function performanceSummaryCards(records) {
     const objective = performanceObjectiveDefinition(record);
     const gap = performanceObjectiveGap(record);
     const delta = previous && previous.unit === record.unit ? Number(record.value) - Number(previous.value) : "";
-    return `<div class="performance-summary-card"><div class="performance-summary-head"><strong>${esc(record.label)}</strong>${performanceStatusBadge(record)}</div><div class="performance-summary-value">${esc(perfFmt(record.value))}${record.unit ? ` <small>${esc(record.unit)}</small>` : ""}</div><div class="performance-summary-meta">${esc(record.periodTitle)} · ${esc(record.source || "Saisie / DEOS")}</div><div class="performance-summary-lines"><span>Objectif : ${objective.mode === "range" ? `${perfHas(objective.min) ? esc(perfFmt(objective.min)) : "-"} / ${perfHas(objective.max) ? esc(perfFmt(objective.max)) : "-"}` : perfHas(objective.objective) ? esc(perfFmt(objective.objective)) : "À compléter"}${objective.unit ? ` ${esc(objective.unit)}` : ""}</span><span>Écart : ${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || record.unit))}</span><span>Évolution : ${!previous ? "Historique insuffisant" : delta === "" ? "À compléter" : esc(performanceFormatSignedValue(delta, record.unit))}${previous ? ` · vs ${esc(previous.periodTitle)}` : ""}</span></div><div class="performance-summary-flags">${performanceFlagsBadges(record.qualityFlags)}</div></div>`;
+    return `<div class="performance-summary-card"><div class="performance-summary-head"><strong>${esc(record.label)}</strong>${performanceStatusBadge(record)}</div><div class="performance-summary-value">${esc(perfFmt(record.value))}${record.unit ? ` <small>${esc(record.unit)}</small>` : ""}</div><div class="performance-summary-meta">${esc(record.periodTitle)} · ${esc(record.source || "Saisie / DEOS")}</div><div class="performance-summary-lines"><span>Objectif : ${objective.mode === "range" ? `${perfHas(objective.min) ? esc(perfFmt(objective.min)) : "-"} / ${perfHas(objective.max) ? esc(perfFmt(objective.max)) : "-"}` : perfHas(objective.objective) ? esc(perfFmt(objective.objective)) : "À compléter"}${objective.unit ? ` ${esc(objective.unit)}` : ""}</span><span>Écart : ${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || performanceDeltaUnit(record)))}</span><span>Évolution : ${!previous ? "Historique insuffisant" : delta === "" ? "À compléter" : esc(performanceFormatSignedValue(delta, performanceDeltaUnit(record)))}${previous ? ` · vs ${esc(previous.periodTitle)}` : ""}</span></div><div class="performance-summary-flags">${performanceFlagsBadges(record.qualityFlags)}</div></div>`;
   }).join("")}</div>`;
 }
 
@@ -8722,7 +8728,7 @@ function performanceAnalysisPanel(records) {
       ? `${perfHas(objective.min) ? perfFmt(objective.min) : "-"} / ${perfHas(objective.max) ? perfFmt(objective.max) : "-"}${objective.unit ? ` ${objective.unit}` : ""}`
       : (perfHas(objective.objective) ? `${perfFmt(objective.objective)}${objective.unit ? ` ${objective.unit}` : ""}` : "À compléter");
     const gap = performanceObjectiveGap(record);
-    return `<tr><td>${esc(record.periodTitle)}</td><td>${esc(perfFmt(record.value))}${record.unit ? ` ${esc(record.unit)}` : ""}</td><td>${esc(objectiveLabel)}</td><td>${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || record.unit))}</td><td>${esc(record.source || "Saisie / DEOS")}</td><td>${performanceFlagsBadges(record.qualityFlags)}</td></tr>`;
+    return `<tr><td>${esc(record.periodTitle)}</td><td>${esc(perfFmt(record.value))}${record.unit ? ` ${esc(record.unit)}` : ""}</td><td>${esc(objectiveLabel)}</td><td>${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || performanceDeltaUnit(record)))}</td><td>${esc(record.source || "Saisie / DEOS")}</td><td>${performanceFlagsBadges(record.qualityFlags)}</td></tr>`;
   }).join("") : `<tr><td colspan="6">Aucune donnée disponible.</td></tr>`}</tbody></table></div></div></div>`;
 }
 
@@ -9353,6 +9359,19 @@ function normalizeImportDestination(path = "", destinationField = "") {
   return { path: leafMatch[1], field: leafMatch[2] };
 }
 
+function isIpoMetricDescriptor({ metricKey = "", destinationPath = "", targetId = "", label = "", category = "" } = {}) {
+  const key = String(metricKey || "").toLowerCase();
+  const path = String(destinationPath || "").toLowerCase();
+  const target = String(targetId || "").toLowerCase();
+  const text = normalizeText(label || "");
+  const cat = normalizeText(category || "");
+  return key.startsWith("ipo.")
+    || path.startsWith("ipo.")
+    || target.startsWith("ipo.")
+    || text.includes("ipo")
+    || cat === "ipo";
+}
+
 function normalizePerformanceImportIndicators(rows, file) {
   return ensureArray(rows).map(raw => {
     const indicator = firstImportValue(raw, ["indicator", "label", "name", "title", "kpi", "sourceIndicator", "indicateur"]);
@@ -9377,8 +9396,9 @@ function normalizePerformanceImportIndicators(rows, file) {
     const actual = normalizeImportNumericValue(rawValue);
     const budget = normalizeImportNullableNumericValue(firstImportValue(raw, ["budget", "target", "objective", "objectif"]));
     const historical = normalizeImportNullableNumericValue(firstImportValue(raw, ["historical", "histo", "history"]));
-    const unit = firstImportValue(raw, ["unit", "unite"]) || "";
+    const rawUnit = firstImportValue(raw, ["unit", "unite"]) || "";
     const metricKey = firstImportValue(raw, ["metricKey", "metric", "metric_key"]) || normalizePerformanceLabel(indicator).replace(/\s+/g, "_");
+    const unit = isIpoMetricDescriptor({ metricKey, destinationPath: normalizedDestination.path, targetId, label: indicator, category: firstImportValue(raw, ["category", "group"]) || "" }) ? IPO_UNIT : rawUnit;
     const sourcePage = firstImportValue(raw, ["sourcePage", "pageSource", "page", "sourceRef"]);
     const explicitActionProvided = Object.prototype.hasOwnProperty.call(raw, "action");
     const action = explicitActionProvided ? String(raw.action || "") : (targetType === "ignore" ? "ignore" : "use");
@@ -9640,8 +9660,8 @@ function gpoIndicatorRow(period, metric, values, sourcePage, confidence = "moyen
 function extractGpoIndicators(pages, period) {
   const rows = [];
   const gpoMetrics = {
-    ipo_total: { metricKey: "ipo.total", label: "IPO total", targetId: "ipo.total", category: "IPO", unit: "k€" },
-    ipo_variable: { metricKey: "ipo.variable", label: "IPO variable", targetId: "ipo.variable", category: "IPO", unit: "k€" },
+    ipo_total: { metricKey: "ipo.total", label: "IPO total", targetId: "ipo.total", category: "IPO", unit: IPO_UNIT },
+    ipo_variable: { metricKey: "ipo.variable", label: "IPO variable", targetId: "ipo.variable", category: "IPO", unit: IPO_UNIT },
     productivity_preparation: { metricKey: "productivity.preparation", label: "Productivité Préparation", targetId: "productivity.preparation", category: "Productivité", unit: "colis/h" },
     productivity_reception: { metricKey: "productivity.reception", label: "Productivité Réception", targetId: "productivity.reception", category: "Productivité", unit: "palettes/h" },
     productivity_manutention: { metricKey: "productivity.manutention", label: "Productivité Manutention", targetId: "productivity.manutention", category: "Productivité", unit: "palettes/h" },
