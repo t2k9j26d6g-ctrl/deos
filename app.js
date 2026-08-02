@@ -9265,15 +9265,20 @@ function detectCgtab(file) {
 function detectGa(file) {
   const ext = String(file.extension || file.name || "").toLowerCase();
   const isXlsb = ext.endsWith("xlsb") || ext === "xlsb";
+  const isDetail = /detail\s+par\s+salari/i.test(normalizeText(file.name || ""));
   return {
-    ...importDetection(file, "GA", "analyse locale dédiée Suivi GA"),
-    source: "SUIVI_GA",
-    sourceType: "Suivi GA",
+    ...importDetection(file, "GA", isDetail ? "analyse locale agrégée du détail GA nominatif" : "analyse locale dédiée Suivi GA"),
+    source: isDetail ? "GA_DETAIL_AGGREGATED" : "SUIVI_GA",
+    sourceType: isDetail ? "Suivi GA détail salarié" : "Suivi GA",
     status: isXlsb ? "à confirmer" : "probablement reconnu",
     confidence: isXlsb ? "moyenne" : "faible",
     message: isXlsb
-      ? "Format XLSB détecté. Extraction locale activée pour le modèle validé St Gilles."
-      : "Format détecté. Pour V5.18.5, l'extraction validée cible le classeur XLSB St Gilles."
+      ? (isDetail
+        ? "Format XLSB détecté. Le détail salarié GA sera lu puis agrégé en mémoire, sans aucune persistance nominative."
+        : "Format XLSB détecté. Extraction locale activée pour le modèle validé St Gilles.")
+      : (isDetail
+        ? "Format détecté. Pour V5.18.8, seule une extraction agrégée et anonymisée du détail salarié est autorisée."
+        : "Format détecté. Pour V5.18.5, l'extraction validée cible le classeur XLSB St Gilles.")
   };
 }
 function detectTBag(file) {
@@ -9467,6 +9472,30 @@ function buildPerformanceImportPreview() {
   });
 }
 
+function gaDetailComparisonPreviewCards() {
+  const files = ensureArray(performanceImportWizard?.files).filter(file => ensureArray(file.comparisonSummary).length);
+  if (!files.length) return "";
+  const fmt = value => value === null || value === undefined || value === "" ? "" : perfFmt(value);
+  const fmtMaybe = value => value === null || value === undefined || value === "" ? "—" : perfFmt(value);
+  return files.map(file => {
+    const sections = ensureArray(file.comparisonSummary).map(summary => {
+      const legacyRows = [
+        { axis: "Direct", data: summary.legacyCurrent?.direct || {} },
+        { axis: "Indirect", data: summary.legacyCurrent?.indirect || {} }
+      ];
+      const legacyTable = `<table class="perf-table import-preview-table"><thead><tr><th>Axe</th><th>metricKey</th><th>Centres détectés</th><th>Scopes détectés</th><th>Lignes complémentaires</th><th>Nb valeurs agrégées</th><th>Formule actuelle</th><th>Valeur actuelle</th></tr></thead><tbody>${legacyRows.map(item => `<tr><td>${esc(item.axis)}</td><td>${esc(item.data.metricKey || "")}</td><td>${esc(ensureArray(item.data.costCenters).join(", ") || "-")}</td><td>${esc(ensureArray(item.data.scopes).join(", ") || "-")}</td><td>${esc(item.data.complementaryRowsSummary || "-")}</td><td>${esc(item.data.aggregatedValueCount ?? 0)}</td><td>${esc(item.data.formula || "")}</td><td>${esc(fmt(item.data.value) || "0")}</td></tr>`).join("")}</tbody></table>`;
+      const centerRows = ensureArray(summary.requestedCenterComparisons || []).map(row => `<tr><td>${esc(row.costCenter || "")}</td><td>${esc(fmtMaybe(row.detailDirect))}</td><td>${esc(fmtMaybe(row.suiviDirect))}</td><td>${esc(fmtMaybe(row.directDelta))}</td><td>${esc(fmtMaybe(row.detailIndirect))}</td><td>${esc(fmtMaybe(row.suiviIndirect))}</td><td>${esc(fmtMaybe(row.indirectDelta))}</td><td>${esc(row.directStatus || "")}</td><td>${esc(row.indirectStatus || "")}</td></tr>`).join("");
+      const onlyDetail = ensureArray(summary.singleSourceCenters?.detailOnly || []);
+      const onlySuivi = ensureArray(summary.singleSourceCenters?.consolidatedOnly || []);
+      const perimeterWarning = summary.flags?.perimetersEquivalent
+        ? ""
+        : `<div class="item alert-orange"><strong>Périmètres différents</strong><span class="muted">L'écart global n'est pas interprétable comme rapprochement fiable hors périmètre commun.</span></div>`;
+      return `<div class="item"><strong>Période ${esc(summary.period || "")}</strong>${perimeterWarning}<div class="meta">DIRECT — Total GA détail tous centres: ${esc(fmt(summary.detailTotals?.allCenters?.direct) || "0")} · Total GA détail centres comparables Direct: ${esc(fmt(summary.detailTotals?.comparableDirect?.direct) || "0")} · Total Suivi GA centres comparables Direct: ${esc(fmt(summary.consolidatedTotals?.comparableDirect?.direct) || "0")} · Écart: ${esc(fmt(summary.axisCommon?.direct?.delta) || "0")}</div><div class="meta">DIRECT — Centres comparables: ${esc(ensureArray(summary.axisCommon?.direct?.comparableCenters).join(", ") || "aucun")}</div><div class="meta">DIRECT — Centres non comparables: ${esc(ensureArray(summary.axisCommon?.direct?.nonComparableCenters).join(", ") || "aucun")}</div><div class="meta">INDIRECT — Total GA détail tous centres: ${esc(fmt(summary.detailTotals?.allCenters?.indirect) || "0")} · Total GA détail centres comparables Indirect: ${esc(fmt(summary.detailTotals?.comparableIndirect?.indirect) || "0")} · Total Suivi GA centres comparables Indirect: ${esc(fmt(summary.consolidatedTotals?.comparableIndirect?.indirect) || "0")} · Écart: ${esc(fmt(summary.axisCommon?.indirect?.delta) || "0")}</div><div class="meta">INDIRECT — Centres comparables: ${esc(ensureArray(summary.axisCommon?.indirect?.comparableCenters).join(", ") || "aucun")}</div><div class="meta">INDIRECT — Centres non comparables: ${esc(ensureArray(summary.axisCommon?.indirect?.nonComparableCenters).join(", ") || "aucun")}</div><div class="meta">4. Centres présents dans une seule source: GA détail uniquement = ${esc(onlyDetail.join(", ") || "aucun")}; Suivi GA uniquement = ${esc(onlySuivi.join(", ") || "aucun")}</div><div class="meta">5. Règle anti-doublon: ${esc(summary.antiDoubleCountRule || "")}</div>${legacyTable}<table class="perf-table import-preview-table"><thead><tr><th>Centre de coûts</th><th>Direct GA détail</th><th>Direct Suivi GA</th><th>Écart Direct</th><th>Indirect GA détail</th><th>Indirect Suivi GA</th><th>Écart Indirect</th><th>Statut Direct</th><th>Statut Indirect</th></tr></thead><tbody>${centerRows || `<tr><td colspan="9">Aucun centre commun disponible.</td></tr>`}</tbody></table></div>`;
+    }).join("");
+    return `<div class="card"><h3>Synthèse rapprochement GA détail vs Suivi GA consolidé</h3><div class="muted">${esc(file.name || "")}</div>${sections}</div>`;
+  }).join("");
+}
+
 function performanceImportStepPreview() {
   const periodSelector = performanceImportPeriodSelector();
   const targetOptions = performanceImportTargetOptions();
@@ -9474,13 +9503,25 @@ function performanceImportStepPreview() {
   const unmappedRows = performanceImportWizard.preview.filter(row => !row.destinationPath && row.targetType !== "ignore");
   const hasAggregatedPrivacyRows = performanceImportWizard.preview.some(row => String(row.privacyLevel || "") === "aggregated" || /CGTAB/i.test(String(row.source || row.sourceType || "")));
   const hasTbagRows = performanceImportWizard.preview.some(row => /T_BAG|T-Bag/i.test(String(row.source || row.sourceType || "")));
+  const hasGaDetailRows = performanceImportWizard.preview.some(row => /GA_DETAIL_AGGREGATED|détail salarié/i.test(String(row.source || row.sourceType || "")));
   const privacyBanner = hasAggregatedPrivacyRows ? `<div class="item alert-blue"><strong>Données individuelles non conservées — import agrégé uniquement</strong><span class="muted">Aucun nom, matricule ou ligne salarié n'est persisté. Seules des sommes/comptages agrégés sont proposés.</span></div>` : "";
   const tbagPrivacyBanner = hasTbagRows ? `<div class="item alert-blue"><strong>Données agrégées Préparation — aucune donnée individuelle conservée</strong><span class="muted">Les informations T-Bag sont normalisées en agrégats par période, population et bannière.</span></div>` : "";
+  const gaDetailPrivacyBanner = hasGaDetailRows ? `<div class="item alert-blue"><strong>Analyse agrégée et anonymisée — aucun détail individuel conservé</strong><span class="muted">Les groupes à moins de 5 salariés sont masqués ou exclus de l'aperçu importable.</span></div>` : "";
+  const gaDetailComparisonCards = gaDetailComparisonPreviewCards();
+  const maskedGroups = performanceImportWizard.files.flatMap(file => ensureArray(file.maskedGroups || []).map(item => ({ ...item, fileName: file.name || "" })));
   const typeLabel = row => row.periodType === "cumulative" ? "Cumul" : "Mensuel";
   const deltaLabel = (value, percent) => {
     const base = value === null || value === undefined || value === "" ? "" : perfFmt(value);
     const pct = percent === null || percent === undefined || percent === "" ? "" : `${perfFmt(percent)}%`;
     return [base, pct].filter(Boolean).join(" · ") || "";
+  };
+  const formatImportActualDisplay = row => {
+    const value = row.actual ?? row.value ?? "";
+    const numeric = normalizeImportNullableNumericValue(value);
+    if (row.unit === "%" && typeof numeric === "number" && Number.isFinite(numeric) && numeric >= 0 && numeric <= 1) {
+      return `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(numeric * 100)} %`;
+    }
+    return value;
   };
   const plannedActionLabel = row => {
     const currentValueExists = row.currentValue !== "" && row.currentValue !== null && row.currentValue !== undefined;
@@ -9496,11 +9537,12 @@ function performanceImportStepPreview() {
     const selectable = row.targetType !== "ignore";
     const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
     const selectHtml = targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
-  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
+  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
+  const maskedGroupsTable = maskedGroups.length ? `<div class="card"><h3>Groupes masqués pour confidentialité</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Valeur</th><th>Contributeurs</th><th>Règle</th><th>Feuille</th></tr></thead><tbody>${maskedGroups.map(row => `<tr class="import-gray"><td>${esc(row.period || "")}</td><td>${esc(row.groupType || "")}</td><td>${esc(row.label || row.value || "")}</td><td>${esc(row.employeeCount || "")}</td><td>${esc(row.rule || "")}</td><td>${esc(row.sourceSheet || "")}</td></tr>`).join("")}</tbody></table></div>` : "";
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${privacyBanner}${tbagPrivacyBanner}${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="25">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${privacyBanner}${tbagPrivacyBanner}${gaDetailPrivacyBanner}${gaDetailComparisonCards}${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="26">${emptyDiagnostic}</td></tr>`}</tbody></table>${maskedGroupsTable}${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -9615,6 +9657,7 @@ function normalizePerformanceImportIndicators(rows, file) {
       objective: normalizeImportNullableNumericValue(firstImportValue(raw, ["objective", "target", "objectif"])),
       aggregationType: firstImportValue(raw, ["aggregationType"]) || "",
       employeeCount: normalizeImportNullableNumericValue(firstImportValue(raw, ["employeeCount", "contributors"])),
+      privacyRule: firstImportValue(raw, ["privacyRule", "confidentialityRule"]) || "",
       sourceColumns: firstImportValue(raw, ["sourceColumns"]) || "",
       privacyLevel: firstImportValue(raw, ["privacyLevel"]) || "",
       unit,
@@ -9784,7 +9827,9 @@ async function analyzePerformanceImportFile(file, sourceKey) {
   }
   if (sourceKey === "ga") {
     try {
-      return await analyzeSuiviGaFile(file, detected);
+      return isGaDetailFileName(file.name || detected.name || "")
+        ? await analyzeGaDetailAggregatedFile(file, detected)
+        : await analyzeSuiviGaFile(file, detected);
     } catch (error) {
       performanceImportWizard.errors.push({ title: "Analyse Suivi GA impossible", detail: error.message || String(error) });
       return { ...detected, status: "non reconnu", confidence: "faible", message: error.message || "fichier GA non exploitable" };
@@ -10468,6 +10513,421 @@ function cgtabRound(value, digits = 2) {
   return Number(n.toFixed(digits));
 }
 
+const GA_DETAIL_TARGET_ETAB = "FRY8MC";
+const GA_DETAIL_SOURCE_SHEET = "DATA";
+const GA_DETAIL_PRIVACY_RULE = "Groupes <5 salariés masqués de l'aperçu importable";
+const GA_DETAIL_EXCLUDED_COLUMNS = ["nom", "mle", "matricule", "identifiant RH", "date de naissance", "code salarié"];
+const GA_DETAIL_EXPECTED_COMMON_COST_CENTERS = ["03710", "04000", "04110", "04200", "04210", "04300", "04310", "04400"];
+
+function isGaDetailFileName(name = "") {
+  return /detail\s+par\s+salari/i.test(normalizeText(name || ""));
+}
+
+function gaDetailSlug(value = "") {
+  return normalizePerformanceLabel(String(value || "")).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "unknown";
+}
+
+function gaDetailCell(sheet, row1Based, col1Based) {
+  const ref = window.XLSX.utils.encode_cell({ r: row1Based - 1, c: col1Based - 1 });
+  return sheet[ref] || null;
+}
+
+function gaDetailText(sheet, row1Based, col1Based) {
+  const cell = gaDetailCell(sheet, row1Based, col1Based);
+  return cell ? String(cell.w ?? cell.v ?? "").trim() : "";
+}
+
+function gaDetailNumber(sheet, row1Based, col1Based) {
+  const cell = gaDetailCell(sheet, row1Based, col1Based);
+  const numeric = normalizeImportNullableNumericValue(cell?.v);
+  return typeof numeric === "number" && Number.isFinite(numeric) ? numeric : null;
+}
+
+function gaDetailPeriod(year = "", month = "") {
+  const yyyy = String(year || "").trim();
+  const mm = String(month || "").trim();
+  if (!/^(20\d{2})$/.test(yyyy)) return "";
+  const monthNumber = Number(mm);
+  if (!(monthNumber >= 1 && monthNumber <= 12)) return "";
+  return `${String(monthNumber).padStart(2, "0")}/${yyyy}`;
+}
+
+function gaDetailDestinationPath(metricKey = "", dims = {}) {
+  const parts = [
+    `complementary.ga_detail.${gaDetailSlug(metricKey)}`,
+    dims.scope ? `scope_${gaDetailSlug(dims.scope)}` : "",
+    dims.costCenter ? `cc_${gaDetailSlug(dims.costCenter)}` : "",
+    dims.directness ? `dir_${gaDetailSlug(dims.directness)}` : "",
+    dims.activity ? `act_${gaDetailSlug(dims.activity)}` : "",
+    dims.population ? `pop_${gaDetailSlug(dims.population)}` : ""
+  ].filter(Boolean);
+  return parts.join(".");
+}
+
+function gaDetailBuildRow({ period, metricKey, label, actual, unit = "h", scope, costCenter = "", directness = "", activityType = "", population = "", aggregationType = "sum", employeeCount = null, sourceSheet = GA_DETAIL_SOURCE_SHEET, sourceColumns = "", sourceCell = "aggregated", confidence = "élevée", privacyRule = GA_DETAIL_PRIVACY_RULE, destinationMetricKey = metricKey }) {
+  const destinationPath = gaDetailDestinationPath(destinationMetricKey, { scope, costCenter, directness, activity: activityType, population });
+  return {
+    id: newId("preview"),
+    period,
+    periodType: "monthly",
+    source: "GA_DETAIL_AGGREGATED",
+    sourceType: "Suivi GA détail salarié",
+    category: metricKey.startsWith("ga_detail.population") ? "ga_detail_population" : metricKey.startsWith("ga_detail.activity") ? "ga_detail_activity" : metricKey.startsWith("ga_detail.cost_center") ? "ga_detail_cost_center" : "ga_detail_summary",
+    metricKey,
+    indicator: label,
+    label,
+    actual: normalizeImportNullableNumericValue(actual),
+    value: normalizeImportNullableNumericValue(actual),
+    budget: null,
+    historical: null,
+    unit,
+    scope,
+    costCenter,
+    activityType,
+    directness,
+    population,
+    aggregationType,
+    employeeCount: employeeCount === null ? null : employeeCount,
+    privacyRule,
+    sourceSheet,
+    sourceColumns,
+    sourceCell,
+    privacyLevel: "aggregated",
+    confidence,
+    sourceRef: `${sourceSheet} · ${sourceCell}`,
+    destinationPath,
+    destinationLabel: `${label} · ${scope}`,
+    destinationId: destinationPath,
+    targetId: destinationPath,
+    targetType: "complementary",
+    selected: true,
+    action: ""
+  };
+}
+
+function gaDetailMapAdd(map, key, initFactory) {
+  if (!map.has(key)) map.set(key, initFactory());
+  return map.get(key);
+}
+
+function gaDetailMaskedEntry(period, sourceSheet, groupType, label, contributors) {
+  return { period, sourceSheet, groupType, label, employeeCount: "<5", rule: GA_DETAIL_PRIVACY_RULE };
+}
+
+function gaDetailToNumber(value) {
+  const numeric = normalizeImportNullableNumericValue(value);
+  return typeof numeric === "number" && Number.isFinite(numeric) ? numeric : 0;
+}
+
+function gaDetailRound(value, digits = 4) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return 0;
+  return Number(n.toFixed(digits));
+}
+
+function gaDetailCostCenterFromPath(path = "") {
+  const hit = String(path || "").match(/(?:^|\.)cc_([a-z0-9_]+)/i);
+  return hit ? String(hit[1] || "").replace(/_+/g, "").toUpperCase() : "";
+}
+
+function gaDetailResolveCostCenter(row = {}) {
+  return String(row.costCenter || "").trim().toUpperCase() || gaDetailCostCenterFromPath(row.destinationPath || row.targetId || row.destinationId || "");
+}
+
+function gaDetailSummarizeRows(rows) {
+  return ensureArray(rows)
+    .map(row => {
+      const value = gaDetailToNumber(row.actual ?? row.value ?? 0);
+      return `${row.metricKey || ""} @ ${row.sourceCell || "n/a"} (${gaDetailResolveCostCenter(row) || "n/a"}): ${gaDetailRound(value, 4)}`;
+    })
+    .join(" | ");
+}
+
+function gaDetailBuildConsolidatedCenterSnapshot(rows, costCenter) {
+  const directTotalRows = rows.filter(row => row.metricKey === "hours_direct.total");
+  const indirectTotalRows = rows.filter(row => row.metricKey === "hours_indirect.total");
+  const directDetailRows = rows.filter(row => row.metricKey !== "hours_direct.total" && String(row.directness || "").toLowerCase() === "direct");
+  const indirectDetailRows = rows.filter(row => row.metricKey !== "hours_indirect.total" && String(row.directness || "").toLowerCase() === "indirect");
+
+  const directRowsUsed = directTotalRows.length ? directTotalRows : directDetailRows;
+  const indirectRowsUsed = indirectTotalRows.length ? indirectTotalRows : indirectDetailRows;
+  const directAvailable = directRowsUsed.length > 0;
+  const indirectAvailable = indirectRowsUsed.length > 0;
+  const directMode = directTotalRows.length ? "total" : (directDetailRows.length ? "detail" : "missing");
+  const indirectMode = indirectTotalRows.length ? "total" : (indirectDetailRows.length ? "detail" : "missing");
+  const directValue = directAvailable
+    ? directRowsUsed.reduce((sum, row) => sum + gaDetailToNumber(row.actual ?? row.value ?? 0), 0)
+    : null;
+  const indirectValue = indirectAvailable
+    ? indirectRowsUsed.reduce((sum, row) => sum + gaDetailToNumber(row.actual ?? row.value ?? 0), 0)
+    : null;
+
+  return {
+    costCenter,
+    direct: directAvailable ? gaDetailRound(directValue) : null,
+    indirect: indirectAvailable ? gaDetailRound(indirectValue) : null,
+    directAvailable,
+    indirectAvailable,
+    directMode,
+    indirectMode,
+    directRowsUsed,
+    indirectRowsUsed,
+    directFormula: directMode === "total"
+      ? "SUM(hours_direct.total) sur le centre (détails exclus pour éviter doublon)"
+      : (directMode === "detail"
+        ? "SUM(lignes directes du centre car total direct absent)"
+        : "Aucune donnée directe disponible pour ce centre"),
+    indirectFormula: indirectMode === "total"
+      ? "SUM(hours_indirect.total) sur le centre (détails exclus pour éviter doublon)"
+      : (indirectMode === "detail"
+        ? "SUM(lignes indirectes du centre car total indirect absent)"
+        : "Aucune donnée indirecte disponible pour ce centre"),
+    hasAnyValue: directAvailable || indirectAvailable
+  };
+}
+
+function gaDetailCompareWithConsolidated(period, costCenterAggregates) {
+  const perf = getPerformanceByPeriod(period);
+  if (!perf) return null;
+  const gaRows = ensureArray(perf.complementaryKpis).filter(row => String(row.source || "").toUpperCase() === "SUIVI_GA");
+  if (!gaRows.length) return null;
+
+  const legacyDirectRows = gaRows.filter(row => row.metricKey === "hours_direct.total");
+  const legacyIndirectRows = gaRows.filter(row => row.metricKey === "hours_indirect.total");
+  const legacyDirectValue = legacyDirectRows.reduce((sum, row) => sum + gaDetailToNumber(row.actual ?? row.value ?? 0), 0);
+  const legacyIndirectValue = legacyIndirectRows.reduce((sum, row) => sum + gaDetailToNumber(row.actual ?? row.value ?? 0), 0);
+
+  const consolidatedByCenter = new Map();
+  for (const row of gaRows) {
+    const center = gaDetailResolveCostCenter(row);
+    if (!center) continue;
+    if (!consolidatedByCenter.has(center)) consolidatedByCenter.set(center, []);
+    consolidatedByCenter.get(center).push(row);
+  }
+
+  const consolidatedCenterSnapshots = new Map();
+  for (const [center, rows] of consolidatedByCenter.entries()) {
+    const snapshot = gaDetailBuildConsolidatedCenterSnapshot(rows, center);
+    if (snapshot.hasAnyValue) consolidatedCenterSnapshots.set(center, snapshot);
+  }
+
+  const detailCenters = [...costCenterAggregates.keys()].map(value => String(value || "").trim().toUpperCase()).filter(Boolean);
+  const consolidatedCenters = [...consolidatedCenterSnapshots.keys()];
+  const commonExpected = GA_DETAIL_EXPECTED_COMMON_COST_CENTERS.filter(center => detailCenters.includes(center) && consolidatedCenters.includes(center));
+  const additionalCommon = detailCenters.filter(center => consolidatedCenters.includes(center) && !commonExpected.includes(center)).sort();
+  const commonCenters = [...commonExpected, ...additionalCommon];
+  const detailOnlyCenters = detailCenters.filter(center => !consolidatedCenters.includes(center)).sort();
+  const consolidatedOnlyCenters = consolidatedCenters.filter(center => !detailCenters.includes(center)).sort();
+  const axisReportCenters = GA_DETAIL_EXPECTED_COMMON_COST_CENTERS.filter(center => detailCenters.includes(center) || consolidatedCenters.includes(center));
+
+  const detailAll = detailCenters.reduce((acc, center) => {
+    const aggregate = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || ""));
+    if (!aggregate) return acc;
+    acc.direct += gaDetailToNumber(aggregate.directHours);
+    acc.indirect += gaDetailToNumber(aggregate.indirectHours);
+    return acc;
+  }, { direct: 0, indirect: 0 });
+
+  const detailCommon = commonCenters.reduce((acc, center) => {
+    const aggregate = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || ""));
+    if (!aggregate) return acc;
+    acc.direct += gaDetailToNumber(aggregate.directHours);
+    acc.indirect += gaDetailToNumber(aggregate.indirectHours);
+    return acc;
+  }, { direct: 0, indirect: 0 });
+
+  const consolidatedAvailable = [...consolidatedCenterSnapshots.values()].reduce((acc, snapshot) => {
+    acc.direct += snapshot.directAvailable ? gaDetailToNumber(snapshot.direct) : 0;
+    acc.indirect += snapshot.indirectAvailable ? gaDetailToNumber(snapshot.indirect) : 0;
+    return acc;
+  }, { direct: 0, indirect: 0 });
+
+  const consolidatedCommon = commonCenters.reduce((acc, center) => {
+    const snapshot = consolidatedCenterSnapshots.get(center);
+    if (!snapshot) return acc;
+    acc.direct += snapshot.directAvailable ? gaDetailToNumber(snapshot.direct) : 0;
+    acc.indirect += snapshot.indirectAvailable ? gaDetailToNumber(snapshot.indirect) : 0;
+    return acc;
+  }, { direct: 0, indirect: 0 });
+
+  const comparableDirectCenters = axisReportCenters.filter(center => {
+    const detail = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || ""));
+    const snapshot = consolidatedCenterSnapshots.get(center);
+    return Boolean(detail && snapshot?.directAvailable);
+  });
+
+  const comparableIndirectCenters = axisReportCenters.filter(center => {
+    const detail = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || ""));
+    const snapshot = consolidatedCenterSnapshots.get(center);
+    return Boolean(detail && snapshot?.indirectAvailable);
+  });
+
+  const nonComparableDirectCenters = axisReportCenters.filter(center => !comparableDirectCenters.includes(center));
+  const nonComparableIndirectCenters = axisReportCenters.filter(center => !comparableIndirectCenters.includes(center));
+
+  const directComparableTotals = comparableDirectCenters.reduce((acc, center) => {
+    const detail = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || ""));
+    const snapshot = consolidatedCenterSnapshots.get(center);
+    if (!detail || !snapshot?.directAvailable) return acc;
+    acc.detail += gaDetailToNumber(detail.directHours);
+    acc.suivi += gaDetailToNumber(snapshot.direct);
+    return acc;
+  }, { detail: 0, suivi: 0 });
+
+  const indirectComparableTotals = comparableIndirectCenters.reduce((acc, center) => {
+    const detail = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || ""));
+    const snapshot = consolidatedCenterSnapshots.get(center);
+    if (!detail || !snapshot?.indirectAvailable) return acc;
+    acc.detail += gaDetailToNumber(detail.indirectHours);
+    acc.suivi += gaDetailToNumber(snapshot.indirect);
+    return acc;
+  }, { detail: 0, suivi: 0 });
+
+  const perCenterComparisons = commonCenters.map(center => {
+    const detail = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || "")) || { directHours: 0, indirectHours: 0 };
+    const suivi = consolidatedCenterSnapshots.get(center) || { direct: null, indirect: null, directAvailable: false, indirectAvailable: false };
+    const detailDirect = gaDetailRound(gaDetailToNumber(detail.directHours));
+    const detailIndirect = gaDetailRound(gaDetailToNumber(detail.indirectHours));
+    const suiviDirect = suivi.directAvailable ? gaDetailRound(gaDetailToNumber(suivi.direct)) : null;
+    const suiviIndirect = suivi.indirectAvailable ? gaDetailRound(gaDetailToNumber(suivi.indirect)) : null;
+    return {
+      costCenter: center,
+      detailDirect,
+      suiviDirect,
+      directDelta: suiviDirect === null ? null : gaDetailRound(detailDirect - suiviDirect),
+      detailIndirect,
+      suiviIndirect,
+      indirectDelta: suiviIndirect === null ? null : gaDetailRound(detailIndirect - suiviIndirect)
+    };
+  });
+
+  const requestedCenterComparisons = GA_DETAIL_EXPECTED_COMMON_COST_CENTERS
+    .filter(center => detailCenters.includes(center) || consolidatedCenters.includes(center))
+    .map(center => {
+      const detail = costCenterAggregates.get(center) || costCenterAggregates.get(String(center || ""));
+      const suivi = consolidatedCenterSnapshots.get(center);
+      const detailPresent = Boolean(detail);
+      const suiviPresent = Boolean(suivi);
+      const detailDirect = detailPresent ? gaDetailRound(gaDetailToNumber(detail.directHours)) : null;
+      const detailIndirect = detailPresent ? gaDetailRound(gaDetailToNumber(detail.indirectHours)) : null;
+      const suiviDirect = suiviPresent && suivi.directAvailable ? gaDetailRound(gaDetailToNumber(suivi.direct)) : null;
+      const suiviIndirect = suiviPresent && suivi.indirectAvailable ? gaDetailRound(gaDetailToNumber(suivi.indirect)) : null;
+      return {
+        costCenter: center,
+        detailDirect,
+        suiviDirect,
+        directDelta: detailPresent && suiviDirect !== null ? gaDetailRound(detailDirect - suiviDirect) : null,
+        detailIndirect,
+        suiviIndirect,
+        indirectDelta: detailPresent && suiviIndirect !== null ? gaDetailRound(detailIndirect - suiviIndirect) : null,
+        directStatus: detailPresent
+          ? (suiviDirect !== null ? "Direct comparable" : "Non disponible dans le Suivi GA")
+          : (suiviDirect !== null ? "Absent du GA détail" : "Absent des deux axes"),
+        indirectStatus: detailPresent
+          ? (suiviIndirect !== null ? "Indirect comparable" : "Non disponible dans le Suivi GA")
+          : (suiviIndirect !== null ? "Absent du GA détail" : "Absent des deux axes")
+      };
+    });
+
+  return {
+    period,
+    legacyCurrent: {
+      direct: {
+        metricKey: "hours_direct.total",
+        costCenters: [...new Set(legacyDirectRows.map(row => gaDetailResolveCostCenter(row)).filter(Boolean))],
+        scopes: [...new Set(legacyDirectRows.map(row => String(row.scope || "").trim()).filter(Boolean))],
+        complementaryRowsSummary: gaDetailSummarizeRows(legacyDirectRows),
+        aggregatedValueCount: legacyDirectRows.length,
+        formula: "SUM(actual|value) des KPI complémentaires SUIVI_GA où metricKey = hours_direct.total",
+        value: gaDetailRound(legacyDirectValue)
+      },
+      indirect: {
+        metricKey: "hours_indirect.total",
+        costCenters: [...new Set(legacyIndirectRows.map(row => gaDetailResolveCostCenter(row)).filter(Boolean))],
+        scopes: [...new Set(legacyIndirectRows.map(row => String(row.scope || "").trim()).filter(Boolean))],
+        complementaryRowsSummary: gaDetailSummarizeRows(legacyIndirectRows),
+        aggregatedValueCount: legacyIndirectRows.length,
+        formula: "SUM(actual|value) des KPI complémentaires SUIVI_GA où metricKey = hours_indirect.total",
+        value: gaDetailRound(legacyIndirectValue)
+      }
+    },
+    detailTotals: {
+      allCenters: {
+        direct: gaDetailRound(detailAll.direct),
+        indirect: gaDetailRound(detailAll.indirect)
+      },
+      comparableDirect: {
+        direct: gaDetailRound(directComparableTotals.detail)
+      },
+      comparableIndirect: {
+        indirect: gaDetailRound(indirectComparableTotals.detail)
+      },
+      commonCenters: {
+        direct: gaDetailRound(detailCommon.direct),
+        indirect: gaDetailRound(detailCommon.indirect)
+      }
+    },
+    consolidatedTotals: {
+      availableCenters: {
+        direct: gaDetailRound(consolidatedAvailable.direct),
+        indirect: gaDetailRound(consolidatedAvailable.indirect)
+      },
+      comparableDirect: {
+        direct: gaDetailRound(directComparableTotals.suivi)
+      },
+      comparableIndirect: {
+        indirect: gaDetailRound(indirectComparableTotals.suivi)
+      },
+      commonCenters: {
+        direct: gaDetailRound(consolidatedCommon.direct),
+        indirect: gaDetailRound(consolidatedCommon.indirect)
+      }
+    },
+    commonPerimeter: {
+      centers: commonCenters,
+      directDelta: gaDetailRound(detailCommon.direct - consolidatedCommon.direct),
+      indirectDelta: gaDetailRound(detailCommon.indirect - consolidatedCommon.indirect)
+    },
+    axisCommon: {
+      direct: {
+        comparableCenters: comparableDirectCenters,
+        nonComparableCenters: nonComparableDirectCenters,
+        detailTotal: gaDetailRound(directComparableTotals.detail),
+        consolidatedTotal: gaDetailRound(directComparableTotals.suivi),
+        delta: gaDetailRound(directComparableTotals.detail - directComparableTotals.suivi)
+      },
+      indirect: {
+        comparableCenters: comparableIndirectCenters,
+        nonComparableCenters: nonComparableIndirectCenters,
+        detailTotal: gaDetailRound(indirectComparableTotals.detail),
+        consolidatedTotal: gaDetailRound(indirectComparableTotals.suivi),
+        delta: gaDetailRound(indirectComparableTotals.detail - indirectComparableTotals.suivi)
+      }
+    },
+    singleSourceCenters: {
+      detailOnly: detailOnlyCenters,
+      consolidatedOnly: consolidatedOnlyCenters
+    },
+    perCenterComparisons,
+    requestedCenterComparisons,
+    consolidatedCenterDiagnostics: [...consolidatedCenterSnapshots.values()].map(snapshot => ({
+      costCenter: snapshot.costCenter,
+      directMode: snapshot.directMode,
+      indirectMode: snapshot.indirectMode,
+      directRowsUsedCount: snapshot.directRowsUsed.length,
+      indirectRowsUsedCount: snapshot.indirectRowsUsed.length,
+      directFormula: snapshot.directFormula,
+      indirectFormula: snapshot.indirectFormula
+    })),
+    antiDoubleCountRule: "Par centre: priorité au KPI total (hours_direct.total/hours_indirect.total), sinon somme des détails du même axe; jamais total + détails simultanément.",
+    flags: {
+      perimetersEquivalent: detailOnlyCenters.length === 0 && consolidatedOnlyCenters.length === 0,
+      legacyDirectIsSiteTotal: legacyDirectRows.length > 1,
+      legacyIndirectIsSiteTotal: legacyIndirectRows.length > 1
+    }
+  };
+}
+
 function cgtabCellValue(sheet, rowIndex1Based, colIndex1Based) {
   const ref = window.XLSX.utils.encode_cell({ r: rowIndex1Based - 1, c: colIndex1Based - 1 });
   const cell = sheet[ref];
@@ -10916,6 +11376,168 @@ async function analyzeSuiviGaFile(file, detected) {
     selectedSheet: "St Gilles",
     detectedIndicators: dedupeImportRows(indicators),
     message: `${indicators.length} indicateur(s) extrait(s) depuis l'onglet St Gilles (mensuel).`
+  };
+}
+
+async function analyzeGaDetailAggregatedFile(file, detected) {
+  const ext = (detected.extension || "").toLowerCase();
+  if (ext !== "xlsb" && !String(file.name || "").toLowerCase().endsWith(".xlsb")) {
+    return {
+      ...detected,
+      source: "GA_DETAIL_AGGREGATED",
+      sourceType: "Suivi GA détail salarié",
+      status: "non reconnu",
+      confidence: "faible",
+      message: "V5.18.8 cible le classeur XLSB Suivi Mensuel GA - Détail par salarié."
+    };
+  }
+  if (!window.XLSX?.read || !window.XLSX?.utils?.decode_range) {
+    throw new Error("Bibliothèque XLSX indisponible pour lire le détail GA.");
+  }
+  const buffer = await readFileArrayBuffer(file);
+  const workbook = window.XLSX.read(buffer, { type: "array", cellFormula: true, cellText: false, raw: true });
+  const sheet = workbook?.Sheets?.[GA_DETAIL_SOURCE_SHEET];
+  if (!sheet) throw new Error("Feuille DATA introuvable dans le détail GA.");
+  const ref = sheet["!ref"];
+  if (!ref) throw new Error("Feuille DATA vide ou illisible.");
+
+  const range = window.XLSX.utils.decode_range(ref);
+  const threshold = 5;
+  const scope = GA_DETAIL_TARGET_ETAB;
+  const periods = new Map();
+
+  for (let row = 2; row <= range.e.r + 1; row++) {
+    const year = gaDetailText(sheet, row, 1);
+    const month = gaDetailText(sheet, row, 2);
+    const etab = gaDetailText(sheet, row, 3);
+    const dep = gaDetailText(sheet, row, 4);
+    const directness = gaDetailText(sheet, row, 5).toUpperCase();
+    const activity = gaDetailText(sheet, row, 6);
+    const employeeId = gaDetailText(sheet, row, 7);
+    const contract = gaDetailText(sheet, row, 9);
+    const hours = gaDetailNumber(sheet, row, 10);
+    const period = gaDetailPeriod(year, month);
+    if (!period || year !== "2026" || etab !== scope) continue;
+    if (!employeeId || hours === null) continue;
+    const bucket = gaDetailMapAdd(periods, period, () => ({
+      rawRows: 0,
+      employees: new Set(),
+      totalHours: 0,
+      directHours: 0,
+      indirectHours: 0,
+      employeeActivities: new Map(),
+      employeeIndirect: new Map(),
+      costCenters: new Map(),
+      activities: new Map(),
+      populations: new Map(),
+      maskedGroups: []
+    }));
+    bucket.rawRows++;
+    bucket.employees.add(employeeId);
+    bucket.totalHours += hours;
+    if (directness === "DIR") bucket.directHours += hours;
+    if (directness === "IND") bucket.indirectHours += hours;
+    gaDetailMapAdd(bucket.employeeActivities, employeeId, () => new Set()).add(activity || "UNKNOWN");
+    gaDetailMapAdd(bucket.employeeIndirect, employeeId, () => 0);
+    if (directness === "IND") bucket.employeeIndirect.set(employeeId, bucket.employeeIndirect.get(employeeId) + hours);
+
+    const ccKey = dep || "UNKNOWN";
+    const cc = gaDetailMapAdd(bucket.costCenters, ccKey, () => ({ totalHours: 0, directHours: 0, indirectHours: 0, employees: new Set() }));
+    cc.totalHours += hours;
+    if (directness === "DIR") cc.directHours += hours;
+    if (directness === "IND") cc.indirectHours += hours;
+    cc.employees.add(employeeId);
+
+    const activityKey = `${activity || "UNKNOWN"}|${ccKey}|${directness || ""}`;
+    const act = gaDetailMapAdd(bucket.activities, activityKey, () => ({ label: activity || "UNKNOWN", costCenter: ccKey, directness, totalHours: 0, employees: new Set() }));
+    act.totalHours += hours;
+    act.employees.add(employeeId);
+
+    const popKey = contract || "UNKNOWN";
+    const pop = gaDetailMapAdd(bucket.populations, popKey, () => ({ totalHours: 0, directHours: 0, indirectHours: 0, employees: new Set() }));
+    pop.totalHours += hours;
+    if (directness === "DIR") pop.directHours += hours;
+    if (directness === "IND") pop.indirectHours += hours;
+    pop.employees.add(employeeId);
+  }
+
+  const rows = [];
+  const maskedGroups = [];
+  const comparisons = [];
+  const allEmployees = new Set();
+  let totalSourceRows = 0;
+
+  for (const [period, bucket] of periods.entries()) {
+    totalSourceRows += bucket.rawRows;
+    bucket.employees.forEach(employeeId => allEmployees.add(employeeId));
+    rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.hours.total", label: "GA détail - Heures totales", actual: Number(bucket.totalHours.toFixed(4)), scope, aggregationType: "sum", employeeCount: bucket.employees.size, sourceColumns: "Année|Mois|Etabl OK|Somme de tte", sourceCell: "DATA aggregated" }));
+    rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.hours.direct", label: "GA détail - Heures directes", actual: Number(bucket.directHours.toFixed(4)), scope, directness: "DIR", aggregationType: "sum", employeeCount: bucket.employees.size, sourceColumns: "DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+    rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.hours.indirect", label: "GA détail - Heures indirectes", actual: Number(bucket.indirectHours.toFixed(4)), scope, directness: "IND", aggregationType: "sum", employeeCount: bucket.employees.size, sourceColumns: "DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+
+    const avgActivities = bucket.employees.size ? [...bucket.employeeActivities.values()].reduce((sum, set) => sum + set.size, 0) / bucket.employees.size : 0;
+    const multiActivityCount = [...bucket.employeeActivities.values()].filter(set => set.size > 1).length;
+    const top10Indirect = [...bucket.employeeIndirect.values()].sort((a, b) => b - a).slice(0, 10).reduce((sum, value) => sum + value, 0);
+    rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.workforce.avg_activities", label: "GA détail - Activités moyennes par salarié", actual: Number(avgActivities.toFixed(4)), unit: "activities/employee", scope, aggregationType: "average", employeeCount: bucket.employees.size, sourceColumns: "mle|Libellé Cdc u", sourceCell: "DATA aggregated" }));
+    rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.workforce.multi_activity_rate", label: "GA détail - Part salariés multi-activités", actual: bucket.employees.size ? Number((multiActivityCount / bucket.employees.size).toFixed(6)) : 0, unit: "%", scope, aggregationType: "ratio", employeeCount: bucket.employees.size, sourceColumns: "mle|Libellé Cdc u", sourceCell: "DATA aggregated" }));
+    rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.indirect.concentration_top10", label: "GA détail - Concentration heures indirectes top10", actual: bucket.indirectHours ? Number((top10Indirect / bucket.indirectHours).toFixed(6)) : 0, unit: "%", scope, directness: "IND", aggregationType: "ratio", employeeCount: bucket.employees.size, sourceColumns: "mle|DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+
+    for (const [costCenter, aggregate] of bucket.costCenters.entries()) {
+      const contributors = aggregate.employees.size;
+      if (contributors < threshold) {
+        maskedGroups.push(gaDetailMaskedEntry(period, GA_DETAIL_SOURCE_SHEET, "centre de coûts", costCenter, contributors));
+        continue;
+      }
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.cost_center.hours", label: "GA détail - Heures centre de coûts", actual: Number(aggregate.totalHours.toFixed(4)), scope, costCenter, aggregationType: "sum", employeeCount: contributors, sourceColumns: "Dep OK|Somme de tte", sourceCell: "DATA aggregated" }));
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.cost_center.direct_hours", label: "GA détail - Heures directes centre de coûts", actual: Number(aggregate.directHours.toFixed(4)), scope, costCenter, directness: "DIR", aggregationType: "sum", employeeCount: contributors, sourceColumns: "Dep OK|DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.cost_center.indirect_hours", label: "GA détail - Heures indirectes centre de coûts", actual: Number(aggregate.indirectHours.toFixed(4)), scope, costCenter, directness: "IND", aggregationType: "sum", employeeCount: contributors, sourceColumns: "Dep OK|DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.cost_center.indirect_share", label: "GA détail - Part heures indirectes centre de coûts", actual: aggregate.totalHours ? Number((aggregate.indirectHours / aggregate.totalHours).toFixed(6)) : 0, unit: "%", scope, costCenter, directness: "IND", aggregationType: "ratio", employeeCount: contributors, sourceColumns: "Dep OK|DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+    }
+
+    for (const [activityKey, aggregate] of bucket.activities.entries()) {
+      const contributors = aggregate.employees.size;
+      if (contributors < threshold) {
+        maskedGroups.push(gaDetailMaskedEntry(period, GA_DETAIL_SOURCE_SHEET, "activité", aggregate.label, contributors));
+        continue;
+      }
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.activity.hours", label: aggregate.label, actual: Number(aggregate.totalHours.toFixed(4)), scope, costCenter: aggregate.costCenter, directness: aggregate.directness, activityType: aggregate.label, aggregationType: "sum", employeeCount: contributors, sourceColumns: "Libellé Cdc u|Dep OK|DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+    }
+
+    for (const [population, aggregate] of bucket.populations.entries()) {
+      const contributors = aggregate.employees.size;
+      if (contributors < threshold) {
+        maskedGroups.push(gaDetailMaskedEntry(period, GA_DETAIL_SOURCE_SHEET, "population", population, contributors));
+        continue;
+      }
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.population.hours", label: `GA détail - Heures population ${population}`, actual: Number(aggregate.totalHours.toFixed(4)), scope, population, aggregationType: "sum", employeeCount: contributors, sourceColumns: "contrat|Somme de tte", sourceCell: "DATA aggregated" }));
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.population.direct_hours", label: `GA détail - Heures directes ${population}`, actual: Number(aggregate.directHours.toFixed(4)), scope, directness: "DIR", population, aggregationType: "sum", employeeCount: contributors, sourceColumns: "contrat|DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+      rows.push(gaDetailBuildRow({ period, metricKey: "ga_detail.population.indirect_hours", label: `GA détail - Heures indirectes ${population}`, actual: Number(aggregate.indirectHours.toFixed(4)), scope, directness: "IND", population, aggregationType: "sum", employeeCount: contributors, sourceColumns: "contrat|DIR/IND|Somme de tte", sourceCell: "DATA aggregated" }));
+    }
+
+    const comparison = gaDetailCompareWithConsolidated(period, bucket.costCenters);
+    if (comparison) comparisons.push(comparison);
+  }
+
+  const sortedPeriods = [...periods.keys()].sort();
+  return {
+    ...detected,
+    source: "GA_DETAIL_AGGREGATED",
+    sourceType: "Suivi GA détail salarié",
+    status: rows.length ? "reconnu" : "probablement reconnu",
+    confidence: rows.length ? "élevée" : "moyenne",
+    site: scope,
+    scope,
+    period: sortedPeriods[0] || "",
+    periods: sortedPeriods,
+    selectedPeriods: sortedPeriods,
+    sheets: ensureArray(workbook.SheetNames || []),
+    selectedSheet: GA_DETAIL_SOURCE_SHEET,
+    sourceRowCount: totalSourceRows,
+    sourceEmployeeCount: allEmployees.size,
+    excludedNominativeColumns: GA_DETAIL_EXCLUDED_COLUMNS,
+    maskedGroups,
+    comparisonSummary: comparisons,
+    detectedIndicators: dedupeImportRows(rows),
+    message: `${rows.length} agrégat(s) GA anonymisé(s) depuis ${GA_DETAIL_SOURCE_SHEET} sur ${sortedPeriods.join(", ") || "aucune période"}. ${totalSourceRows} lignes sources filtrées, ${allEmployees.size} salariés distincts. Groupes masqués: ${maskedGroups.length}. Scope ${scope}.`
   };
 }
 
