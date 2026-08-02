@@ -8082,12 +8082,101 @@ const perfJobs = ["Préparation", "Réception", "Manutention", "Chargement", "Tr
 const perfAbsences = ["Maladie", "Accidents du travail", "Congés", "Formation", "Autres absences"];
 const perfQuality = ["Casse livraison", "Non livrés", "Litiges", "Casse entrepôt", "Périmés entrepôt", "Contrôle stock", "Dons", "Total Gains & Pertes"];
 const IPO_UNIT = "indice";
+
+function zGemedComplementaryTargetPath(metricKey, periodType = "monthly") {
+  const key = String(metricKey || "")
+    .replace(/[^a-z0-9.]+/gi, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return `complementary.zgemed.${key}${periodType === "cumulative" ? ".cumulative" : ""}`;
+}
+
+const zGemedMetricDefinitions = [
+  { metricKey: "activity.colis_heterogenes_prepares", label: "Colis hétérogènes préparés", category: "Activité", unit: "colis", aliases: ["colis heterogenes prepares", "colis hétérogènes préparés", "COLIS HETEROGENES PREPARES"] },
+  { metricKey: "activity.colis_homogenes_prepares", label: "Colis homogènes préparés", category: "Activité", unit: "colis", aliases: ["colis homogenes prepares", "colis homogènes préparés", "COLIS HOMOGENES PREPARES"] },
+  { metricKey: "activity.colis_totaux_prepares", label: "Colis totaux préparés", category: "Activité", unit: "colis", aliases: ["colis totaux prepares", "colis préparés total", "colis prepares total", "colis total prepares", "COLIS TOTAUX PREPARES"], targetType: "existing", targetId: "activity.colis_total", targetPath: "activity.actual", targetLabel: "Colis totaux préparés", cumulativeTargetLabel: "Colis totaux préparés (Cumul)" },
+  { metricKey: "activity.colis_controles_prepares", label: "Colis contrôlés préparés", category: "Activité", unit: "colis", aliases: ["colis controles prepares", "COLIS CONTROLES PREPARES"] },
+  { metricKey: "activity.palettes_receptionnees", label: "Palettes réceptionnées", category: "Activité", unit: "palettes", aliases: ["palettes receptionnees", "palettes réceptionnées", "PALETTES RECEPTIONNEES"] },
+  { metricKey: "activity.palettes_manutentionnees", label: "Palettes manutentionnées", category: "Activité", unit: "palettes", aliases: ["palettes manutentionnees", "palettes manutentionnées", "PALETTES MANUTENTIONNEES"] },
+  { metricKey: "activity.palettes_homogenes_preparees", label: "Palettes homogènes préparées", category: "Activité", unit: "palettes", aliases: ["palettes homogenes preparees", "palettes homogènes préparées", "PALETTES HOMOGENES PREPAREES"] },
+  { metricKey: "activity.supports_charges", label: "Supports chargés", category: "Activité", unit: "supports", aliases: ["supports charges", "supports chargés", "supports charges total", "SUPPORTS CHARGES TOTAL"] },
+  { metricKey: "activity.supports_passage_quai", label: "Supports en passage à quai", category: "Activité", unit: "supports", aliases: ["supports en passage a quai", "supports en passage à quai", "supports en passage a quai paq", "SUPPORTS EN PASSAGE A QUAI (PAQ)"] },
+  { metricKey: "activity.box_prepares", label: "Box préparés", category: "Activité", unit: "box", aliases: ["box prepares", "box préparés", "BOX PREPARES"] },
+  { metricKey: "activity.eut_transportes_transit", label: "EUT transportés en transit", category: "Activité", unit: "EUT", aliases: ["eut transportes en transit", "eut transportés en transit", "eut transportes transit", "EUT TRANSPORTES TRANSIT"] },
+  { metricKey: "activity.eut_facturees", label: "EUT facturées", category: "Activité", unit: "EUT", aliases: ["eut facturees", "eut facturées", "eut facturees par le site", "EUT FACTUREES PAR LE SITE"] },
+  { metricKey: "economy.direction_operationnelle", label: "Direction opérationnelle", category: "Coûts", unit: "k€", aliases: ["direction operationnelle", "DIRECTION OPERATIONNELLE"] },
+  { metricKey: "economy.organisation_methode_qualite", label: "Organisation méthode qualité", category: "Coûts", unit: "k€", aliases: ["organisation methode qualite", "ORGANISATION METHODE QUALITE"] },
+  { metricKey: "economy.ressources_humaines", label: "Ressources humaines", category: "Coûts", unit: "k€", aliases: ["ressources humaines", "RESSOURCES HUMAINES"] },
+  { metricKey: "economy.relations_enseignes", label: "Relations enseignes", category: "Coûts", unit: "k€", aliases: ["relations enseignes", "RELATIONS ENSEIGNES"] },
+  { metricKey: "economy.finance_gestion", label: "Finance gestion", category: "Coûts", unit: "k€", aliases: ["finance gestion", "FINANCE GESTION"] },
+  { metricKey: "economy.organisation_exploitation_logistique", label: "Organisation exploitation logistique", category: "Coûts", unit: "k€", aliases: ["organisation exploitation logistique", "ORGANISATION EXPLOITATION LOGISTIQUE"] },
+  { metricKey: "economy.service_facturation", label: "Service facturation", category: "Coûts", unit: "k€", aliases: ["service facturation", "SERVICE FACTURATION"] },
+  { metricKey: "economy.divers_couts_logistique", label: "Divers coûts logistique", category: "Coûts", unit: "k€", aliases: ["divers couts logistique", "DIVERS COUTS LOGISTIQUE"] },
+  { metricKey: "economy.immobilier", label: "Immobilier", category: "Coûts", unit: "k€", aliases: ["immobilier", "IMMOBILIER"] },
+  { metricKey: "economy.services_generaux", label: "Services généraux", category: "Coûts", unit: "k€", aliases: ["services generaux", "SERVICES GENERAUX"] },
+  { metricKey: "economy.assurances_impots_taxes", label: "Assurances impôts et taxes", category: "Coûts", unit: "k€", aliases: ["assurances impots et taxes", "ASSURANCES IMPOTS ET TAXES"] },
+  { metricKey: "economy.informatique_exploitation", label: "Informatique exploitation", category: "Coûts", unit: "k€", aliases: ["informatique exploitation", "INFORMATIQUE EXPLOITATION"] },
+  { metricKey: "economy.gestion_des_volumes", label: "Gestion des volumes", category: "Coûts", unit: "k€", aliases: ["gestion des volumes", "GESTION DES VOLUMES"] },
+  { metricKey: "economy.passage_a_quai", label: "Passage à quai", category: "Coûts", unit: "k€", aliases: ["passage a quai", "PASSAGE A QUAI"] },
+  { metricKey: "economy.couts_fixes", label: "Coûts fixes", category: "Coûts", unit: "k€", aliases: ["couts fixes", "coûts fixes", "couts fixes support exploit", "COUTS FIXES (SUPPORT + EXPLOIT)"] },
+  { metricKey: "economy.couts_reception", label: "Coûts Réception", category: "Coûts", unit: "k€", aliases: ["couts reception", "coûts réception", "coûts reception", "reception", "RECEPTION"] },
+  { metricKey: "economy.couts_preparation", label: "Coûts Préparation", category: "Coûts", unit: "k€", aliases: ["couts preparation", "coûts préparation", "coûts preparation", "preparation", "PREPARATION"] },
+  { metricKey: "economy.couts_manutention", label: "Coûts Manutention", category: "Coûts", unit: "k€", aliases: ["couts manutention", "coûts manutention", "manutention", "MANUTENTION"] },
+  { metricKey: "economy.couts_chargement", label: "Coûts Chargement", category: "Coûts", unit: "k€", aliases: ["couts chargement", "coûts chargement", "chargement", "CHARGEMENT"] },
+  { metricKey: "economy.controle_preparation", label: "Contrôle préparation", category: "Coûts", unit: "k€", aliases: ["controle preparation", "CONTROLE PREPARATION"] },
+  { metricKey: "economy.activites_specifiques_market_vente_carton", label: "Activités spécifiques market (vente carton)", category: "Coûts", unit: "k€", aliases: ["activites specifiques market vente carton", "ACTIVITES SPECIFIQUES MARKET (VENTE CARTON)"] },
+  { metricKey: "economy.autres_activites_specifiques", label: "Autres activités spécifiques", category: "Coûts", unit: "k€", aliases: ["autres activites specifiques", "AUTRES ACTIVITES SPECIFIQUES"] },
+  { metricKey: "economy.gestion_emballages_dechets", label: "Gestion des emballages et déchets", category: "Coûts", unit: "k€", aliases: ["gestion des emballages et dechets", "GESTION DES EMBALLAGES ET DECHETS"] },
+  { metricKey: "economy.couts_var_manutention", label: "Coûts variables manutention", category: "Coûts", unit: "k€", aliases: ["couts var manutention", "COUTS VAR MANUTENTION"] },
+  { metricKey: "quality.demarque_marchandises", label: "Démarque marchandises", category: "Gains et pertes", unit: "k€", aliases: ["demarque marchandises", "DEMARQUE MARCHANDISES"] },
+  { metricKey: "quality.demarque_emballage", label: "Démarque emballage", category: "Gains et pertes", unit: "k€", aliases: ["demarque emballage", "DEMARQUE EMBALLAGE"] },
+  { metricKey: "quality.couts_demarque", label: "Coûts démarque", category: "Gains et pertes", unit: "k€", aliases: ["couts demarque", "COUTS DEMARQUE"] },
+  { metricKey: "economy.couts_variables", label: "Coûts variables", category: "Coûts", unit: "k€", aliases: ["couts variables", "coûts variables", "couts variables exploitation", "COUTS VARIABLES EXPLOITATION"] },
+  { metricKey: "economy.couts_structure", label: "Coûts de structure", category: "Coûts", unit: "k€", aliases: ["couts de structure", "coûts de structure", "structure", "STRUCTURE"] },
+  { metricKey: "economy.roulage", label: "Roulage", category: "Coûts", unit: "k€", aliases: ["roulage", "ROULAGE"] },
+  { metricKey: "economy.transport_autres", label: "Transport autres", category: "Coûts", unit: "k€", aliases: ["transport autres", "TRANSPORT AUTRES"] },
+  { metricKey: "economy.couts_transport", label: "Coûts transport", category: "Coûts", unit: "k€", aliases: ["couts transport", "coûts transport", "COUTS TRANSPORT"] },
+  { metricKey: "economy.couts_exploitation", label: "Coûts d'exploitation", category: "Coûts", unit: "k€", aliases: ["couts exploitation", "coûts d exploitation", "coûts d'exploitation", "couts exploitation logistique transport", "COUTS EXPLOITATION (LOGISTIQUE + TRANSPORT)"] },
+  { metricKey: "economy.redevances", label: "Redevances", category: "Coûts", unit: "k€", aliases: ["redevances", "REDEVANCES"] },
+  { metricKey: "economy.rejets_metier", label: "Rejets métier", category: "Coûts", unit: "k€", aliases: ["rejets metier", "REJETS METIER"] },
+  { metricKey: "economy.renvoi", label: "Renvoi", category: "Résultat", unit: "k€", aliases: ["renvoi", "RENVOI"] },
+  { metricKey: "economy.resultat_operationnel", label: "Résultat opérationnel", category: "Résultat", unit: "k€", aliases: ["resultat operationnel", "résultat opérationnel", "resultat operationnel courant apres renvoi", "RESULTAT OPERATIONNEL COURANT APRES RENVOI"] },
+  { metricKey: "economy.resultat_exceptionnel", label: "Résultat exceptionnel", category: "Résultat", unit: "k€", aliases: ["resultat exceptionnel", "RESULTAT EXCEPTIONNEL"] },
+  { metricKey: "economy.ebit", label: "EBIT", category: "Résultat", unit: "k€", aliases: ["ebit", "EBIT"] },
+  { metricKey: "ratio.palettes_manutentionnees_sur_palettes_receptionnees", label: "Palettes manutentionnées / palettes réceptionnées", category: "Ratios", unit: "ratio", aliases: ["palettes manutentionnees palettes receptionnees", "palettes manutentionnées / palettes réceptionnées", "palettes manutentionnees / palettes receptionnees", "PALETTES MANUTENTIONNEES / PALETTES RECEPTIONNEES"] },
+  { metricKey: "ratio.hauteur_palette", label: "Hauteur palette", category: "Ratios", unit: "", aliases: ["hauteur palette", "hauteur pal", "HAUTEUR PAL"], targetType: "existing", targetId: "pallet.height", targetPath: "palletHeight.actual", targetLabel: "Hauteur palette", cumulativeTargetLabel: "Hauteur palette (Cumul)" },
+  { metricKey: "economy.cout_fixe_par_colis", label: "Coût fixe par colis", category: "Coûts", unit: "€/colis", aliases: ["cout fixe par colis", "coût fixe par colis", "cout colis total fixes", "COUT COLIS TOTAL FIXES"] },
+  { metricKey: "economy.cout_variable_par_colis", label: "Coût variable par colis", category: "Coûts", unit: "€/colis", aliases: ["cout variable par colis", "coût variable par colis", "cout colis variables hors demarque", "COUT COLIS VARIABLES HORS DEMARQUE"] },
+  { metricKey: "quality.cout_demarque_par_colis", label: "Coût démarque par colis", category: "Gains et pertes", unit: "€/colis", aliases: ["cout colis demarque", "COUT COLIS DEMARQUE"] },
+  { metricKey: "economy.cout_variable_exploitation_par_colis", label: "Coût variables exploitation par colis", category: "Coûts", unit: "€/colis", aliases: ["cout colis variables exploitation", "COUT COLIS VARIABLES EXPLOITATION"] },
+  { metricKey: "economy.cout_transport_par_colis", label: "Coût transport par colis", category: "Coûts", unit: "€/colis", aliases: ["cout transport par colis", "coût transport par colis", "cout colis transport", "COUT COLIS TRANSPORT"] },
+  { metricKey: "economy.cout_exploitation_par_colis", label: "Coût exploitation par colis", category: "Coûts", unit: "€/colis", aliases: ["cout exploitation par colis", "coût exploitation par colis", "cout colis exploitation", "COUT COLIS EXPLOITATION"] },
+  { metricKey: "economy.cout_total_par_colis", label: "Coût total par colis", category: "Coûts", unit: "€/colis", aliases: ["cout total par colis", "coût total par colis", "cout colis total", "COUT COLIS TOTAL"] }
+];
+
+const zGemedImportTargets = zGemedMetricDefinitions.flatMap(def => {
+  const aliases = [def.label, ...ensureArray(def.aliases)];
+  const entries = [];
+  if (def.targetType !== "existing") {
+    entries.push({ id: zGemedComplementaryTargetPath(def.metricKey), label: def.label, path: zGemedComplementaryTargetPath(def.metricKey), type: "complementary", unit: def.unit, aliases });
+  }
+  if (def.targetType === "existing" && def.cumulativeTargetLabel) {
+    entries.push({ id: zGemedComplementaryTargetPath(def.metricKey, "cumulative"), label: def.cumulativeTargetLabel, path: zGemedComplementaryTargetPath(def.metricKey, "cumulative"), type: "complementary", unit: def.unit, aliases: [...aliases, `${def.label} cumul`, `cumul ${def.label}`] });
+  }
+  return entries;
+});
+
 const performanceImportTargetCatalog = [
   { id: "complementary.generic", label: "KPI complémentaire", path: "complementary.generic", type: "complementary", unit: "", aliases: ["kpi complementaire", "kpi complémentaire"] },
   { id: "ipo.total", label: "IPO Total", path: "ipo.total.actual", type: "existing", unit: IPO_UNIT, aliases: ["ipo total", "couts exploitation logistique transport"] },
   { id: "ipo.variable", label: "IPO Variable", path: "ipo.variable.actual", type: "existing", unit: IPO_UNIT, aliases: ["ipo variable", "couts variables exploitation"] },
   { id: "activity.colis_total", label: "Colis totaux préparés", path: "activity.actual", type: "existing", unit: "colis", aliases: ["colis totaux prepares", "colis prepares total", "total colis prepares", "colis prepares", "colis total prepares", "colis controles prepares", "colis heterogenes prepares", "colis homogenes prepares", "supports charges total", "palettes receptionnees"] },
+  { id: "quality.total_gains_pertes", label: "Total Gains & Pertes", path: "quality.indicators.Total Gains & Pertes.actual", type: "existing", unit: "k€", aliases: ["total gains pertes", "gains et pertes", "gains pertes"] },
   { id: "quality.litiges", label: "Litiges", path: "quality.indicators.Litiges.actual", type: "existing", unit: "litige", aliases: ["litiges", "litige", "retours litiges"] },
+  { id: "quality.casse_entrepot", label: "Casse entrepôt", path: "quality.indicators.Casse entrepôt.actual", type: "existing", unit: "€", aliases: ["casse entrepot", "casse entrepôt"] },
+  { id: "quality.dons", label: "Dons", path: "quality.indicators.Dons.actual", type: "existing", unit: "€", aliases: ["dons", "don"] },
+  { id: "quality.controle_stock", label: "Contrôle stock", path: "quality.indicators.Contrôle stock.actual", type: "existing", unit: "€", aliases: ["controle stock", "contrôle stock"] },
+  { id: "pallet.height", label: "Hauteur palette", path: "palletHeight.actual", type: "existing", unit: "", aliases: ["hauteur palette", "hauteur palettes"] },
   { id: "productivity.reception", label: "Réception", path: "productivity.Réception.actual", type: "existing", unit: "colis", aliases: ["reception", "receptions"] },
   { id: "productivity.manutention", label: "Manutention", path: "productivity.Manutention.actual", type: "existing", unit: "colis", aliases: ["manutention", "manutentions"] },
   { id: "productivity.chargement", label: "Chargement", path: "productivity.Chargement.actual", type: "existing", unit: "colis", aliases: ["chargement", "chargements"] },
@@ -8105,7 +8194,8 @@ const performanceImportTargetCatalog = [
   { id: "absenteeism.autres", label: "Absentéisme autres", path: "absenteeism.details.Autres absences.actual", type: "existing", unit: "pourcentage", aliases: ["autres absences", "autres"] },
   { id: "complementary.gemed.direction_operationnelle", label: "Direction opérationnelle", path: "complementary.directionOperationnelle", type: "complementary", unit: "", aliases: ["direction operationnelle"] },
   { id: "complementary.gemed.ressources_humaines", label: "Ressources humaines", path: "complementary.ressourcesHumaines", type: "complementary", unit: "", aliases: ["ressources humaines"] },
-  { id: "complementary.gemed.finance_gestion", label: "Finance / Gestion", path: "complementary.financeGestion", type: "complementary", unit: "", aliases: ["finance gestion", "finance / gestion"] }
+  { id: "complementary.gemed.finance_gestion", label: "Finance / Gestion", path: "complementary.financeGestion", type: "complementary", unit: "", aliases: ["finance gestion", "finance / gestion"] },
+  ...zGemedImportTargets
 ];
 let performanceEdit = false;
 let performanceSelectedId = "";
@@ -8226,6 +8316,45 @@ function performanceImportDestinationFromRow(row) {
   if (normalized.includes("preparation") || normalized.includes("prepare")) return performanceImportTargetById("productivity.preparation");
   if (normalized.includes("colis") || normalized.includes("supports charges") || normalized.includes("palettes receptionnees") || normalized.includes("palettes recep")) return performanceImportTargetById("activity.colis_total");
   return performanceImportTargetById("complementary.generic");
+}
+
+function isZGemedSourceLabel(value = "") {
+  return /z[\s_-]*gemed/i.test(String(value || ""));
+}
+
+function zGemedMetricDefinition(label = "") {
+  const normalized = normalizePerformanceLabel(label);
+  return zGemedMetricDefinitions.find(def => [def.label, ...ensureArray(def.aliases)].some(alias => normalizePerformanceLabel(alias) === normalized)) || null;
+}
+
+function zGemedResolvedMapping(label = "", periodType = "monthly") {
+  const definition = zGemedMetricDefinition(label);
+  if (!definition) return null;
+  if (definition.targetType === "existing" && periodType === "monthly") {
+    return {
+      metricKey: definition.metricKey,
+      category: definition.category,
+      label: definition.label,
+      unit: definition.unit,
+      path: definition.targetPath,
+      targetId: definition.targetId,
+      targetType: "existing",
+      targetLabel: definition.targetLabel || definition.label,
+      confidence: "élevée"
+    };
+  }
+  const targetId = zGemedComplementaryTargetPath(definition.metricKey, periodType === "cumulative" ? "cumulative" : "monthly");
+  return {
+    metricKey: definition.metricKey,
+    category: definition.category,
+    label: definition.label,
+    unit: definition.unit,
+    path: targetId,
+    targetId,
+    targetType: "complementary",
+    targetLabel: periodType === "cumulative" && definition.cumulativeTargetLabel ? definition.cumulativeTargetLabel : definition.label,
+    confidence: definition.targetType === "existing" ? "élevée" : "moyenne"
+  };
 }
 
 function perfMetric() {
@@ -8426,20 +8555,21 @@ function performanceBuildComplementaryRecords() {
       label,
       sourceLabel: label,
       destinationLabels: [row.destinationLabel || "KPI complémentaire", label],
-      category: "KPI complémentaires",
+      category: row.category || "KPI complémentaires",
       period,
+      periodType: row.periodType || "monthly",
       periodTitle: performancePeriodTitle(period),
       periodSort: performancePeriodSortValue(period),
-      value: row.value,
+      value: row.actual ?? row.value,
       unit: row.unit || "",
       expectedUnit: row.unit || "",
       objective: "",
       source: row.source || "Import",
       targetPath: String(row.destinationPath || row.targetId || ""),
-      metricPath: "",
+      metricPath: row.metricKey || "",
       targetId: row.targetId || "complementary.generic",
       targetType: "complementary",
-      sourceRef: row.sourceRef || "",
+      sourceRef: row.sourceRef || row.sourceCell || "",
       qualityFlags: []
     };
   }));
@@ -8914,7 +9044,7 @@ function performanceImportInlineDetail(indicators) {
 
 function performanceImportSourceLabel(item) {
   const label = item.sourceType || item.source || "Import";
-  return /z\s*gemed/i.test(label) ? "Z GEMED" : label;
+  return isZGemedSourceLabel(label) ? "Z GEMED" : label;
 }
 
 function togglePerformanceImportDetail(id) {
@@ -9303,6 +9433,12 @@ function performanceImportStepPreview() {
   const targetOptions = performanceImportTargetOptions();
   const mappedRows = performanceImportWizard.preview.filter(row => row.destinationPath);
   const unmappedRows = performanceImportWizard.preview.filter(row => !row.destinationPath);
+  const typeLabel = row => row.periodType === "cumulative" ? "Cumul" : "Mensuel";
+  const deltaLabel = (value, percent) => {
+    const base = value === null || value === undefined || value === "" ? "" : perfFmt(value);
+    const pct = percent === null || percent === undefined || percent === "" ? "" : `${perfFmt(percent)}%`;
+    return [base, pct].filter(Boolean).join(" · ") || "";
+  };
   const plannedActionLabel = row => {
     const currentValueExists = row.currentValue !== "" && row.currentValue !== null && row.currentValue !== undefined;
     if (row.status === "Identique") return "Identique";
@@ -9317,11 +9453,11 @@ function performanceImportStepPreview() {
     const selectable = row.targetType !== "ignore";
     const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
     const selectHtml = targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourcePage || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
-  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Unité</th><th>Page source</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourcePage || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
+  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Unité</th><th>Page source</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="12">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="17">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -9381,18 +9517,21 @@ function normalizePerformanceImportIndicators(rows, file) {
     const destinationLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (destinationPath ? indicator : "KPI complémentaire");
     const targetFromPath = performanceImportTargetFromPath(destinationPath);
     const sourceType = raw.sourceType || file.sourceType || file.source || "";
-    let targetFromLabel = performanceImportDestinationFromRow({ indicator, unit: firstImportValue(raw, ["unit", "unite"]) || "" });
+    const explicitTargetId = firstImportValue(raw, ["targetId", "destinationId"]);
+    let targetFromLabel = isZGemedSourceLabel(sourceType)
+      ? (explicitTargetId ? performanceImportTargetById(explicitTargetId) : null)
+      : performanceImportDestinationFromRow({ indicator, unit: firstImportValue(raw, ["unit", "unite"]) || "" });
     if (/gpo/i.test(sourceType) && targetFromLabel?.id === "complementary.generic" && !destinationPath) targetFromLabel = null;
     const target = targetFromPath || targetFromLabel;
     const targetType = target ? target.type : (destinationPath ? "existing" : "complementary");
-    const targetId = firstImportValue(raw, ["targetId", "destinationId"]) || (target ? target.id : "");
+    const targetId = explicitTargetId || (target ? target.id : "");
     const mappedPathRaw = destinationPath || (target ? target.path : "");
     const normalizedDestination = normalizeImportDestination(mappedPathRaw, raw.destinationField || "");
     const mappedLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (target ? target.label : "KPI complémentaire");
     const confidenceMeta = performanceImportConfidenceMeta(targetType === "existing" ? 92 : targetType === "complementary" ? (targetId === "complementary.generic" ? 62 : 74) : 40);
     const selected = raw.selected !== undefined ? Boolean(raw.selected) : targetType !== "ignore";
     const period = normalizeImportPeriod(raw.period || raw.date || file.period || ensureArray(file.periods)[0]) || IMPORT_PERIOD_PENDING;
-    const source = /gpo/i.test(sourceType) ? "GPO" : (raw.source || file.source || file.sourceType || "Import");
+    const source = /gpo/i.test(sourceType) ? "GPO" : (isZGemedSourceLabel(raw.source || file.source || file.sourceType || "") ? "Z_GEMED" : (raw.source || file.source || file.sourceType || "Import"));
     const actual = normalizeImportNumericValue(rawValue);
     const budget = normalizeImportNullableNumericValue(firstImportValue(raw, ["budget", "target", "objective", "objectif"]));
     const historical = normalizeImportNullableNumericValue(firstImportValue(raw, ["historical", "histo", "history"]));
@@ -9406,6 +9545,7 @@ function normalizePerformanceImportIndicators(rows, file) {
       ...raw,
       id: raw.id || newId("preview"),
       period,
+      periodType: firstImportValue(raw, ["periodType"]) || "monthly",
       indicator: String(indicator).trim(),
       label: String(firstImportValue(raw, ["label", "displayLabel"]) || indicator).trim(),
       metricKey,
@@ -9415,11 +9555,17 @@ function normalizePerformanceImportIndicators(rows, file) {
       value: actual,
       budget,
       historical,
+      deltaBudget: normalizeImportNullableNumericValue(firstImportValue(raw, ["deltaBudget", "budgetGap"])),
+      deltaHistorical: normalizeImportNullableNumericValue(firstImportValue(raw, ["deltaHistorical", "historicalGap"])),
+      deltaBudgetPercent: normalizeImportNullableNumericValue(firstImportValue(raw, ["deltaBudgetPercent", "budgetGapPercent"])),
+      deltaHistoricalPercent: normalizeImportNullableNumericValue(firstImportValue(raw, ["deltaHistoricalPercent", "historicalGapPercent"])),
       objective: normalizeImportNullableNumericValue(firstImportValue(raw, ["objective", "target", "objectif"])),
       unit,
       source,
       sourceType,
       sourcePage,
+      sourceSheet: firstImportValue(raw, ["sourceSheet", "sheet", "worksheet"]) || "",
+      sourceCell: firstImportValue(raw, ["sourceCell", "cell", "sourceCells"]) || "",
       pageSource: raw.pageSource || raw.sourcePage || raw.page || raw.sourceRef || sourcePage || "",
       sourceRef: raw.sourceRef || raw.pageSource || raw.sourcePage || raw.page || "",
       destinationPath: normalizedDestination.path,
@@ -9876,7 +10022,7 @@ function matchNumberAround(text, regex) {
 function dedupeImportRows(rows) {
   const seen = new Set();
   return rows.filter(row => {
-    const key = `${row.period}|${row.destinationPath}|${row.destinationField || "actual"}|${row.indicator}`;
+    const key = `${row.period}|${row.periodType || "monthly"}|${row.metricKey || ""}|${row.destinationPath}|${row.destinationField || "actual"}|${normalizeText(row.source || "")}|${row.sourceSheet || ""}|${row.indicator}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -9886,10 +10032,10 @@ function dedupeImportRows(rows) {
 async function analyzeZGemedFile(file, detected) {
   const ext = (detected.extension || "").toLowerCase();
   if (ext === "xlsb" || String(file.name || "").toLowerCase().endsWith(".xlsb")) {
-    return { ...detected, typeDetected: "Z GEMED Excel binaire", status: "probablement reconnu", confidence: "moyenne", source: "Z GEMED", message: "Format .xlsb reconnu, mais extraction navigateur sans backend non disponible. Exporter le fichier en .xlsx ou CSV depuis Excel pour importer les valeurs." };
+    return { ...detected, typeDetected: "Z GEMED Excel binaire", status: "probablement reconnu", confidence: "moyenne", source: "Z_GEMED", message: "Format .xlsb reconnu, mais extraction navigateur sans backend non disponible. Exporter le fichier en .xlsx ou CSV depuis Excel pour importer les valeurs." };
   }
-  if (ext === "csv") return analyzeZGemedRows(parseCsvText(await readFileText(file)), detected, "CSV");
-  if (ext === "xlsx" || ext === "xlsm") return analyzeZGemedRows(await readXlsxRows(file), detected, "Excel");
+  if (ext === "csv") return analyzeZGemedWorkbook({ sheets: [{ name: "CSV", rows: parseCsvText(await readFileText(file)) }] }, detected, "CSV");
+  if (ext === "xlsx" || ext === "xlsm") return analyzeZGemedWorkbook(await readXlsxRows(file), detected, "Excel");
   return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supporté pour l'extraction locale. Utiliser .xlsx ou .csv." };
 }
 
@@ -9913,7 +10059,7 @@ function readFileArrayBuffer(file) {
 
 function parseCsvText(text) {
   const delimiter = text.includes(";") ? ";" : ",";
-  return text.split(/\r?\n/).filter(Boolean).map(line => {
+  return text.split(/\r?\n/).filter(Boolean).map((line, lineIndex) => {
     const out = [];
     let cur = "", quoted = false;
     for (let i = 0; i < line.length; i++) {
@@ -9925,6 +10071,8 @@ function parseCsvText(text) {
       cur += ch;
     }
     out.push(cur);
+    out.__rowNumber = lineIndex + 1;
+    out.__cellRefs = out.map((_, colIndex) => `L${lineIndex + 1}C${colIndex + 1}`);
     return out;
   });
 }
@@ -9944,10 +10092,7 @@ async function readXlsxRows(file) {
     if (!xml) continue;
     parsedSheets.push({ name: sheet.name, rows: parseXlsxSheetRows(xml, shared) });
   }
-  const main = parsedSheets.find(s => /z|gemed|st|gilles|restit|med/i.test(s.name) || zgemedRowsScore(s.rows) >= 4) || parsedSheets[0] || { name: "Feuille 1", rows: [] };
-  const analyzed = main.rows;
-  analyzed.sheets = parsedSheets.map(s => s.name);
-  return analyzed;
+  return { sheets: parsedSheets };
 }
 
 function readXlsxSheets(workbookXml, relsXml) {
@@ -9966,14 +10111,20 @@ function parseXlsxSheetRows(xml, shared) {
   const rows = [];
   [...xml.matchAll(/<row[^>]*r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)].forEach(rowMatch => {
     const row = [];
+    row.__cellRefs = [];
     [...rowMatch[2].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)].forEach(cell => {
-      const attrs = cell[1], body = cell[2], ref = (attrs.match(/r="([A-Z]+)\d+"/) || [])[1] || "";
+      const attrs = cell[1], body = cell[2], fullRef = (attrs.match(/r="([A-Z]+\d+)"/) || [])[1] || "", ref = (fullRef.match(/^([A-Z]+)/) || [])[1] || "";
       const col = xlsxColIndex(ref);
       const type = (attrs.match(/t="([^"]+)"/) || [])[1] || "";
       const raw = (body.match(/<v>([\s\S]*?)<\/v>/) || body.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || "";
       row[col] = type === "s" ? (shared[Number(raw)] || "") : xmlDecode(raw);
+      row.__cellRefs[col] = fullRef;
     });
-    rows.push(row.map(v => v ?? ""));
+    const normalizedRow = [];
+    for (let index = 0; index < row.length; index += 1) normalizedRow[index] = row[index] ?? "";
+    normalizedRow.__cellRefs = row.__cellRefs || [];
+    normalizedRow.__rowNumber = Number(rowMatch[1] || 0);
+    rows.push(normalizedRow);
   });
   return rows;
 }
@@ -9993,15 +10144,21 @@ function zgemedRowsScore(rows) {
   return ["mois", "site", "reel", "budget", "histo", "numero", "hybride"].filter(x => text.includes(x)).length;
 }
 
-function analyzeZGemedRows(rows, detected, sourceFormat) {
-  const sheets = rows.sheets || [sourceFormat];
-  const site = detectZGemedSite(rows) || detected.site || "";
-  const periods = detectZGemedPeriods(rows, detected.name);
-  const headerIndex = rows.findIndex(r => normalizeText(r.join(" ")).includes("numero") && normalizeText(r.join(" ")).includes("reel") && normalizeText(r.join(" ")).includes("budget"));
-  if (headerIndex < 0) return { ...detected, status: "non reconnu", confidence: "faible", source: "Z GEMED", sheets, site, periods, selectedPeriods: periods, detectedIndicators: [], message: "Aucun en-tête Z GEMED exploitable détecté." };
-  const detectedIndicators = extractZGemedIndicators(rows, headerIndex, periods[0] || detected.period || "", sourceFormat);
-  const score = zgemedRowsScore(rows);
-  return { ...detected, typeDetected: "Z GEMED Excel", source: "Z GEMED", status: score >= 5 ? "reconnu" : "probablement reconnu", confidence: score >= 5 ? "élevée" : "moyenne", site, periods, selectedPeriods: periods, sheets, detectedIndicators, message: `${detectedIndicators.length} indicateur(s) extrait(s) réellement depuis ${sourceFormat}.` };
+function analyzeZGemedWorkbook(workbook, detected, sourceFormat) {
+  const sheets = ensureArray(workbook?.sheets);
+  const site = detectZGemedSite(sheets) || detected.site || "";
+  const periods = detectZGemedPeriods(sheets, detected.name);
+  const detectedIndicators = [];
+  let headerCount = 0;
+  sheets.forEach(sheet => {
+    const extracted = extractZGemedIndicatorsFromSheet(sheet.rows || [], periods[0] || detected.period || "", sourceFormat, sheet.name || sourceFormat);
+    headerCount += extracted.headerCount;
+    detectedIndicators.push(...extracted.rows);
+  });
+  if (!headerCount) return { ...detected, status: "non reconnu", confidence: "faible", source: "Z_GEMED", sheets: sheets.map(sheet => sheet.name || sourceFormat), site, periods, selectedPeriods: periods, detectedIndicators: [], message: "Aucun en-tête Z GEMED exploitable détecté." };
+  const score = Math.max(0, ...sheets.map(sheet => zgemedRowsScore(sheet.rows || [])));
+  const dedupedIndicators = dedupeImportRows(detectedIndicators);
+  return { ...detected, typeDetected: "Z GEMED Excel", source: "Z_GEMED", status: score >= 5 ? "reconnu" : "probablement reconnu", confidence: score >= 5 ? "élevée" : "moyenne", site, periods, selectedPeriods: periods, sheets: sheets.map(sheet => sheet.name || sourceFormat), detectedIndicators: dedupedIndicators, message: `${dedupedIndicators.length} indicateur(s) extrait(s) réellement depuis ${sheets.length || 1} feuille(s) ${sourceFormat}.` };
 }
 
 function normalizeText(text) {
@@ -10030,22 +10187,44 @@ function managerDisplayLabel(manager) {
   return cleanDisplayLabel([manager.name, manager.role].filter(Boolean).join(" — "));
 }
 
-function detectZGemedSite(rows) {
-  for (const row of rows.slice(0, 20)) {
+function detectZGemedSite(sheets) {
+  const rows = Array.isArray(sheets) && Array.isArray(sheets[0]?.rows)
+    ? sheets.flatMap(sheet => ensureArray(sheet.rows).slice(0, 20))
+    : ensureArray(sheets).slice(0, 20);
+  for (const row of rows) {
     if (normalizeText(row[0]) === "site" && row[1]) return /gilles/i.test(row[1]) ? "Saint-Gilles" : String(row[1]).trim();
     if (normalizeText(row.join(" ")).includes("saint gilles") || normalizeText(row.join(" ")).includes("st gilles")) return "Saint-Gilles";
   }
   return "";
 }
 
-function detectZGemedPeriods(rows, fileName = "") {
+function zGemedPeriodsFromText(value = "", fallbackYear = new Date().getFullYear()) {
+  const periods = [];
+  const text = String(value || "");
+  const mm = text.match(/(?:^|\b)(?:mm|m)[-_ ]?(\d{1,2})(?:\b|$)/i);
+  if (mm) periods.push(zgemedPeriodLabel(Number(mm[1]), fallbackYear));
+  const canonical = canonicalPerformancePeriod(text);
+  if (canonical) periods.push(canonical);
+  const french = text.match(/(^|[^a-z])(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)([^a-z]|$)/i);
+  if (french) periods.push(zgemedPeriodLabel(periodMonthFromFrenchLabel(french[2]), fallbackYear));
+  return periods.filter(Boolean);
+}
+
+function detectZGemedPeriods(sheets, fileName = "") {
   const periods = new Set();
-  rows.slice(0, 30).forEach(row => row.forEach(cell => {
-    const mm = String(cell || "").match(/MM[-_ ]?(\d{1,2})/i);
-    if (mm) periods.add(zgemedPeriodLabel(Number(mm[1]), detectImportYear(fileName)));
-  }));
+  const year = detectImportYear(fileName);
+  const anchored = [];
+  ensureArray(sheets).forEach(sheet => {
+    zGemedPeriodsFromText(sheet.name || "", year).forEach(period => periods.add(period));
+    ensureArray(sheet.rows).slice(0, 12).forEach(row => {
+      const left = normalizeText(row[0] || "");
+      if (left === "mois") zGemedPeriodsFromText(row[1] || "", year).forEach(period => anchored.push(period));
+    });
+    ensureArray(sheet.rows).slice(0, 40).forEach(row => row.forEach(cell => zGemedPeriodsFromText(cell, year).forEach(period => periods.add(period))));
+  });
+  if (anchored.length) return [...new Set(anchored)].filter(Boolean);
   const fromName = detectImportPeriod(fileName);
-  if (fromName) periods.add(fromName);
+  if (fromName) periods.add(canonicalPerformancePeriod(fromName) || fromName);
   return [...periods].filter(Boolean);
 }
 
@@ -10058,23 +10237,136 @@ function zgemedPeriodLabel(month, year) {
   return month >= 1 && month <= 12 ? `${String(month).padStart(2, "0")}/${year || new Date().getFullYear()}` : "";
 }
 
-function extractZGemedIndicators(rows, headerIndex, period, sourceFormat) {
-  const out = [];
-  let inCumul = false;
-  for (let i = headerIndex + 1; i < rows.length; i++) {
-    const row = rows[i];
-    const code = String(row[0] || "").trim();
-    const label = String(row[1] || "").trim();
-    if (normalizeText(code) === "mois" || normalizeText(label) === "cumul") inCumul = true;
-    if (!/^\d+$/.test(code) || !label || inCumul) continue;
-    const actual = parseZGemedNumber(row[2]);
-    const budget = parseZGemedNumber(row[3]);
-    const historical = parseZGemedNumber(row[4]);
-    if (actual === "" && budget === "" && historical === "") continue;
-    const mapping = mapZGemedIndicator(label);
-    out.push({ id: newId("preview"), period, indicator: label, code, value: actual, budget, historical, unit: zgemedUnit(label), source: "Z GEMED", sourceRef: `${sourceFormat} ligne ${i + 1}`, destinationPath: mapping.path, destinationLabel: mapping.label, confidence: mapping.confidence, status: "", selected: Boolean(mapping.path), action: "use" });
+function zGemedHeaderMap(row = []) {
+  const map = { code: 0, label: 1, actual: 2, budget: 3, historical: 4, deltaBudget: -1, deltaHistorical: -1, deltaBudgetPercent: -1, deltaHistoricalPercent: -1 };
+  row.forEach((cell, index) => {
+    const text = normalizeText(cell);
+    if (!text) return;
+    if (/(numero|num|code)\b/.test(text)) map.code = index;
+    if (/(libelle|label|indicateur|kpi|intitule)\b/.test(text)) map.label = index;
+    if (/(reel|realise|realisee|realisees)\b/.test(text)) map.actual = index;
+    if (/budget\b/.test(text) && !/%/.test(text) && map.budget === 3) map.budget = index;
+    if (/(histo|historique|annee precedente|n 1|n-1)\b/.test(text)) map.historical = index;
+    if (((/ecart|delta/.test(text) && /budget/.test(text)) || (/budget/.test(text) && /ecart|delta/.test(text))) && !/%/.test(text)) map.deltaBudget = index;
+    if (((/ecart|delta/.test(text) && /(histor|histo|n 1|n-1)/.test(text)) || (/(histor|histo|n 1|n-1)/.test(text) && /ecart|delta/.test(text))) && !/%/.test(text)) map.deltaHistorical = index;
+    if ((/budget/.test(text) && /%/.test(text)) || (/ecart/.test(text) && /budget/.test(text) && /pourcent/.test(text))) map.deltaBudgetPercent = index;
+    if (((/histor|histo|n 1|n-1/.test(text)) && /%/.test(text)) || (/ecart/.test(text) && /(histor|histo|n 1|n-1)/.test(text) && /pourcent/.test(text))) map.deltaHistoricalPercent = index;
+  });
+  return map;
+}
+
+function zGemedIsHeaderRow(row = []) {
+  const text = normalizeText(row.join(" "));
+  return text.includes("numero") && text.includes("budget") && (text.includes("reel") || text.includes("realise"));
+}
+
+function zGemedCellRef(row, index) {
+  return ensureArray(row?.__cellRefs)[index] || (row?.__rowNumber ? `L${row.__rowNumber}C${index + 1}` : "");
+}
+
+function zGemedComputeGap(actual, reference) {
+  return Number.isFinite(actual) && Number.isFinite(reference) ? actual - reference : null;
+}
+
+function zGemedComputeGapPercent(actual, reference) {
+  return Number.isFinite(actual) && Number.isFinite(reference) && reference !== 0 ? ((actual - reference) / reference) * 100 : null;
+}
+
+function zGemedInferUnit(definition, rows, headerIndex, rowIndex) {
+  const context = [rows[headerIndex - 1], rows[headerIndex], rows[rowIndex]].flat().join(" ");
+  if (definition.metricKey === "ratio.hauteur_palette") {
+    const match = context.match(/\b(mm|cm|m)\b/i);
+    return match ? match[1].toLowerCase() : definition.unit;
   }
-  return out;
+  if (definition.metricKey.startsWith("ratio.")) return /%|pourcentage/i.test(context) ? "%" : (definition.unit || "ratio");
+  if (/k€|keur|k eur/i.test(context)) return definition.unit === "€/colis" ? "k€/colis" : "k€";
+  if (/€|\beur\b|euro/i.test(context)) return definition.unit || "€";
+  return definition.unit || "";
+}
+
+function extractZGemedIndicatorsFromSheet(rows, defaultPeriod, sourceFormat, sourceSheet) {
+  const out = [];
+  let headerMap = null;
+  let headerIndex = -1;
+  let headerCount = 0;
+  let periodType = /cumul/i.test(sourceSheet) ? "cumulative" : "monthly";
+  let acceptsLabelWithoutCode = false;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const rowText = normalizeText(row.join(" "));
+    if (!rowText) continue;
+    if (zGemedIsHeaderRow(row)) {
+      headerMap = zGemedHeaderMap(row);
+      headerIndex = i;
+      headerCount += 1;
+      if (/cumul/i.test(row.join(" "))) periodType = "cumulative";
+      if (/mensuel|mois/i.test(row.join(" "))) periodType = "monthly";
+      acceptsLabelWithoutCode = false;
+      continue;
+    }
+    if (!headerMap) continue;
+    if (!String(row[headerMap.code] || "").trim() && /^\d+$/.test(String(row[headerMap.label] || "").trim()) && /budget/.test(rowText) && /histo/.test(rowText)) {
+      acceptsLabelWithoutCode = true;
+      continue;
+    }
+    if (!String(row[headerMap.code] || "").trim() && /cumul/i.test(rowText)) {
+      periodType = "cumulative";
+      continue;
+    }
+    if (!String(row[headerMap.code] || "").trim() && /mensuel|mois/i.test(rowText)) {
+      periodType = "monthly";
+      continue;
+    }
+    const code = String(row[headerMap.code] || "").trim();
+    const label = String(row[headerMap.label] || "").trim();
+    const hasLabeledValues = label && (row[headerMap.actual] !== undefined || row[headerMap.budget] !== undefined || row[headerMap.historical] !== undefined);
+    if ((!/^\d+$/.test(code) && !(acceptsLabelWithoutCode && hasLabeledValues)) || !label) continue;
+    const mapping = zGemedResolvedMapping(label, periodType);
+    const definition = zGemedMetricDefinition(label);
+    const actual = parseZGemedNumber(row[headerMap.actual]);
+    const budget = normalizeImportNullableNumericValue(row[headerMap.budget]);
+    const historical = normalizeImportNullableNumericValue(row[headerMap.historical]);
+    if (actual === "" && budget === null && historical === null) continue;
+    const deltaBudget = headerMap.deltaBudget >= 0 ? normalizeImportNullableNumericValue(row[headerMap.deltaBudget]) : zGemedComputeGap(actual, budget);
+    const deltaHistorical = headerMap.deltaHistorical >= 0 ? normalizeImportNullableNumericValue(row[headerMap.deltaHistorical]) : zGemedComputeGap(actual, historical);
+    const deltaBudgetPercent = headerMap.deltaBudgetPercent >= 0 ? normalizeImportNullableNumericValue(row[headerMap.deltaBudgetPercent]) : zGemedComputeGapPercent(actual, budget);
+    const deltaHistoricalPercent = headerMap.deltaHistoricalPercent >= 0 ? normalizeImportNullableNumericValue(row[headerMap.deltaHistoricalPercent]) : zGemedComputeGapPercent(actual, historical);
+    const sourceCells = [zGemedCellRef(row, headerMap.actual), zGemedCellRef(row, headerMap.budget), zGemedCellRef(row, headerMap.historical)].filter(Boolean).join(" / ");
+    out.push({
+      id: newId("preview"),
+      period: canonicalPerformancePeriod(defaultPeriod) || defaultPeriod || IMPORT_PERIOD_PENDING,
+      periodType,
+      source: "Z_GEMED",
+      sourceType: "Z GEMED Excel",
+      category: definition?.category || "Autre",
+      metricKey: mapping?.metricKey || (definition?.metricKey || normalizePerformanceLabel(label).replace(/\s+/g, "_")),
+      indicator: label,
+      label,
+      code,
+      actual,
+      value: actual,
+      budget,
+      historical,
+      deltaBudget,
+      deltaHistorical,
+      deltaBudgetPercent,
+      deltaHistoricalPercent,
+      unit: definition ? zGemedInferUnit(definition, rows, headerIndex, i) : "",
+      scope: mapping?.targetType === "existing" ? "principal" : "complementary",
+      confidence: mapping?.confidence || "faible",
+      sourceSheet,
+      sourceCell: sourceCells,
+      sourceRef: `${sourceSheet}${sourceCells ? ` · ${sourceCells}` : ` ligne ${i + 1}`}`,
+      destinationPath: mapping?.path || "",
+      destinationLabel: mapping?.targetLabel || "KPI complémentaire — non mappé",
+      destinationId: mapping?.targetId || "",
+      targetId: mapping?.targetId || "",
+      targetType: mapping?.targetType || "unknown",
+      selected: Boolean(mapping?.path),
+      action: ""
+    });
+  }
+  return { rows: out, headerCount };
 }
 
 function parseZGemedNumber(value) {
@@ -10086,46 +10378,34 @@ function parseZGemedNumber(value) {
   return Number.isFinite(n) ? n : "";
 }
 
-function zgemedUnit(label) {
-  return /cout|ebit|resultat|redevance|demarque|roulage|transport|direction|informatique|immobilier|finance|ressources/i.test(label) ? "k€" : "u.";
-}
-
-function mapZGemedIndicator(label) {
-  const n = normalizeText(label);
-  const complementary = [
-    [/direction operationnelle/, "complementary.gemed.direction_operationnelle", "Direction opérationnelle"],
-    [/ressources humaines/, "complementary.gemed.ressources_humaines", "Ressources humaines"],
-    [/finance gestion|finance gestion/, "complementary.gemed.finance_gestion", "Finance / Gestion"]
-  ].find(([regex]) => regex.test(n));
-  if (complementary) return { path: complementary[1], label: complementary[2], confidence: "moyenne", targetId: complementary[1], targetType: "complementary" };
-  const map = [
-    [/colis totaux prepares|colis prepares total|colis total prepares|colis controles prepares|colis heterogenes prepares|colis homogenes prepares|supports charges total|palettes receptionnees/, "activity.actual", "Colis totaux préparés", "élevée", "activity.colis_total"],
-    [/preparation/, "productivity.Préparation.actual", "Préparation", "moyenne", "productivity.preparation"],
-    [/reception/, "productivity.Réception.actual", "Réception", "moyenne", "productivity.reception"],
-    [/manutention/, "productivity.Manutention.actual", "Manutention", "moyenne", "productivity.manutention"],
-    [/chargement/, "productivity.Chargement.actual", "Chargement", "moyenne", "productivity.chargement"],
-    [/eut transportes transit|transportes transit|transport transit/, "productivity.Transit.actual", "Transit", "moyenne", "productivity.transit"],
-    [/couts exploitation.*logistique.*transport/, "ipo.total.actual", "IPO total", "moyenne", "ipo.total"],
-    [/couts variables exploitation/, "ipo.variable.actual", "IPO variable", "moyenne", "ipo.variable"],
-    [/couts demarque/, "quality.indicators.Total Gains & Pertes.actual", "Total Gains & Pertes", "moyenne", "quality.total_gains_pertes"],
-    [/demarque marchandises/, "quality.indicators.Périmés entrepôt.actual", "Périmés entrepôt", "faible", "quality.perimes_entrepot"],
-    [/litiges/, "quality.indicators.Litiges.actual", "Litiges", "moyenne", "quality.litiges"]
-  ];
-  const hit = map.find(([regex]) => regex.test(n));
-  return hit ? { path: hit[1], label: hit[2], confidence: hit[3], targetId: hit[4], targetType: hit[1].startsWith("complementary") ? "complementary" : "existing" } : { path: "", label: "KPI complémentaire — non mappé", confidence: "faible", targetId: "", targetType: "unknown" };
+function mapZGemedIndicator(label, periodType = "monthly") {
+  const mapping = zGemedResolvedMapping(label, periodType);
+  return mapping ? { path: mapping.path, label: mapping.targetLabel, confidence: mapping.confidence, targetId: mapping.targetId, targetType: mapping.targetType, metricKey: mapping.metricKey, category: mapping.category, unit: mapping.unit } : { path: "", label: "KPI complémentaire — non mappé", confidence: "faible", targetId: "", targetType: "unknown" };
 }
 
 function decoratePerformancePreviewRow(row) {
   const field = row.destinationField || "actual";
   const current = row.destinationPath ? getPerformanceCurrentValue(row.period, row.destinationPath, field) : "";
+  const currentBudget = !row.destinationField && row.destinationPath ? getPerformanceCurrentValue(row.period, row.destinationPath, "budget") : "";
+  const currentHistorical = !row.destinationField && row.destinationPath ? getPerformanceCurrentValue(row.period, row.destinationPath, "historical") : "";
   const hasCurrent = current !== "";
-  const same = hasCurrent && Number(current) === Number(row.value);
+  const same = hasCurrent
+    && Number(current) === Number(row.value)
+    && (row.destinationField || ((row.budget === null || row.budget === "" || Number(currentBudget) === Number(row.budget)) && (row.historical === null || row.historical === "" || Number(currentHistorical) === Number(row.historical))));
   const targetType = row.targetType || (row.destinationPath?.startsWith("complementary.") ? "complementary" : row.destinationPath ? "existing" : "ignore");
   const confidenceScore = row.confidenceScore ?? performanceImportConfidenceScore(row);
   const confidenceMeta = performanceImportConfidenceMeta(confidenceScore);
-  const status = row.action === "ignore" || targetType === "ignore" ? "Ne pas importer" : targetType === "complementary" ? "KPI complémentaire" : !row.destinationPath ? "À vérifier" : !hasCurrent ? "Mappé" : same ? "Identique" : (confidenceMeta.label === "faible" ? "Conflit" : "Différente");
+  const status = row.action === "ignore" || targetType === "ignore"
+    ? "Ne pas importer"
+    : !row.destinationPath
+      ? "À vérifier"
+      : !hasCurrent
+        ? (targetType === "complementary" ? "Ajouter" : "Mappé")
+        : same
+          ? "Identique"
+          : (targetType === "complementary" ? "Conflit" : (confidenceMeta.label === "faible" ? "Conflit" : "Différente"));
   const tone = status === "Ne pas importer" ? "gray" : status === "Conflit" ? "red" : status === "Différente" || confidenceMeta.label === "moyenne" ? "orange" : "green";
-  return { ...row, currentValue: current, status, tone, targetId: row.targetId || row.destinationId || "", targetType, confidenceScore: confidenceMeta.score, confidenceLabel: confidenceMeta.label, confidenceText: confidenceMeta.text, selected: row.selected !== undefined ? Boolean(row.selected) : targetType !== "ignore", action: row.action || (hasCurrent && !same ? "keep" : "use") };
+  return { ...row, currentValue: current, status, tone, targetId: row.targetId || row.destinationId || "", targetType, confidenceScore: confidenceMeta.score, confidenceLabel: confidenceMeta.label, confidenceText: confidenceMeta.text, selected: row.selected !== undefined ? Boolean(row.selected) : (targetType !== "ignore" && !same), action: row.action || (same ? "ignore" : (hasCurrent ? "keep" : "use")) };
 }
 
 function getPerformanceByPeriod(period) {
@@ -10139,6 +10419,12 @@ function getPerformanceByPeriod(period) {
 
 function getPerformanceCurrentValue(period, path, key = "actual") {
   const perf = getPerformanceByPeriod(period);
+  if (perf && String(path || "").startsWith("complementary.")) {
+    const item = ensureArray(perf.complementaryKpis).find(entry => String(entry.destinationPath || entry.targetId || "") === String(path || "") && String(entry.period || "") === String(period || ""));
+    if (!item) return "";
+    if (key === "actual") return item.actual ?? item.value ?? "";
+    return item[key] !== undefined ? item[key] : "";
+  }
   const target = perf ? perfPath(perf, path) : null;
   return target && target[key] !== undefined ? target[key] : "";
 }
@@ -10220,15 +10506,15 @@ function applyPerformanceImportRows(rows, file, importDate) {
     } else if (String(perf.period || "") !== normalizedPeriod) {
       perf.period = normalizedPeriod;
     }
-    applyImportedValueToPerformance(perf, row);
+    const changed = applyImportedValueToPerformance(perf, row);
+    if (!changed) return;
     perf.status = "En cours d'analyse";
     perf.updatedAt = isoToday();
     perf.synthesis = buildPerformanceSynthesis(perf);
     const sourceLabel = row.source || file.source || "Import";
-    perf.importReady = { ...(perf.importReady || {}), gemed: Boolean(perf.importReady?.gemed || /z\s*gemed/i.test(sourceLabel)), gpo: Boolean(perf.importReady?.gpo || /gpo/i.test(sourceLabel)) };
+    perf.importReady = { ...(perf.importReady || {}), gemed: Boolean(perf.importReady?.gemed || isZGemedSourceLabel(sourceLabel)), gpo: Boolean(perf.importReady?.gpo || /gpo/i.test(sourceLabel)) };
     perf.importSources = ensureArray(perf.importSources);
-    perf.importSources.unshift({ source: sourceLabel, file: file.name || "", importDate, period: row.period, importedCount: 1, comment: `${row.indicator} -> ${row.destinationLabel}` });
-    if (!row.destinationPath) perf.complementaryKpis = [...ensureArray(perf.complementaryKpis), row];
+    perf.importSources.unshift({ source: sourceLabel, file: file.name || "", importDate, period: row.period, periodType: row.periodType || "monthly", metricKey: row.metricKey || "", importedCount: 1, comment: `${row.indicator} -> ${row.destinationLabel}` });
     periods.add(normalizedPeriod);
     importedCount++;
   });
@@ -10237,48 +10523,82 @@ function applyPerformanceImportRows(rows, file, importDate) {
 }
 
 function applyImportedValueToPerformance(perf, row) {
+  if (row.periodType === "cumulative" && row.targetType === "existing") {
+    row = {
+      ...row,
+      destinationPath: zGemedComplementaryTargetPath(row.metricKey || row.targetId || normalizePerformanceLabel(row.destinationLabel || row.indicator), "cumulative"),
+      targetId: zGemedComplementaryTargetPath(row.metricKey || row.targetId || normalizePerformanceLabel(row.destinationLabel || row.indicator), "cumulative"),
+      destinationId: zGemedComplementaryTargetPath(row.metricKey || row.targetId || normalizePerformanceLabel(row.destinationLabel || row.indicator), "cumulative"),
+      targetType: "complementary"
+    };
+  }
   if (row.targetType === "complementary" || String(row.destinationPath || "").startsWith("complementary.")) {
     perf.complementaryKpis = ensureArray(perf.complementaryKpis);
     const targetKey = String(row.targetId || row.destinationId || normalizePerformanceLabel(row.destinationLabel || row.indicator) || "complementary.generic").trim();
     const sourceKey = normalizeText(row.source || "import");
     const normalizedPeriod = canonicalPerformancePeriod(row.period || "") || String(row.period || "");
+    const periodType = row.periodType || "monthly";
+    const metricKey = String(row.metricKey || "").trim();
     const existingIndex = perf.complementaryKpis.findIndex(item => {
       const itemTarget = String(item.targetId || normalizePerformanceLabel(item.destinationLabel || item.indicator) || "").trim();
       const itemPeriod = canonicalPerformancePeriod(item.period || "") || String(item.period || "");
       const itemSource = normalizeText(item.source || "import");
-      return itemTarget === targetKey && itemPeriod === normalizedPeriod && itemSource === sourceKey;
+      return itemTarget === targetKey && itemPeriod === normalizedPeriod && itemSource === sourceKey && String(item.periodType || "monthly") === periodType && String(item.metricKey || "").trim() === metricKey;
     });
     const nextValue = {
       indicator: row.indicator,
+      label: row.label || row.indicator,
+      metricKey,
+      category: row.category || "KPI complémentaires",
+      periodType,
+      actual: row.actual ?? row.value,
+      budget: row.budget ?? null,
+      historical: row.historical ?? null,
+      deltaBudget: row.deltaBudget ?? null,
+      deltaHistorical: row.deltaHistorical ?? null,
+      deltaBudgetPercent: row.deltaBudgetPercent ?? null,
+      deltaHistoricalPercent: row.deltaHistoricalPercent ?? null,
       value: row.value,
       unit: row.unit || "",
       period: normalizedPeriod,
       source: row.source || "Import",
       sourceRef: row.sourceRef || "",
+      sourceSheet: row.sourceSheet || "",
+      sourceCell: row.sourceCell || "",
       destinationLabel: row.destinationLabel || row.indicator,
+      destinationPath: row.destinationPath || targetKey,
       targetId: row.targetId || row.destinationId || targetKey,
-      targetType: "complementary"
+      targetType: "complementary",
+      confidence: row.confidence || "moyenne"
     };
     if (existingIndex >= 0) {
       const existing = perf.complementaryKpis[existingIndex] || {};
-      if (String(existing.value ?? "") === String(nextValue.value ?? "") && String(existing.unit || "") === String(nextValue.unit || "")) return;
+      if (String(existing.actual ?? existing.value ?? "") === String(nextValue.actual ?? nextValue.value ?? "")
+          && String(existing.budget ?? "") === String(nextValue.budget ?? "")
+          && String(existing.historical ?? "") === String(nextValue.historical ?? "")
+          && String(existing.unit || "") === String(nextValue.unit || "")) return false;
       perf.complementaryKpis[existingIndex] = { ...existing, ...nextValue };
-      return;
+      return true;
     }
     perf.complementaryKpis.push(nextValue);
-    return;
+    return true;
   }
   const target = perfPath(perf, row.destinationPath);
-  if (!target) return;
+  if (!target) return false;
   const field = row.destinationField || "actual";
+  const unchanged = String(target[field] ?? "") === String(row.value ?? "")
+    && (row.destinationField || (String(target.budget ?? "") === String(row.budget ?? "") && String(target.historical ?? "") === String(row.historical ?? "")));
+  if (unchanged) return false;
   target[field] = row.value;
   if (!row.destinationField) {
     target.budget = row.budget ?? target.budget;
     target.historical = row.historical ?? target.historical;
   }
   if (row.destinationPath === "palletHeight" && row.objective !== undefined && row.objective !== "") target.objective = row.objective;
-  target.comment = `${target.comment ? target.comment + "\n" : ""}Source : ${row.source || "Import"} · ${row.sourceRef || ""}`.trim();
+  const sourceComment = `Source : ${row.source || "Import"} · ${row.sourceRef || ""}`.trim();
+  if (!String(target.comment || "").includes(sourceComment)) target.comment = `${target.comment ? target.comment + "\n" : ""}${sourceComment}`.trim();
   if (row.destinationPath.startsWith("productivity.")) target.status = perfStatus(target);
+  return true;
 }
 
 const reportTemplates = ["CODIR", "Réunion d'exploitation", "Gemba", "Entretien Manager", "Point Projet", "Réunion RH", "CSE / Dialogue social", "Incident ou événement", "Revue de performance", "Compte rendu libre"];
