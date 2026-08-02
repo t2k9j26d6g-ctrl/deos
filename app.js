@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.18.2";
+const DEOS_VERSION = "V5.18.3";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -8092,6 +8092,16 @@ const performanceImportTargetCatalog = [
   { id: "productivity.chargement", label: "Chargement", path: "productivity.Chargement.actual", type: "existing", unit: "colis", aliases: ["chargement", "chargements"] },
   { id: "productivity.transit", label: "Transit", path: "productivity.Transit.actual", type: "existing", unit: "colis", aliases: ["transit", "eut transportes transit", "eut transportes", "transportes transit"] },
   { id: "productivity.preparation", label: "Préparation", path: "productivity.Préparation.actual", type: "existing", unit: "colis", aliases: ["preparation", "preparations", "préparation"] },
+  { id: "hours.total", label: "Heures totales", path: "hours.total.actual", type: "existing", unit: "heures", aliases: ["heures totales", "heures total"] },
+  { id: "hours.direct", label: "Heures directes", path: "hours.direct.actual", type: "existing", unit: "heures", aliases: ["heures directes", "heures direct"] },
+  { id: "hours.indirect", label: "Heures indirectes", path: "hours.indirect.actual", type: "existing", unit: "heures", aliases: ["heures indirectes", "heures indirect"] },
+  { id: "hours.indirect_share", label: "Poids heures indirectes", path: "hours.indirect.totalShare", type: "existing", unit: "pourcentage", aliases: ["pourcentage heures indirectes", "poids heures indirectes", "% heures indirectes"] },
+  { id: "absenteeism.total", label: "Absentéisme total", path: "absenteeism.total.actual", type: "existing", unit: "pourcentage", aliases: ["absenteisme total", "absentéisme total", "taux d absence"] },
+  { id: "absenteeism.maladie", label: "Absentéisme maladie", path: "absenteeism.details.Maladie.actual", type: "existing", unit: "pourcentage", aliases: ["maladie", "absence maladie"] },
+  { id: "absenteeism.accident_travail", label: "Absentéisme accidents du travail", path: "absenteeism.details.Accidents du travail.actual", type: "existing", unit: "pourcentage", aliases: ["accidents du travail", "accident du travail", "at"] },
+  { id: "absenteeism.formation", label: "Absentéisme formation", path: "absenteeism.details.Formation.actual", type: "existing", unit: "pourcentage", aliases: ["formation"] },
+  { id: "absenteeism.conges", label: "Absentéisme congés", path: "absenteeism.details.Congés.actual", type: "existing", unit: "pourcentage", aliases: ["conges", "congés"] },
+  { id: "absenteeism.autres", label: "Absentéisme autres", path: "absenteeism.details.Autres absences.actual", type: "existing", unit: "pourcentage", aliases: ["autres absences", "autres"] },
   { id: "complementary.gemed.direction_operationnelle", label: "Direction opérationnelle", path: "complementary.directionOperationnelle", type: "complementary", unit: "", aliases: ["direction operationnelle"] },
   { id: "complementary.gemed.ressources_humaines", label: "Ressources humaines", path: "complementary.ressourcesHumaines", type: "complementary", unit: "", aliases: ["ressources humaines"] },
   { id: "complementary.gemed.finance_gestion", label: "Finance / Gestion", path: "complementary.financeGestion", type: "complementary", unit: "", aliases: ["finance gestion", "finance / gestion"] }
@@ -9271,8 +9281,13 @@ function buildPerformanceImportPreview() {
     const rawRows = performanceImportRawIndicators(file);
     const rows = normalizePerformanceImportIndicators(rawRows, file);
     file.detectedIndicators = rows;
-    const selected = ensureArray(file.selectedPeriods || file.periods).filter(Boolean);
-    const filtered = selected.length ? rows.filter(row => !row.period || row.period === IMPORT_PERIOD_PENDING || selected.includes(row.period)) : rows;
+    const selected = ensureArray(file.selectedPeriods || file.periods).map(period => normalizeImportPeriod(period) || String(period || "").trim()).filter(Boolean);
+    const selectedSet = new Set(selected);
+    const filtered = selectedSet.size ? rows.filter(row => {
+      if (!row.period || row.period === IMPORT_PERIOD_PENDING) return true;
+      const rowPeriod = normalizeImportPeriod(row.period) || String(row.period || "").trim();
+      return selectedSet.has(rowPeriod) || selectedSet.has(String(row.period || "").trim());
+    }) : rows;
     return filtered.map(row => decoratePerformancePreviewRow(row, file));
   });
 }
@@ -9280,16 +9295,27 @@ function buildPerformanceImportPreview() {
 function performanceImportStepPreview() {
   const periodSelector = performanceImportPeriodSelector();
   const targetOptions = performanceImportTargetOptions();
-  const rows = performanceImportWizard.preview.map(row => {
+  const mappedRows = performanceImportWizard.preview.filter(row => row.destinationPath);
+  const unmappedRows = performanceImportWizard.preview.filter(row => !row.destinationPath);
+  const plannedActionLabel = row => {
+    const currentValueExists = row.currentValue !== "" && row.currentValue !== null && row.currentValue !== undefined;
+    if (row.status === "Identique") return "Identique";
+    if (!currentValueExists && row.action !== "ignore") return "Ajouter";
+    if (row.action === "keep" || row.action === "ignore") return "Conserver";
+    if (row.status === "Conflit" || row.status === "Différente") return "Remplacer";
+    return row.action === "use" ? "Ajouter" : "Conserver";
+  };
+  const rows = mappedRows.map(row => {
     const currentTargetId = row.targetId || row.destinationId || (performanceImportTargetFromPath(row.destinationPath)?.id || "");
     const statusText = row.status || performanceImportStatusLabel(row.status);
     const selectable = row.targetType !== "ignore";
     const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
     const selectHtml = targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(row.indicator)}</td><td>${esc(row.value)}</td><td>${esc(row.unit || "")}</td><td>${esc(row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td>${esc(statusText)}${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ignorer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ignorer</option></select>`}</td></tr>`;
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourcePage || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
+  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Unité</th><th>Page source</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourcePage || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Indicateur source</th><th>Valeur détectée</th><th>Unité</th><th>Page source</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Statut</th></tr></thead><tbody>${rows || `<tr><td colspan="10">${emptyDiagnostic}</td></tr>`}</tbody></table><div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Unité</th><th>Page source</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="12">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -9310,6 +9336,23 @@ function normalizeImportNumericValue(value) {
   return parsed !== "" ? parsed : String(value ?? "").trim();
 }
 
+function normalizeImportNullableNumericValue(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const parsed = parseZGemedNumber(value);
+  return parsed !== "" ? parsed : String(value ?? "").trim();
+}
+
+function normalizeImportDestination(path = "", destinationField = "") {
+  const rawPath = String(path || "").trim();
+  const rawField = String(destinationField || "").trim();
+  if (!rawPath) return { path: "", field: rawField };
+  if (rawField) return { path: rawPath, field: rawField };
+  const leafMatch = rawPath.match(/^(.*)\.(actual|budget|historical|totalShare)$/);
+  if (!leafMatch) return { path: rawPath, field: rawField };
+  return { path: leafMatch[1], field: leafMatch[2] };
+}
+
 function normalizePerformanceImportIndicators(rows, file) {
   return ensureArray(rows).map(raw => {
     const indicator = firstImportValue(raw, ["indicator", "label", "name", "title", "kpi", "sourceIndicator", "indicateur"]);
@@ -9318,39 +9361,59 @@ function normalizePerformanceImportIndicators(rows, file) {
     const destinationPath = firstImportValue(raw, ["destinationPath", "path", "targetPath", "deosPath"]);
     const destinationLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (destinationPath ? indicator : "KPI complémentaire");
     const targetFromPath = performanceImportTargetFromPath(destinationPath);
-    const targetFromLabel = performanceImportDestinationFromRow({ indicator, unit: firstImportValue(raw, ["unit", "unite"]) || "" });
+    const sourceType = raw.sourceType || file.sourceType || file.source || "";
+    let targetFromLabel = performanceImportDestinationFromRow({ indicator, unit: firstImportValue(raw, ["unit", "unite"]) || "" });
+    if (/gpo/i.test(sourceType) && targetFromLabel?.id === "complementary.generic" && !destinationPath) targetFromLabel = null;
     const target = targetFromPath || targetFromLabel;
     const targetType = target ? target.type : (destinationPath ? "existing" : "complementary");
     const targetId = firstImportValue(raw, ["targetId", "destinationId"]) || (target ? target.id : "");
-    const mappedPath = destinationPath || (target ? target.path : "");
+    const mappedPathRaw = destinationPath || (target ? target.path : "");
+    const normalizedDestination = normalizeImportDestination(mappedPathRaw, raw.destinationField || "");
     const mappedLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (target ? target.label : "KPI complémentaire");
     const confidenceMeta = performanceImportConfidenceMeta(targetType === "existing" ? 92 : targetType === "complementary" ? (targetId === "complementary.generic" ? 62 : 74) : 40);
     const selected = raw.selected !== undefined ? Boolean(raw.selected) : targetType !== "ignore";
+    const period = normalizeImportPeriod(raw.period || raw.date || file.period || ensureArray(file.periods)[0]) || IMPORT_PERIOD_PENDING;
+    const source = /gpo/i.test(sourceType) ? "GPO" : (raw.source || file.source || file.sourceType || "Import");
+    const actual = normalizeImportNumericValue(rawValue);
+    const budget = normalizeImportNullableNumericValue(firstImportValue(raw, ["budget", "target", "objective", "objectif"]));
+    const historical = normalizeImportNullableNumericValue(firstImportValue(raw, ["historical", "histo", "history"]));
+    const unit = firstImportValue(raw, ["unit", "unite"]) || "";
+    const metricKey = firstImportValue(raw, ["metricKey", "metric", "metric_key"]) || normalizePerformanceLabel(indicator).replace(/\s+/g, "_");
+    const sourcePage = firstImportValue(raw, ["sourcePage", "pageSource", "page", "sourceRef"]);
+    const explicitActionProvided = Object.prototype.hasOwnProperty.call(raw, "action");
+    const action = explicitActionProvided ? String(raw.action || "") : (targetType === "ignore" ? "ignore" : "use");
     return {
       ...raw,
       id: raw.id || newId("preview"),
-      period: normalizeImportPeriod(raw.period || raw.date || file.period || ensureArray(file.periods)[0]) || IMPORT_PERIOD_PENDING,
+      period,
       indicator: String(indicator).trim(),
-      value: normalizeImportNumericValue(rawValue),
-      budget: normalizeImportNumericValue(firstImportValue(raw, ["budget", "target", "objective", "objectif"])),
-      historical: normalizeImportNumericValue(firstImportValue(raw, ["historical", "histo", "history"])),
-      objective: normalizeImportNumericValue(firstImportValue(raw, ["objective", "target", "objectif"])),
-      unit: firstImportValue(raw, ["unit", "unite"]) || "",
-      source: raw.source || file.source || file.sourceType || "Import",
-      sourceType: raw.sourceType || file.sourceType || file.source || "",
-      pageSource: raw.pageSource || raw.sourcePage || raw.page || raw.sourceRef || "",
+      label: String(firstImportValue(raw, ["label", "displayLabel"]) || indicator).trim(),
+      metricKey,
+      category: firstImportValue(raw, ["category", "group"]) || "Autre",
+      scope: firstImportValue(raw, ["scope"]) || "global",
+      actual,
+      value: actual,
+      budget,
+      historical,
+      objective: normalizeImportNullableNumericValue(firstImportValue(raw, ["objective", "target", "objectif"])),
+      unit,
+      source,
+      sourceType,
+      sourcePage,
+      pageSource: raw.pageSource || raw.sourcePage || raw.page || raw.sourceRef || sourcePage || "",
       sourceRef: raw.sourceRef || raw.pageSource || raw.sourcePage || raw.page || "",
-      destinationPath: mappedPath,
+      destinationPath: normalizedDestination.path,
       destinationLabel: mappedLabel,
-      destinationField: raw.destinationField || "",
+      destinationField: normalizedDestination.field,
       destinationId: targetId,
       targetId,
       targetType,
+      confidence: raw.confidence || confidenceMeta.label,
       confidenceScore: confidenceMeta.score,
       confidenceLabel: confidenceMeta.label,
       confidenceText: confidenceMeta.text,
       selected,
-      action: raw.action || (targetType === "ignore" ? "ignore" : "use")
+      action
     };
   }).filter(row => row && row.indicator && row.value !== null && row.value !== undefined && String(row.value).trim() !== "");
 }
@@ -9540,40 +9603,117 @@ function normalizeImportPeriod(period = "") {
   return canonicalPerformancePeriod(period) || period;
 }
 
+function gpoIndicatorRow(period, metric, values, sourcePage, confidence = "moyenne") {
+  if (!metric || !values || values.actual === "" || values.actual === null || values.actual === undefined) return null;
+  const target = performanceImportTargetById(metric.targetId);
+  const destination = normalizeImportDestination(target?.path || "", metric.destinationField || "");
+  return {
+    id: newId("preview"),
+    period,
+    source: "GPO",
+    sourceType: "GPO PDF",
+    category: metric.category,
+    scope: metric.scope || "global",
+    metricKey: metric.metricKey,
+    indicator: metric.label,
+    label: metric.label,
+    actual: values.actual,
+    value: values.actual,
+    budget: values.budget ?? null,
+    historical: values.historical ?? null,
+    unit: metric.unit,
+    sourcePage,
+    pageSource: sourcePage,
+    sourceRef: sourcePage ? `PDF ${sourcePage}` : "",
+    destinationPath: destination.path,
+    destinationLabel: target?.label || metric.label,
+    destinationField: destination.field,
+    targetId: target?.id || "",
+    destinationId: target?.id || "",
+    targetType: target?.type || "ignore",
+    confidence,
+    selected: Boolean(target?.path),
+    action: target?.path ? "" : "ignore"
+  };
+}
+
 function extractGpoIndicators(pages, period) {
   const rows = [];
-  const pushMetric = (page, indicator, path, label, values, confidence = "moyenne", unit = "") => {
-    if (!values || values.actual === "") return;
-    rows.push({ id: newId("preview"), period, indicator, value: values.actual, budget: values.budget ?? "", historical: values.historical ?? "", objective: values.objective ?? "", unit, source: "GPO PDF", sourceType: "GPO PDF", pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: path, destinationLabel: label, confidence, status: "", selected: Boolean(path), action: "use" });
+  const gpoMetrics = {
+    ipo_total: { metricKey: "ipo.total", label: "IPO total", targetId: "ipo.total", category: "IPO", unit: "k€" },
+    ipo_variable: { metricKey: "ipo.variable", label: "IPO variable", targetId: "ipo.variable", category: "IPO", unit: "k€" },
+    productivity_preparation: { metricKey: "productivity.preparation", label: "Productivité Préparation", targetId: "productivity.preparation", category: "Productivité", unit: "colis/h" },
+    productivity_reception: { metricKey: "productivity.reception", label: "Productivité Réception", targetId: "productivity.reception", category: "Productivité", unit: "palettes/h" },
+    productivity_manutention: { metricKey: "productivity.manutention", label: "Productivité Manutention", targetId: "productivity.manutention", category: "Productivité", unit: "palettes/h" },
+    productivity_chargement: { metricKey: "productivity.chargement", label: "Productivité Chargement", targetId: "productivity.chargement", category: "Productivité", unit: "palettes/h" },
+    productivity_transit: { metricKey: "productivity.transit", label: "Productivité Transit", targetId: "productivity.transit", category: "Productivité", unit: "palettes/h" },
+    hours_total: { metricKey: "hours.total", label: "Heures totales", targetId: "hours.total", category: "Heures", unit: "heures" },
+    hours_direct: { metricKey: "hours.direct", label: "Heures directes", targetId: "hours.direct", category: "Heures", unit: "heures" },
+    hours_indirect: { metricKey: "hours.indirect", label: "Heures indirectes", targetId: "hours.indirect", category: "Heures", unit: "heures" },
+    hours_indirect_share: { metricKey: "hours.indirect.share", label: "Poids heures indirectes", targetId: "hours.indirect_share", category: "Heures", unit: "pourcentage", destinationField: "totalShare" },
+    absenteeism_total: { metricKey: "absenteeism.total", label: "Absentéisme total", targetId: "absenteeism.total", category: "Absentéisme", unit: "pourcentage" },
+    absenteeism_maladie: { metricKey: "absenteeism.maladie", label: "Absentéisme maladie", targetId: "absenteeism.maladie", category: "Absentéisme", unit: "pourcentage" },
+    absenteeism_accident_travail: { metricKey: "absenteeism.accident_travail", label: "Absentéisme accidents du travail", targetId: "absenteeism.accident_travail", category: "Absentéisme", unit: "pourcentage" },
+    absenteeism_formation: { metricKey: "absenteeism.formation", label: "Absentéisme formation", targetId: "absenteeism.formation", category: "Absentéisme", unit: "pourcentage" },
+    absenteeism_conges: { metricKey: "absenteeism.conges", label: "Absentéisme congés", targetId: "absenteeism.conges", category: "Absentéisme", unit: "pourcentage" },
+    absenteeism_autres: { metricKey: "absenteeism.autres", label: "Absentéisme autres", targetId: "absenteeism.autres", category: "Absentéisme", unit: "pourcentage" },
+    hours_gap_budget: { metricKey: "hours.total.budget_gap", label: "Écart heures vs Budget", targetId: "complementary.generic", category: "Heures", unit: "heures" },
+    hours_gap_historical: { metricKey: "hours.total.historical_gap", label: "Écart heures vs Historique", targetId: "complementary.generic", category: "Heures", unit: "heures" }
+  };
+  const pushMetric = (page, metricId, values, confidence = "moyenne") => {
+    const row = gpoIndicatorRow(period, gpoMetrics[metricId], values, `page ${page.page}`, confidence);
+    if (row) rows.push(row);
   };
   pages.forEach(page => {
     const text = page.text;
-    if (/Passage IPO total/i.test(text)) pushMetric(page, "IPO Total", "ipo.total", "IPO total", extractGpoIpoValues(text), "élevée");
-    if (/Passage IPO Variable/i.test(text)) pushMetric(page, "IPO Variable", "ipo.variable", "IPO variable", extractGpoIpoValues(text), "élevée");
+    if (/Passage IPO total/i.test(text)) pushMetric(page, "ipo_total", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+total", 240)), "élevée");
+    if (/Passage IPO Variable/i.test(text)) pushMetric(page, "ipo_variable", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+Variable", 240)), "élevée");
     if (/Performance mensuelle/i.test(text)) {
-      pushMetric(page, "Productivité Préparation", "productivity.Préparation", "Productivité Préparation", extractGpoTripleAround(text, "PRÉPARATION|PREPARATION", { preferDecimal: true }), "moyenne");
-      pushMetric(page, "Productivité Réception", "productivity.Réception", "Productivité Réception", extractGpoTripleAround(text, "RÉCEPTION|RECEPTION", { preferDecimal: true }), "moyenne");
-      pushMetric(page, "Productivité Manutention", "productivity.Manutention", "Productivité Manutention", extractGpoTripleAround(text, "MANUTENTION", { preferDecimal: true }), "moyenne");
-      pushMetric(page, "Productivité Chargement", "productivity.Chargement", "Productivité Chargement", extractGpoTripleAround(text, "CHARGEMENT", { preferDecimal: true }), "moyenne");
+      pushMetric(page, "productivity_preparation", extractGpoTripleAround(extractGpoSection(text, "PRÉPARATION|PREPARATION", 180), "PRÉPARATION|PREPARATION", { preferDecimal: true }), "moyenne");
+      pushMetric(page, "productivity_reception", extractGpoTripleAround(extractGpoSection(text, "RÉCEPTION|RECEPTION", 180), "RÉCEPTION|RECEPTION", { preferDecimal: true }), "moyenne");
+      pushMetric(page, "productivity_manutention", extractGpoTripleAround(extractGpoSection(text, "MANUTENTION", 180), "MANUTENTION", { preferDecimal: true }), "moyenne");
+      pushMetric(page, "productivity_chargement", extractGpoTripleAround(extractGpoSection(text, "CHARGEMENT", 180), "CHARGEMENT", { preferDecimal: true }), "moyenne");
+      if (/TRANSIT|TRANSPORT/i.test(text)) pushMetric(page, "productivity_transit", extractGpoTripleAround(extractGpoSection(text, "TRANSIT|TRANSPORT", 180), "TRANSIT|TRANSPORT", { preferDecimal: true }), "faible");
     }
     if (/Evolution HEURES/i.test(text)) {
       const hoursValues = extractGpoHoursValues(text);
-      pushMetric(page, "Heures totales", "hours.total", "Heures totales", hoursValues.total, "moyenne", "h");
-      pushMetric(page, "Heures indirectes totales", "hours.indirect", "Heures indirectes", hoursValues.indirect, "moyenne", "h");
+      pushMetric(page, "hours_total", hoursValues.total, "moyenne");
+      pushMetric(page, "hours_direct", hoursValues.direct, "moyenne");
+      pushMetric(page, "hours_indirect", hoursValues.indirect, "moyenne");
+      if (hoursValues.total.actual !== "" && hoursValues.total.budget !== "") pushMetric(page, "hours_gap_budget", { actual: Number(hoursValues.total.actual) - Number(hoursValues.total.budget), budget: null, historical: null }, "faible");
+      if (hoursValues.total.actual !== "" && hoursValues.total.historical !== "") pushMetric(page, "hours_gap_historical", { actual: Number(hoursValues.total.actual) - Number(hoursValues.total.historical), budget: null, historical: null }, "faible");
       const pct = extractGpoIndirectPercent(text);
-      if (pct !== "") rows.push({ id: newId("preview"), period, indicator: "% heures indirectes totales", value: pct, unit: "%", source: "GPO PDF", sourceType: "GPO PDF", pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "hours.indirect", destinationLabel: "Heures indirectes", destinationField: "totalShare", confidence: "faible", selected: true, action: "use" });
+      if (pct !== "") pushMetric(page, "hours_indirect_share", { actual: pct, budget: null, historical: null }, "faible");
     }
-    if (/TAUX\s+D.?ABSENCE|Absentéisme|Absenteisme/i.test(text)) pushMetric(page, "Absentéisme total", "absenteeism.total", "Absentéisme total", extractGpoAbsTotal(text), "moyenne", "%");
+    if (/TAUX\s+D.?ABSENCE|Absentéisme|Absenteisme/i.test(text)) {
+      pushMetric(page, "absenteeism_total", extractGpoAbsTotal(text), "moyenne");
+      pushMetric(page, "absenteeism_maladie", extractGpoAbsDetail(text, "MALADIE"), "faible");
+      pushMetric(page, "absenteeism_accident_travail", extractGpoAbsDetail(text, "ACCIDENT(?:S)?\s+DU\s+TRAVAIL|AT"), "faible");
+      pushMetric(page, "absenteeism_formation", extractGpoAbsDetail(text, "FORMATION"), "faible");
+      pushMetric(page, "absenteeism_conges", extractGpoAbsDetail(text, "CONGE|CONGÉ"), "faible");
+      pushMetric(page, "absenteeism_autres", extractGpoAbsDetail(text, "AUTRES?"), "faible");
+    }
     if (/Heures majorées|Heures majorees/i.test(text)) {
       const major = extractGpoMajorHours(text);
       ["night", "overtime", "sundays"].forEach(key => {
-        if (major[key] !== "") rows.push({ id: newId("preview"), period, indicator: ({ night: "Heures de nuit cumul", overtime: "Heures supplémentaires cumul", sundays: "Dimanches / fériés cumul" })[key], value: major[key], unit: "h", source: "GPO PDF", sourceType: "GPO PDF", pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "hours", destinationLabel: ({ night: "Heures de nuit", overtime: "Heures supplémentaires", sundays: "Dimanches / fériés" })[key], destinationField: key, confidence: "moyenne", selected: true, action: "use" });
+        if (major[key] !== "") rows.push({ id: newId("preview"), period, indicator: ({ night: "Heures de nuit cumul", overtime: "Heures supplémentaires cumul", sundays: "Dimanches / fériés cumul" })[key], value: major[key], unit: "h", source: "GPO PDF", sourceType: "GPO PDF", pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "hours", destinationLabel: ({ night: "Heures de nuit", overtime: "Heures supplémentaires", sundays: "Dimanches / fériés" })[key], destinationField: key, confidence: "moyenne", selected: true, action: "" });
       });
     }
-    if (/Gains\s*&\s*Pertes|G&P/i.test(text)) pushMetric(page, "Total Gains & Pertes", "quality.indicators.Total Gains & Pertes", "Total Gains & Pertes", extractGpoGpValues(text), "moyenne", "k€");
-    if (/HAUTEUR PALETTE|Hauteur Palette/i.test(text)) pushMetric(page, "Hauteur Palette", "palletHeight", "Hauteur palette", extractGpoPalletValues(text), "faible");
+    if (/Gains\s*&\s*Pertes|G&P/i.test(text)) rows.push({ id: newId("preview"), period, indicator: "Total Gains & Pertes", label: "Total Gains & Pertes", metricKey: "quality.total_gains_pertes", category: "Qualité", actual: extractGpoGpValues(text).actual, value: extractGpoGpValues(text).actual, budget: extractGpoGpValues(text).budget ?? null, historical: extractGpoGpValues(text).historical ?? null, unit: "k€", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "quality.indicators.Total Gains & Pertes.actual", destinationLabel: "Total Gains & Pertes", confidence: "moyenne", selected: true, action: "" });
+    if (/HAUTEUR PALETTE|Hauteur Palette/i.test(text)) {
+      const values = extractGpoPalletValues(text);
+      if (values.actual !== "") rows.push({ id: newId("preview"), period, indicator: "Hauteur Palette", label: "Hauteur palette", metricKey: "pallet.height", category: "Hauteur palette", actual: values.actual, value: values.actual, budget: values.budget ?? null, historical: values.historical ?? null, objective: values.objective ?? null, unit: "", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "palletHeight.actual", destinationLabel: "Hauteur palette", confidence: "faible", selected: true, action: "" });
+    }
   });
   return dedupeImportRows(rows);
+}
+
+function extractGpoSection(text, markerPattern, span = 260) {
+  const source = String(text || "");
+  const regex = new RegExp(markerPattern, "i");
+  const match = regex.exec(source);
+  if (!match) return source;
+  return source.slice(Math.max(0, match.index), Math.min(source.length, match.index + span));
 }
 
 function gpoNumbers(text) {
@@ -9597,7 +9737,7 @@ function gpoNumbers(text) {
 
 function extractGpoIpoValues(text) {
   const h = matchNumberAfter(text, /IPO\s*HISTO/i);
-  const b = matchNumberBefore(text, /IPO\s*BUDGET/i);
+  const b = matchNumberAfter(text, /IPO\s*BUDGET/i);
   const r = matchNumberAfter(text, /IPO\s*R[ÉE]ALIS[ÉE]/i);
   return { historical: h, budget: b, actual: r };
 }
@@ -9634,12 +9774,20 @@ function extractGpoTripleAround(text, labelPattern, options = {}) {
 
 function extractGpoHoursValues(text) {
   const idx = String(text).search(/HEURES\s+TOTALES/i);
-  if (idx < 0) return { total: { historical: "", budget: "", actual: "" }, indirect: { historical: "", budget: "", actual: "" } };
+  if (idx < 0) return { total: { historical: "", budget: "", actual: "" }, direct: { historical: "", budget: "", actual: "" }, indirect: { historical: "", budget: "", actual: "" } };
   const segment = String(text).slice(Math.max(0, idx - 240), idx);
   const nums = [...segment.matchAll(/[+-]?\s?\d{1,3}\s\d{3}/g)].map(match => parseZGemedNumber(match[0])).filter(v => v !== "").slice(-9);
   const groups = nums.length >= 9 ? [nums.slice(0, 3), nums.slice(3, 6), nums.slice(6, 9)] : [];
   const toValues = values => ({ historical: values?.[0] ?? "", budget: values?.[1] ?? "", actual: values?.[2] ?? "" });
-  return { total: toValues(groups[0]), indirect: toValues(groups[1]) };
+  return { total: toValues(groups[0]), direct: toValues(groups[1]), indirect: toValues(groups[2]) };
+}
+
+function extractGpoAbsDetail(text, labelPattern) {
+  const re = new RegExp(`${labelPattern}([\\s\\S]{0,180})`, "i");
+  const segment = (String(text).match(re) || [])[1] || "";
+  const nums = gpoNumbers(segment).filter(v => v !== "").slice(0, 3);
+  if (!nums.length) return { historical: "", budget: "", actual: "" };
+  return { historical: nums[0] ?? "", budget: nums[1] ?? "", actual: nums[2] ?? nums[0] ?? "" };
 }
 
 function extractGpoTripleAfter(text, labelPattern) {
