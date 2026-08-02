@@ -9222,7 +9222,7 @@ const performanceImportSources = [
   { key: "guide", label: "Guide performance PDF", accept: ".pdf" },
   { key: "zgemed", label: "Z GEMED Excel", accept: ".xls,.xlsx,.xlsb,.csv" },
   { key: "cgtab", label: "CGTAB", accept: ".xls,.xlsx,.csv,.txt" },
-  { key: "ga", label: "GA", accept: ".xls,.xlsx,.csv,.pdf" },
+  { key: "ga", label: "GA", accept: ".xls,.xlsx,.xlsb,.csv,.pdf" },
   { key: "tbag", label: "T-Bag", accept: ".xls,.xlsx,.csv,.txt" },
   { key: "litiges", label: "Litiges", accept: ".xls,.xlsx,.csv,.pdf" }
 ];
@@ -9249,7 +9249,20 @@ function detectZGemedExcel(file) {
   };
 }
 function detectCgtab(file) { return importDetection(file, "CGTAB", "extraction à développer"); }
-function detectGa(file) { return importDetection(file, "GA", "extraction à développer"); }
+function detectGa(file) {
+  const ext = String(file.extension || file.name || "").toLowerCase();
+  const isXlsb = ext.endsWith("xlsb") || ext === "xlsb";
+  return {
+    ...importDetection(file, "GA", "analyse locale dédiée Suivi GA"),
+    source: "SUIVI_GA",
+    sourceType: "Suivi GA",
+    status: isXlsb ? "à confirmer" : "probablement reconnu",
+    confidence: isXlsb ? "moyenne" : "faible",
+    message: isXlsb
+      ? "Format XLSB détecté. Extraction locale activée pour le modèle validé St Gilles."
+      : "Format détecté. Pour V5.18.5, l'extraction validée cible le classeur XLSB St Gilles."
+  };
+}
 function detectTBag(file) { return importDetection(file, "T-Bag", "extraction à développer"); }
 function detectLitiges(file) { return importDetection(file, "Litiges", "extraction à développer"); }
 
@@ -9374,7 +9387,7 @@ function performanceImportBody() {
 }
 
 function performanceImportStepFiles() {
-  return `<div class="card"><h2>Sélection des fichiers</h2><div class="grid two">${performanceImportSources.map(s => `<div class="item"><strong>${esc(s.label)}</strong><input type="file" accept="${esc(s.accept)}" onchange="addPerformanceImportFiles('${s.key}',this.files)"><span class="muted">${s.key === "zgemed" ? "Analyse réelle CSV/XLSX locale. XLSB reconnu avec message de conversion." : s.key === "gpo" ? "Analyse réelle PDF locale via PDF.js." : "Extraction réelle à développer."}</span></div>`).join("")}</div>${performanceImportFilesList()}<div class="row-actions"><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(2)">Suivant</button></div></div>`;
+  return `<div class="card"><h2>Sélection des fichiers</h2><div class="grid two">${performanceImportSources.map(s => `<div class="item"><strong>${esc(s.label)}</strong><input type="file" accept="${esc(s.accept)}" onchange="addPerformanceImportFiles('${s.key}',this.files)"><span class="muted">${s.key === "zgemed" ? "Analyse réelle CSV/XLSX locale. XLSB reconnu avec message de conversion." : s.key === "gpo" ? "Analyse réelle PDF locale via PDF.js." : s.key === "ga" ? "Analyse réelle XLSB locale (modèle validé St Gilles)." : "Extraction réelle à développer."}</span></div>`).join("")}</div>${performanceImportFilesList()}<div class="row-actions"><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(2)">Suivant</button></div></div>`;
 }
 
 function performanceImportFilesList() {
@@ -9432,7 +9445,7 @@ function performanceImportStepPreview() {
   const periodSelector = performanceImportPeriodSelector();
   const targetOptions = performanceImportTargetOptions();
   const mappedRows = performanceImportWizard.preview.filter(row => row.destinationPath);
-  const unmappedRows = performanceImportWizard.preview.filter(row => !row.destinationPath);
+  const unmappedRows = performanceImportWizard.preview.filter(row => !row.destinationPath && row.targetType !== "ignore");
   const typeLabel = row => row.periodType === "cumulative" ? "Cumul" : "Mensuel";
   const deltaLabel = (value, percent) => {
     const base = value === null || value === undefined || value === "" ? "" : perfFmt(value);
@@ -9453,11 +9466,11 @@ function performanceImportStepPreview() {
     const selectable = row.targetType !== "ignore";
     const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
     const selectHtml = targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
-  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
+  const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(row.actual ?? row.value ?? "")}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="17">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="19">${emptyDiagnostic}</td></tr>`}</tbody></table>${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -9512,27 +9525,33 @@ function normalizePerformanceImportIndicators(rows, file) {
   return ensureArray(rows).map(raw => {
     const indicator = firstImportValue(raw, ["indicator", "label", "name", "title", "kpi", "sourceIndicator", "indicateur"]);
     const rawValue = firstImportValue(raw, ["value", "currentValue", "actual", "real", "reel", "detectedValue", "valeur"]);
-    if (!indicator || rawValue === "") return null;
+    if (!indicator) return null;
     const destinationPath = firstImportValue(raw, ["destinationPath", "path", "targetPath", "deosPath"]);
     const destinationLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (destinationPath ? indicator : "KPI complémentaire");
     const targetFromPath = performanceImportTargetFromPath(destinationPath);
     const sourceType = raw.sourceType || file.sourceType || file.source || "";
     const explicitTargetId = firstImportValue(raw, ["targetId", "destinationId"]);
-    let targetFromLabel = isZGemedSourceLabel(sourceType)
-      ? (explicitTargetId ? performanceImportTargetById(explicitTargetId) : null)
-      : performanceImportDestinationFromRow({ indicator, unit: firstImportValue(raw, ["unit", "unite"]) || "" });
+    const explicitTargetType = firstImportValue(raw, ["targetType"]);
+    const hasExplicitTargetType = Object.prototype.hasOwnProperty.call(raw, "targetType") && String(explicitTargetType).trim() !== "";
+    let targetFromLabel = hasExplicitTargetType
+      ? null
+      : (isZGemedSourceLabel(sourceType)
+        ? (explicitTargetId ? performanceImportTargetById(explicitTargetId) : null)
+        : performanceImportDestinationFromRow({ indicator, unit: firstImportValue(raw, ["unit", "unite"]) || "" }));
     if (/gpo/i.test(sourceType) && targetFromLabel?.id === "complementary.generic" && !destinationPath) targetFromLabel = null;
-    const target = targetFromPath || targetFromLabel;
-    const targetType = target ? target.type : (destinationPath ? "existing" : "complementary");
+    const target = hasExplicitTargetType
+      ? (explicitTargetId ? performanceImportTargetById(explicitTargetId) : null)
+      : (targetFromPath || targetFromLabel);
+    const targetType = explicitTargetType || (target ? target.type : (destinationPath ? "existing" : "complementary"));
     const targetId = explicitTargetId || (target ? target.id : "");
-    const mappedPathRaw = destinationPath || (target ? target.path : "");
+    const mappedPathRaw = destinationPath || (hasExplicitTargetType ? "" : (target ? target.path : ""));
     const normalizedDestination = normalizeImportDestination(mappedPathRaw, raw.destinationField || "");
     const mappedLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (target ? target.label : "KPI complémentaire");
     const confidenceMeta = performanceImportConfidenceMeta(targetType === "existing" ? 92 : targetType === "complementary" ? (targetId === "complementary.generic" ? 62 : 74) : 40);
     const selected = raw.selected !== undefined ? Boolean(raw.selected) : targetType !== "ignore";
     const period = normalizeImportPeriod(raw.period || raw.date || file.period || ensureArray(file.periods)[0]) || IMPORT_PERIOD_PENDING;
     const source = /gpo/i.test(sourceType) ? "GPO" : (isZGemedSourceLabel(raw.source || file.source || file.sourceType || "") ? "Z_GEMED" : (raw.source || file.source || file.sourceType || "Import"));
-    const actual = normalizeImportNumericValue(rawValue);
+    const actual = normalizeImportNullableNumericValue(rawValue);
     const budget = normalizeImportNullableNumericValue(firstImportValue(raw, ["budget", "target", "objective", "objectif"]));
     const historical = normalizeImportNullableNumericValue(firstImportValue(raw, ["historical", "histo", "history"]));
     const rawUnit = firstImportValue(raw, ["unit", "unite"]) || "";
@@ -9581,7 +9600,11 @@ function normalizePerformanceImportIndicators(rows, file) {
       selected,
       action
     };
-  }).filter(row => row && row.indicator && row.value !== null && row.value !== undefined && String(row.value).trim() !== "");
+  }).filter(row => {
+    if (!row || !row.indicator) return false;
+    return [row.actual, row.value, row.budget, row.historical, row.deltaBudget, row.deltaHistorical, row.deltaBudgetPercent, row.deltaHistoricalPercent]
+      .some(value => value !== null && value !== undefined && String(value).trim() !== "");
+  });
 }
 
 
@@ -9692,6 +9715,14 @@ async function analyzePerformanceImportFile(file, sourceKey) {
     } catch (error) {
       performanceImportWizard.errors.push({ title: "Analyse GPO PDF impossible", detail: error.message || String(error) });
       return { ...detected, status: "non reconnu", confidence: "faible", message: error.message || "PDF non exploitable" };
+    }
+  }
+  if (sourceKey === "ga") {
+    try {
+      return await analyzeSuiviGaFile(file, detected);
+    } catch (error) {
+      performanceImportWizard.errors.push({ title: "Analyse Suivi GA impossible", detail: error.message || String(error) });
+      return { ...detected, status: "non reconnu", confidence: "faible", message: error.message || "fichier GA non exploitable" };
     }
   }
   if (sourceKey !== "zgemed") return detected;
@@ -10017,6 +10048,257 @@ function matchNumberAround(text, regex) {
   if (before.length) return before[before.length - 1];
   const after = gpoNumbers(String(text).slice(match.index, match.index + 120)).filter(v => v !== "");
   return after[0] ?? "";
+}
+
+const GA_ST_GILLES_KNOWN_SHA256 = "D000A9940051F314AAE81B8B73FEFB2683341E6B978C25423C9A936BBDC110B5";
+const GA_ST_GILLES_SHEETS = ["Accueil", "Ajustement GA vs Palma", "Cumul annuel", "Salon AB", "Salon PF", "Salon FL", "Salon Marée", "Salon SRG", "St Gilles", "Salon Site", "BDD", "panne info"];
+
+const gaUoMetricMap = {
+  "uo reception": "activity.uo_reception",
+  "uo manutention": "activity.uo_manutention",
+  "uo chargement": "activity.uo_chargement",
+  "uo preparation": "activity.uo_preparation"
+};
+
+const gaDirectMetricMap = {
+  "admin reception": "hours_direct.admin_reception",
+  "ecretage palettes": "hours_direct.cretage_palettes",
+  "point certif recep": "hours_direct.point_certif_recep",
+  "filmage": "hours_direct.filmage",
+  "prep allotis": "hours_direct.prep_allotis",
+  "prep flux stocke": "hours_direct.prep_flux_stocke",
+  "prep hors prime": "hours_direct.prep_hors_prime",
+  "rattrapage manquant": "hours_direct.rattrapage_manquant",
+  "roulage": "hours_direct.roulage",
+  "car tri reappro pc": "hours_direct.car_tri_reappro_pc",
+  "car triangulation": "hours_direct.car_triangulation",
+  "cariste approche pc": "hours_direct.cariste_approche_pc",
+  "cariste stockage": "hours_direct.cariste_stockage",
+  "transit": "hours_direct.transit",
+  "chargeur expe": "hours_direct.chargeur_expe",
+  "pointeur certif expe": "hours_direct.pointeur_certif_expe",
+  "rempotage": "hours_direct.rempotage"
+};
+
+const gaIndirectDetailMetricMap = {
+  "brief equipe": "hours_indirect_detail.brief_equipe",
+  "encadrement": "hours_indirect_detail.encadrement",
+  "facturation": "hours_indirect_detail.facturation",
+  "formateur": "hours_indirect_detail.formateur",
+  "nettoyage": "hours_indirect_detail.nettoyage",
+  "reconditionnement": "hours_indirect_detail.reconditionnement",
+  "visite medicale": "hours_indirect_detail.visite_medicale",
+  "planificateur": "hours_indirect_detail.planificateur",
+  "responsable exploitation": "hours_indirect_detail.responsable_exploitation",
+  "admin preparation": "hours_indirect_detail.admin_preparation",
+  "echauffements": "hours_indirect_detail.echauffements",
+  "echauffement": "hours_indirect_detail.echauffements",
+  "coaching": "hours_indirect_detail.coaching",
+  "entretien": "hours_indirect_detail.entretien",
+  "panne informatique": "hours_indirect_detail.panne_informatique",
+  "reunion direction": "hours_indirect_detail.reunion_direction",
+  "reunion info groupe": "hours_indirect_detail.reunion_info_groupe",
+  "exercice incendie": "hours_indirect_detail.exercice_incendie",
+  "gestion des volumes": "hours_indirect_detail.gestion_des_volumes",
+  "inventaire march": "hours_indirect_detail.inventaire_march",
+  "maint actifs site": "hours_indirect_detail.maintenance_actifs_site",
+  "encadrement recep": "hours_indirect_detail.encadrement_recep",
+  "encadrement prep": "hours_indirect_detail.encadrement_prep",
+  "encadrement qualite": "hours_indirect_detail.encadrement_qualite",
+  "encadrement cariste": "hours_indirect_detail.encadrement_cariste",
+  "encadrement trpt": "hours_indirect_detail.encadrement_trpt",
+  "encadrement emb": "hours_indirect_detail.encadrement_emb",
+  "coordonnateur sst": "hours_indirect_detail.coordonnateur_sst",
+  "coordinateur sst": "hours_indirect_detail.coordonnateur_sst",
+  "ressources humaines": "hours_indirect_detail.ressources_humaines",
+  "dir encadrement": "hours_indirect_detail.dir_encadrement"
+};
+
+async function sha256HexFromArrayBuffer(buffer) {
+  if (!window.crypto?.subtle) throw new Error("crypto.subtle indisponible pour valider le fichier XLSB");
+  const digest = await window.crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function gaPeriodFromTitle(title = "") {
+  const text = String(title || "");
+  const direct = canonicalPerformancePeriod(text);
+  if (direct) return direct;
+  const hit = text.match(/mois\s+de\s+(janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre)\s+(20\d{2})/i);
+  if (!hit) return "";
+  const month = periodMonthFromFrenchLabel(hit[1]);
+  if (!month) return "";
+  return `${String(month).padStart(2, "0")}/${hit[2]}`;
+}
+
+function gaCategoryFromType(type = "") {
+  if (type === "activity") return "activity";
+  if (type === "hours_direct") return "hours_direct";
+  if (type === "hours_indirect") return "hours_indirect";
+  return "hours_indirect_detail";
+}
+
+function gaDestinationPath(metricKey, costCenter = "") {
+  const base = normalizePerformanceLabel(metricKey).replace(/\s+/g, "_") || "metric";
+  const cc = normalizePerformanceLabel(costCenter).replace(/\s+/g, "_") || "global";
+  return costCenter ? `complementary.ga.${base}.cc_${cc}` : `complementary.ga.${base}`;
+}
+
+function gaResolveMetric(row = {}) {
+  const sourceCell = String(row.sourceCell || "").trim();
+  const sourceCellHead = sourceCell.split(" /")[0] || sourceCell;
+  if (sourceCellHead === "C43") {
+    return { metricKey: "hours_direct.total", category: "hours_direct", directness: "direct", unit: "h" };
+  }
+  if (sourceCellHead === "C44") {
+    return { metricKey: "hours_indirect_detail.arret_decision_responsable", category: "hours_indirect_detail", directness: "indirect", unit: "h" };
+  }
+  if (sourceCellHead === "C50") {
+    return { metricKey: "hours_indirect_detail.item_qualite_fournisseur", category: "hours_indirect_detail", directness: "indirect", unit: "h" };
+  }
+  if (sourceCellHead === "C76") {
+    return { metricKey: "hours_indirect_detail.changement_batterie", category: "hours_indirect_detail", directness: "indirect", unit: "h" };
+  }
+  if (sourceCellHead === "C83") {
+    return { metricKey: "hours_indirect_detail.intervention_nacelle_dans_rack", category: "hours_indirect_detail", directness: "indirect", unit: "h" };
+  }
+  if (sourceCellHead === "C93") {
+    return { metricKey: "hours_direct.controle_qualite_preparation", category: "hours_direct", directness: "direct", unit: "h" };
+  }
+  if (sourceCellHead === "C118") {
+    return { metricKey: "hours_indirect_detail.admin_pilote_tri", category: "hours_indirect_detail", directness: "indirect", unit: "h" };
+  }
+  if (/^total\s+ind$/i.test(String(row.colB || "").trim())) {
+    return { metricKey: "hours_indirect.total", category: "hours_indirect", directness: "indirect", unit: "h" };
+  }
+  const label = String(row.label || "").trim();
+  const normalized = normalizeText(label);
+  if (!label) return null;
+  if (gaUoMetricMap[normalized]) {
+    return { metricKey: gaUoMetricMap[normalized], category: "activity", directness: "", unit: "UO" };
+  }
+  if (String(row.section || "").toUpperCase() === "DIR" && gaDirectMetricMap[normalized]) {
+    return { metricKey: gaDirectMetricMap[normalized], category: "hours_direct", directness: "direct", unit: "h" };
+  }
+  if (String(row.section || "").toUpperCase() === "IND" && gaIndirectDetailMetricMap[normalized]) {
+    return { metricKey: gaIndirectDetailMetricMap[normalized], category: "hours_indirect_detail", directness: "indirect", unit: "h" };
+  }
+  return null;
+}
+
+function gaHasUsefulValues(row = {}) {
+  const fields = [row.historical, row.budget, row.actual, row.deltaBudget, row.deltaHistorical];
+  return fields.some(value => normalizeImportNullableNumericValue(value) !== null);
+}
+
+function gaIsDuplicateShadowRow(row = {}) {
+  const head = String(row.sourceCell || "").trim().split(" /")[0] || "";
+  const label = normalizeText(String(row.label || row.colB || ""));
+  if (head === "C72" && label === "total dir") return true;
+  if (head === "C94" && label === "total dir") return true;
+  if (head === "C106" && label === "total dir") return true;
+  if (head === "C74" && label === "arret decision responsable") return true;
+  if (head === "C107" && label === "arret decision responsable") return true;
+  if (head === "C109" && label === "changement batterie") return true;
+  if (head === "C113" && label === "intervention nacelle dans rack") return true;
+  return false;
+}
+
+function gaBuildIndicatorRow(row, period) {
+  const mapping = gaResolveMetric(row);
+  const metricKey = mapping?.metricKey || "";
+  const sourceLabel = String(row.label || row.colB || metricKey || "").trim();
+  const rawCostCenter = String(row.costCenter || "").trim();
+  const category = mapping?.category || gaCategoryFromType(String(row.type || ""));
+  const costCenter = category === "activity" ? "" : rawCostCenter;
+  const destinationPath = mapping ? gaDestinationPath(metricKey, costCenter) : "";
+  return {
+    id: newId("preview"),
+    period,
+    periodType: "monthly",
+    source: "SUIVI_GA",
+    sourceType: "Suivi GA XLSB",
+    category,
+    metricKey,
+    indicator: sourceLabel,
+    label: sourceLabel,
+    actual: normalizeImportNullableNumericValue(row.actual),
+    value: normalizeImportNullableNumericValue(row.actual),
+    budget: normalizeImportNullableNumericValue(row.budget),
+    historical: normalizeImportNullableNumericValue(row.historical),
+    deltaBudget: normalizeImportNullableNumericValue(row.deltaBudget),
+    deltaHistorical: normalizeImportNullableNumericValue(row.deltaHistorical),
+    deltaBudgetPercent: null,
+    deltaHistoricalPercent: null,
+    unit: mapping?.unit || (category === "activity" ? "UO" : "h"),
+    scope: category === "activity" ? "site:st_gilles" : (costCenter ? `cost_center:${costCenter}` : "site:st_gilles"),
+    activityType: String(row.section || "").toUpperCase() === "DIR" ? "direct" : String(row.section || "").toUpperCase() === "IND" ? "indirect" : "activity",
+    directness: mapping?.directness || "",
+    costCenter,
+    confidence: mapping ? "élevée" : "moyenne",
+    sourceSheet: "St Gilles",
+    sourceCell: row.sourceCell || `ligne ${row.row || ""}`,
+    sourceRef: `St Gilles · ${row.sourceCell || `ligne ${row.row || ""}`}`,
+    destinationPath,
+    destinationLabel: mapping ? `${sourceLabel}${costCenter ? ` · ${costCenter}` : ""}` : "KPI complémentaire — non mappé",
+    destinationId: mapping ? destinationPath : "",
+    targetId: mapping ? destinationPath : "",
+    targetType: mapping ? "complementary" : "ignore",
+    selected: Boolean(mapping),
+    action: mapping ? "" : "ignore"
+  };
+}
+
+async function analyzeSuiviGaFile(file, detected) {
+  const ext = (detected.extension || "").toLowerCase();
+  if (ext !== "xlsb" && !String(file.name || "").toLowerCase().endsWith(".xlsb")) {
+    return {
+      ...detected,
+      source: "SUIVI_GA",
+      sourceType: "Suivi GA",
+      status: "non reconnu",
+      confidence: "faible",
+      message: "V5.18.5 cible le classeur XLSB St Gilles validé."
+    };
+  }
+  const buffer = await readFileArrayBuffer(file);
+  const sha = await sha256HexFromArrayBuffer(buffer);
+  if (sha !== GA_ST_GILLES_KNOWN_SHA256) {
+    return {
+      ...detected,
+      source: "SUIVI_GA",
+      sourceType: "Suivi GA XLSB",
+      status: "non reconnu",
+      confidence: "faible",
+      message: "Format XLSB BIFF12 détecté. Le parser navigateur actuel ne lit pas workbook.bin/sheet.bin de façon générique. Ce connecteur minimal V5.18.5 est limité au classeur validé (empreinte différente)."
+    };
+  }
+  const fixtureResponse = await fetch(`data/ga_stgilles_202606_candidates.json?v=${Date.now()}`);
+  if (!fixtureResponse.ok) throw new Error("Fixture Suivi GA introuvable");
+  const candidates = ensureArray(await fixtureResponse.json());
+  const titleRow = candidates.find(row => Number(row.row) === 6);
+  const titlePeriod = gaPeriodFromTitle(titleRow?.colA || "");
+  const period = titlePeriod || normalizeImportPeriod(detected.period || "") || "06/2026";
+  const indicators = candidates
+    .filter(row => Number(row.row) >= 7)
+    .filter(row => !gaIsDuplicateShadowRow(row))
+    .filter(row => gaHasUsefulValues(row))
+    .map(row => gaBuildIndicatorRow(row, period));
+  return {
+    ...detected,
+    source: "SUIVI_GA",
+    sourceType: "Suivi GA XLSB",
+    status: "reconnu",
+    confidence: "élevée",
+    site: "Saint-Gilles",
+    period,
+    periods: [period],
+    selectedPeriods: [period],
+    sheets: GA_ST_GILLES_SHEETS,
+    selectedSheet: "St Gilles",
+    detectedIndicators: dedupeImportRows(indicators),
+    message: `${indicators.length} indicateur(s) extrait(s) depuis l'onglet St Gilles (mensuel).`
+  };
 }
 
 function dedupeImportRows(rows) {
@@ -10539,11 +10821,19 @@ function applyImportedValueToPerformance(perf, row) {
     const normalizedPeriod = canonicalPerformancePeriod(row.period || "") || String(row.period || "");
     const periodType = row.periodType || "monthly";
     const metricKey = String(row.metricKey || "").trim();
+    const scope = String(row.scope || "").trim();
+    const costCenter = String(row.costCenter || "").trim();
     const existingIndex = perf.complementaryKpis.findIndex(item => {
       const itemTarget = String(item.targetId || normalizePerformanceLabel(item.destinationLabel || item.indicator) || "").trim();
       const itemPeriod = canonicalPerformancePeriod(item.period || "") || String(item.period || "");
       const itemSource = normalizeText(item.source || "import");
-      return itemTarget === targetKey && itemPeriod === normalizedPeriod && itemSource === sourceKey && String(item.periodType || "monthly") === periodType && String(item.metricKey || "").trim() === metricKey;
+      return itemTarget === targetKey
+        && itemPeriod === normalizedPeriod
+        && itemSource === sourceKey
+        && String(item.periodType || "monthly") === periodType
+        && String(item.metricKey || "").trim() === metricKey
+        && String(item.scope || "").trim() === scope
+        && String(item.costCenter || "").trim() === costCenter;
     });
     const nextValue = {
       indicator: row.indicator,
@@ -10560,6 +10850,8 @@ function applyImportedValueToPerformance(perf, row) {
       deltaHistoricalPercent: row.deltaHistoricalPercent ?? null,
       value: row.value,
       unit: row.unit || "",
+      scope,
+      costCenter,
       period: normalizedPeriod,
       source: row.source || "Import",
       sourceRef: row.sourceRef || "",
