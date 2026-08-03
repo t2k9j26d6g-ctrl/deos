@@ -8251,9 +8251,20 @@ const performanceImportTargetCatalog = [
 ];
 let performanceEdit = false;
 let performanceSelectedId = "";
-let performanceDashboardFilters = { period: "all", kpi: "all", category: "all", source: "all", scope: "all" };
+let performanceDashboardFilters = { period: "all", family: "all", kpi: "all", source: "all", view: "all", anomalies: "off", category: "all", scope: "all" };
 let performanceDashboardSelectedKpi = "";
 let performanceComplementaryExpanded = false;
+let performanceSummaryDetailMetricKey = "";
+let performanceSectionCollapsed = {
+  pilotage_direction: false,
+  activite: false,
+  productivites: false,
+  heures: false,
+  absenteisme: false,
+  preparation_detaillee: false,
+  economie_qualite: false,
+  affectations_dispersion: false
+};
 const performancePrimaryKpiCatalog = [
   { id: "activity.colis_total", label: "Colis totaux préparés", metricPath: "activity", targetPath: "activity.actual", valueField: "actual", objectiveField: "budget", unit: "colis", category: "Activité", destinationLabels: ["Colis totaux préparés", "Activité colis", "Colis"] },
   { id: "ipo.total", label: "IPO Total", metricPath: "ipo.total", targetPath: "ipo.total.actual", valueField: "actual", objectiveField: "budget", unit: IPO_UNIT, category: "IPO", destinationLabels: ["IPO Total", "IPO total"] },
@@ -8270,6 +8281,61 @@ const performancePrimaryKpiCatalog = [
   { id: "quality.litiges", label: "Litiges", metricPath: "quality.indicators.Litiges", targetPath: "quality.indicators.Litiges.actual", valueField: "actual", objectiveField: "budget", unit: "u.", category: "Qualité", destinationLabels: ["Litiges"] },
   { id: "pallet.height", label: "Hauteur palette", metricPath: "palletHeight", targetPath: "palletHeight.actual", valueField: "actual", objectiveField: "objective", unit: "", category: "Hauteur palette", destinationLabels: ["Hauteur palette", "Hauteur Palette"] }
 ];
+
+const performanceSummaryMetricDefinitions = [
+  { metricKey: "ipo.total", label: "IPO total", family: "pilotage_direction", unit: IPO_UNIT, targetPath: "ipo.total.actual", metricPath: "ipo.total", aliases: ["ipo total"] },
+  { metricKey: "activity.colis_total", label: "Activité principale", family: "pilotage_direction", unit: "colis", targetPath: "activity.actual", metricPath: "activity", aliases: ["colis totaux préparés", "colis"] },
+  { metricKey: "productivity.preparation", label: "Productivité Préparation", family: "pilotage_direction", unit: "colis/h", targetPath: "productivity.Préparation.actual", metricPath: "productivity.Préparation", aliases: ["préparation"] },
+  { metricKey: "hours.indirect", label: "Heures indirectes", family: "pilotage_direction", unit: "h", targetPath: "hours.indirect.actual", metricPath: "hours.indirect", aliases: ["heures indirectes"] },
+  { metricKey: "absenteeism.total", label: "Absentéisme", family: "pilotage_direction", unit: "%", targetPath: "absenteeism.total.actual", metricPath: "absenteeism.total", aliases: ["absentéisme total"] },
+  { metricKey: "economy.cout_total_par_colis", label: "Coût total par colis", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy_cout_total_par_colis", metricPath: "", aliases: ["cout total par colis", "coût total par colis"] },
+  { metricKey: "ipo.variable", label: "IPO variable", family: "activite", unit: IPO_UNIT, targetPath: "ipo.variable.actual", metricPath: "ipo.variable", aliases: ["ipo variable"] },
+  { metricKey: "activity.colis_total", label: "Colis", family: "activite", unit: "colis", targetPath: "activity.actual", metricPath: "activity", aliases: ["colis"] },
+  { metricKey: "activity.uo_reception", label: "Palettes réceptionnées", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_reception", metricPath: "", aliases: ["uo reception", "palettes réceptionnées"] },
+  { metricKey: "activity.uo_manutention", label: "Palettes manutentionnées", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_manutention", metricPath: "", aliases: ["uo manutention", "palettes manutentionnées"] },
+  { metricKey: "activity.uo_chargement", label: "Supports chargés", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_chargement", metricPath: "", aliases: ["uo chargement", "supports chargés"] },
+  { metricKey: "productivity.reception", label: "Productivité Réception", family: "productivites", unit: "palettes/h", targetPath: "productivity.Réception.actual", metricPath: "productivity.Réception", aliases: ["réception"] },
+  { metricKey: "productivity.manutention", label: "Productivité Manutention", family: "productivites", unit: "palettes/h", targetPath: "productivity.Manutention.actual", metricPath: "productivity.Manutention", aliases: ["manutention"] },
+  { metricKey: "productivity.chargement", label: "Productivité Chargement", family: "productivites", unit: "palettes/h", targetPath: "productivity.Chargement.actual", metricPath: "productivity.Chargement", aliases: ["chargement"] },
+  { metricKey: "productivity.transit", label: "Productivité Transit", family: "productivites", unit: "palettes/h", targetPath: "productivity.Transit.actual", metricPath: "productivity.Transit", aliases: ["transit"] },
+  { metricKey: "hours.total", label: "Heures totales", family: "heures", unit: "h", targetPath: "hours.total.actual", metricPath: "hours.total", aliases: ["heures totales"] },
+  { metricKey: "hours.direct", label: "Heures directes", family: "heures", unit: "h", targetPath: "hours.direct.actual", metricPath: "hours.direct", aliases: ["heures directes"] },
+  { metricKey: "hours.indirect_share", label: "Poids heures indirectes", family: "heures", unit: "%", targetPath: "hours.indirect.totalShare", metricPath: "hours.indirect", valueField: "totalShare", aliases: ["poids heures indirectes"] },
+  { metricKey: "cgtab.premium_hours.overtime_25", label: "Heures majorées HS25", family: "heures", unit: "h", targetPath: "complementary.cgtab.premium_hours_overtime_25", metricPath: "", aliases: ["hs25"] },
+  { metricKey: "absenteeism.maladie", label: "Absentéisme maladie", family: "absenteisme", unit: "%", targetPath: "absenteeism.details.Maladie.actual", metricPath: "absenteeism.details.Maladie", aliases: ["maladie"] },
+  { metricKey: "absenteeism.accident_travail", label: "Absentéisme AT", family: "absenteisme", unit: "%", targetPath: "absenteeism.details.Accidents du travail.actual", metricPath: "absenteeism.details.Accidents du travail", aliases: ["accidents du travail", "at"] },
+  { metricKey: "cgtab.absence.sickness_hours", label: "Heures maladie (CGTAB)", family: "absenteisme", unit: "h", targetPath: "complementary.cgtab.absence_sickness_hours", metricPath: "", aliases: ["maladie"] },
+  { metricKey: "tbag.preparation.productivity.total", label: "Préparation - Productivité globale", family: "preparation_detaillee", unit: "colis/h", targetPath: "complementary.tbag.preparation_productivity_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - productivité globale"] },
+  { metricKey: "tbag.preparation.volume.total", label: "Préparation - Volume total", family: "preparation_detaillee", unit: "colis", targetPath: "complementary.tbag.preparation_volume_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - volume total"] },
+  { metricKey: "tbag.preparation.hours.total", label: "Préparation - Heures directes", family: "preparation_detaillee", unit: "h", targetPath: "complementary.tbag.preparation_hours_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - heures directes"] },
+  { metricKey: "economy.resultat_operationnel", label: "Résultat opérationnel", family: "economie_qualite", unit: "k€", targetPath: "complementary.zgemed.economy_resultat_operationnel", metricPath: "", aliases: ["résultat opérationnel"] },
+  { metricKey: "economy.ebit", label: "EBIT", family: "economie_qualite", unit: "k€", targetPath: "complementary.zgemed.economy_ebit", metricPath: "", aliases: ["ebit"] },
+  { metricKey: "quality.demarque_marchandises", label: "Démarque marchandises", family: "economie_qualite", unit: "k€", targetPath: "complementary.zgemed.quality_demarque_marchandises", metricPath: "", aliases: ["démarque marchandises"] },
+  { metricKey: "ga_detail.multi_activity_rate", label: "Part salariés multi-activités", family: "affectations_dispersion", unit: "%", targetPath: "complementary.ga_detail.ga_detail_workforce_multi_activity_rate.scope_fry8mc", metricPath: "", aliases: ["part salariés multi-activités"] },
+  { metricKey: "ga_detail.indirect_concentration", label: "Concentration heures indirectes top10", family: "affectations_dispersion", unit: "%", targetPath: "complementary.ga_detail.ga_detail_indirect_concentration_top10.scope_fry8mc.dir_ind", metricPath: "", aliases: ["concentration heures indirectes top10"] }
+];
+
+const performanceSummaryFamilyLabels = {
+  pilotage_direction: "Pilotage Direction",
+  activite: "Activité",
+  productivites: "Productivités",
+  heures: "Heures",
+  absenteisme: "Absentéisme",
+  preparation_detaillee: "Préparation détaillée",
+  economie_qualite: "Économie et qualité",
+  affectations_dispersion: "Affectations et dispersion"
+};
+
+const performanceSourcePriorityByFamily = {
+  ipo: ["GPO"],
+  productivites_officielles: ["GPO"],
+  activite: ["Z_GEMED", "SUIVI_GA"],
+  heures: ["GPO", "SUIVI_GA", "GA_DETAIL_AGGREGATED"],
+  absenteisme: ["GPO", "CGTAB"],
+  preparation_detaillee: ["T_BAG"],
+  economie_qualite: ["Z_GEMED"],
+  affectations_dispersion: ["GA_DETAIL_AGGREGATED"]
+};
 
 function normalizePerformanceLabel(value) {
   return normalizeText(value).replace(/\s+/g, " ").trim();
@@ -8507,6 +8573,260 @@ function performancePeriodTitle(period) {
 function performancePeriodSortValue(period) {
   const [month, year] = String(period || "").split("/").map(Number);
   return (Number(year) || 0) * 100 + (Number(month) || 0);
+}
+
+function performanceSourceKey(value = "") {
+  const text = normalizeText(value);
+  if (text.includes("gpo")) return "GPO";
+  if (text.includes("z gemed") || text.includes("z_gemed") || text.includes("gemed")) return "Z_GEMED";
+  if (text.includes("suivi ga")) return "SUIVI_GA";
+  if (text.includes("ga detail") || text.includes("detail salarie") || text.includes("detail ga")) return "GA_DETAIL_AGGREGATED";
+  if (text.includes("cgtab")) return "CGTAB";
+  if (text.includes("t bag") || text.includes("t_bag") || text.includes("tbag")) return "T_BAG";
+  if (text.includes("deos") || text.includes("saisie")) return "DEOS";
+  return String(value || "").trim() || "DEOS";
+}
+
+function performanceSourceLabel(sourceKey = "") {
+  return {
+    GPO: "GPO",
+    Z_GEMED: "Z GEMED",
+    SUIVI_GA: "Suivi GA",
+    GA_DETAIL_AGGREGATED: "GA détail agrégé",
+    CGTAB: "CGTAB agrégé",
+    T_BAG: "T-Bag",
+    DEOS: "Saisie DEOS"
+  }[sourceKey] || sourceKey || "Source inconnue";
+}
+
+function performanceMetricFamilyPriorityKey(metricDef = {}) {
+  const key = String(metricDef.metricKey || "").toLowerCase();
+  if (key.startsWith("ipo.")) return "ipo";
+  if (key.startsWith("productivity.")) return "productivites_officielles";
+  if (metricDef.family === "activite") return "activite";
+  if (metricDef.family === "heures") return "heures";
+  if (metricDef.family === "absenteisme") return "absenteisme";
+  if (metricDef.family === "preparation_detaillee") return "preparation_detaillee";
+  if (metricDef.family === "economie_qualite") return "economie_qualite";
+  if (metricDef.family === "affectations_dispersion") return "affectations_dispersion";
+  return "activite";
+}
+
+function performanceRowsForPeriod(period = "") {
+  const rows = [];
+  state.performance_imports.forEach(item => {
+    ensureArray(item.indicators).forEach(row => {
+      if (String(row.period || "") !== String(period || "")) return;
+      rows.push(row);
+    });
+  });
+  return rows;
+}
+
+function performanceMatchesMetricDef(row = {}, metricDef = {}) {
+  const rowPath = String(row.destinationPath || "").trim();
+  const rowMetricKey = String(row.metricKey || "").trim().toLowerCase();
+  const rowLabel = normalizePerformanceLabel(row.indicator || row.label || row.destinationLabel || "");
+  const aliases = [metricDef.label, ...(metricDef.aliases || [])].map(normalizePerformanceLabel).filter(Boolean);
+  if (metricDef.targetPath && rowPath && rowPath === metricDef.targetPath) return true;
+  if (metricDef.metricKey && rowMetricKey && rowMetricKey === String(metricDef.metricKey).toLowerCase()) return true;
+  return aliases.some(alias => alias && (rowLabel === alias || rowLabel.includes(alias)));
+}
+
+function performancePrimaryValueForMetric(periodRecord, metricDef) {
+  if (!periodRecord || !metricDef.metricPath) return null;
+  const metric = perfPath(periodRecord, metricDef.metricPath);
+  if (!metric) return null;
+  const valueField = metricDef.valueField || "actual";
+  const value = metric[valueField];
+  if (!perfHas(value)) return null;
+  return {
+    value,
+    budget: perfHas(metric.budget) ? metric.budget : "",
+    historical: perfHas(metric.historical) ? metric.historical : "",
+    unit: metricDef.unit || "",
+    source: "DEOS",
+    sourceLabel: "Saisie DEOS",
+    confidence: "moyenne",
+    sourceRef: metric.comment || "",
+    periodType: "monthly"
+  };
+}
+
+function performanceCandidateWarnings(candidate, metricDef) {
+  const warnings = [];
+  if (!perfHas(candidate?.value)) warnings.push("Donnée manquante");
+  const sourceKey = candidate?.source || "";
+  const priorityKey = performanceMetricFamilyPriorityKey(metricDef);
+  const priority = performanceSourcePriorityByFamily[priorityKey] || [];
+  if (priority.length && sourceKey && !priority.includes(sourceKey)) warnings.push("Source secondaire");
+  if ((priorityKey === "ipo" || priorityKey === "productivites_officielles") && sourceKey === "Z_GEMED") warnings.push("Ancienne donnée non prioritaire");
+  if (sourceKey === "CGTAB" || sourceKey === "GA_DETAIL_AGGREGATED") warnings.push("Confidentialité agrégée");
+  if (performanceIsValueSuspect({ value: candidate?.value, unit: candidate?.unit || metricDef.unit || "" })) warnings.push("Valeur suspecte");
+  const expected = performanceNormalizedUnit(metricDef.unit || "");
+  const actual = performanceNormalizedUnit(candidate?.unit || "");
+  if (expected && actual && expected !== actual) warnings.push("Unité à vérifier");
+  if (!perfHas(candidate?.historical)) warnings.push("Historique insuffisant");
+  return [...new Set(warnings)];
+}
+
+function performanceMetricCandidates(metricDef, period, periodRecord, importRows) {
+  const candidates = [];
+  importRows.filter(row => performanceMatchesMetricDef(row, metricDef)).forEach(row => {
+    const value = row.actual ?? row.value;
+    candidates.push({
+      value,
+      budget: row.budget ?? "",
+      historical: row.historical ?? "",
+      unit: row.unit || metricDef.unit || "",
+      source: performanceSourceKey(row.source || row.sourceType || "Import"),
+      sourceLabel: performanceSourceLabel(performanceSourceKey(row.source || row.sourceType || "Import")),
+      confidence: row.confidence || "moyenne",
+      sourceRef: row.sourceRef || row.sourceCell || "",
+      periodType: row.periodType || "monthly"
+    });
+  });
+  const primary = performancePrimaryValueForMetric(periodRecord, metricDef);
+  if (primary) candidates.push(primary);
+  const unique = [];
+  const seen = new Set();
+  candidates.forEach(candidate => {
+    const key = `${candidate.source}|${candidate.value}|${candidate.budget}|${candidate.historical}|${candidate.unit}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(candidate);
+  });
+  return unique;
+}
+
+function getPreferredPerformanceValue(metricKey, period) {
+  const metricDef = performanceSummaryMetricDefinitions.find(def => def.metricKey === metricKey);
+  if (!metricDef) {
+    return {
+      value: "",
+      budget: "",
+      historical: "",
+      unit: "",
+      source: "",
+      sourceLabel: "Source inconnue",
+      confidence: "faible",
+      alternatives: [],
+      warnings: ["Donnée manquante"]
+    };
+  }
+  const periodRecord = getPerformanceByPeriod(period);
+  const importRows = performanceRowsForPeriod(period);
+  const candidates = performanceMetricCandidates(metricDef, period, periodRecord, importRows);
+  const priorityKey = performanceMetricFamilyPriorityKey(metricDef);
+  const priority = performanceSourcePriorityByFamily[priorityKey] || [];
+  let selected = null;
+  for (const sourceKey of priority) {
+    selected = candidates.find(candidate => candidate.source === sourceKey && perfHas(candidate.value));
+    if (selected) break;
+  }
+  if (!selected && !priority.length) selected = candidates.find(candidate => perfHas(candidate.value)) || null;
+  const requiresOfficial = priorityKey === "ipo" || priorityKey === "productivites_officielles";
+  if (!selected && !requiresOfficial) selected = candidates.find(candidate => perfHas(candidate.value)) || null;
+  if (!selected) {
+    const alternatives = candidates.map(candidate => ({ ...candidate, warnings: performanceCandidateWarnings(candidate, metricDef) }));
+    return {
+      value: "",
+      budget: "",
+      historical: "",
+      unit: metricDef.unit || "",
+      source: priority[0] || "",
+      sourceLabel: priority[0] === "GPO" ? "Donnée GPO non disponible" : "Donnée non disponible",
+      confidence: "faible",
+      alternatives,
+      warnings: [...new Set(["Donnée manquante", ...(requiresOfficial ? ["Donnée GPO non disponible"] : [])])]
+    };
+  }
+  const alternatives = candidates
+    .filter(candidate => candidate !== selected)
+    .map(candidate => ({ ...candidate, warnings: performanceCandidateWarnings(candidate, metricDef) }));
+  const priorityIndex = priority.indexOf(selected.source);
+  const confidence = priorityIndex === 0 ? "élevée" : priorityIndex > 0 ? "moyenne" : "faible";
+  const warnings = [...new Set([...performanceCandidateWarnings(selected, metricDef), ...(alternatives.length ? ["Sources différentes"] : [])])];
+  return {
+    value: selected.value,
+    budget: selected.budget,
+    historical: selected.historical,
+    unit: selected.unit || metricDef.unit || "",
+    source: selected.source,
+    sourceLabel: selected.sourceLabel,
+    confidence,
+    alternatives,
+    warnings
+  };
+}
+
+function performanceSummaryMetricStatus(metricKey, period, preferredValue) {
+  if (!perfHas(preferredValue.value)) {
+    return { label: "Donnée manquante", tone: "missing", badges: preferredValue.warnings || ["Donnée manquante"] };
+  }
+  const pseudoRecord = {
+    kpiId: metricKey,
+    category: metricKey.startsWith("ipo.") ? "IPO" : "",
+    value: preferredValue.value,
+    objective: preferredValue.budget,
+    unit: preferredValue.unit,
+    targetPath: "",
+    label: metricKey,
+    qualityFlags: []
+  };
+  const objective = performanceObjectiveDefinition(pseudoRecord);
+  if (!objective.configured) {
+    return { label: "Non évalué", tone: "none", badges: [...new Set(["Seuil à définir", ...(preferredValue.warnings || [])])] };
+  }
+  const status = performanceStatus(pseudoRecord);
+  if (status.tone === "red") return { label: "Critique", tone: "critical", badges: preferredValue.warnings || [] };
+  if (status.tone === "orange") return { label: "Vigilance", tone: "warning", badges: preferredValue.warnings || [] };
+  if (status.tone === "green") return { label: "Conforme", tone: "ok", badges: preferredValue.warnings || [] };
+  return { label: "Non évalué", tone: "none", badges: preferredValue.warnings || [] };
+}
+
+function performanceSummaryFormatValue(value, unit, metricKey = "") {
+  if (!perfHas(value)) return "Donnée non disponible";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  const normalizedUnit = String(unit || "").toLowerCase();
+  if (normalizedUnit === "%" || normalizedUnit === "pourcentage") {
+    const ratioValue = numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric;
+    return `${ratioValue.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} %`;
+  }
+  const digits = /hours|heures|\bh\b/.test(normalizedUnit) ? 2 : (metricKey.startsWith("ipo.") ? 2 : 1);
+  const formatted = numeric.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function performanceSummaryBuildRows(period) {
+  return performanceSummaryMetricDefinitions.map(def => {
+    const preferred = getPreferredPerformanceValue(def.metricKey, period);
+    const status = performanceSummaryMetricStatus(def.metricKey, period, preferred);
+    const value = perfHas(preferred.value) ? Number(preferred.value) : "";
+    const budget = perfHas(preferred.budget) ? Number(preferred.budget) : "";
+    const historical = perfHas(preferred.historical) ? Number(preferred.historical) : "";
+    const gap = (Number.isFinite(value) && Number.isFinite(budget)) ? value - budget : "";
+    const trend = (Number.isFinite(value) && Number.isFinite(historical)) ? value - historical : "";
+    return {
+      metricKey: def.metricKey,
+      label: def.label,
+      family: def.family,
+      unit: preferred.unit || def.unit || "",
+      value,
+      budget,
+      historical,
+      gap,
+      trend,
+      source: preferred.source,
+      sourceLabel: preferred.sourceLabel,
+      confidence: preferred.confidence,
+      alternatives: preferred.alternatives,
+      warnings: status.badges,
+      statusLabel: status.label,
+      statusTone: status.tone
+    };
+  });
 }
 
 function performancePrimaryTargetOptions() {
@@ -8824,19 +9144,109 @@ function performanceFlagsBadges(flags) {
 
 function performanceDashboardFilterBar(records) {
   const options = performanceFilterOptions(records);
-  return `<div class="performance-dashboard-filters"><select onchange="setPerformanceDashboardFilter('period', this.value)"><option value="all">Toutes les périodes</option>${options.periods.map(period => `<option value="${esc(period)}" ${performanceDashboardFilters.period === period ? "selected" : ""}>${esc(performancePeriodTitle(period))}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('kpi', this.value)"><option value="all">Tous les KPI</option>${options.kpis.map(kpi => `<option value="${esc(kpi)}" ${performanceDashboardFilters.kpi === kpi ? "selected" : ""}>${esc(kpi)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('category', this.value)"><option value="all">Toutes les catégories</option>${options.categories.map(category => `<option value="${esc(category)}" ${performanceDashboardFilters.category === category ? "selected" : ""}>${esc(category)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('source', this.value)"><option value="all">Toutes les sources</option>${options.sources.map(source => `<option value="${esc(source)}" ${performanceDashboardFilters.source === source ? "selected" : ""}>${esc(source)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('scope', this.value)"><option value="all" ${performanceDashboardFilters.scope === "all" ? "selected" : ""}>Principaux + complémentaires</option><option value="principal" ${performanceDashboardFilters.scope === "principal" ? "selected" : ""}>Principaux uniquement</option><option value="complementary" ${performanceDashboardFilters.scope === "complementary" ? "selected" : ""}>Complémentaires uniquement</option></select></div>`;
+  const families = Object.entries(performanceSummaryFamilyLabels);
+  const kpiOptions = performanceSummaryMetricDefinitions.map(def => ({ key: def.metricKey, label: def.label }));
+  const sourceKeys = ["all", "GPO", "Z_GEMED", "SUIVI_GA", "CGTAB", "T_BAG", "GA_DETAIL_AGGREGATED", "DEOS"];
+  const periodOptions = options.periods
+    .map(period => `<option value="${esc(period)}" ${performanceDashboardFilters.period === period ? "selected" : ""}>${esc(performancePeriodTitle(period))}</option>`)
+    .join("");
+  const familyOptions = families
+    .map(([key, label]) => `<option value="${esc(key)}" ${performanceDashboardFilters.family === key ? "selected" : ""}>${esc(label)}</option>`)
+    .join("");
+  const kpiSelectOptions = kpiOptions
+    .map(kpi => `<option value="${esc(kpi.key)}" ${performanceDashboardFilters.kpi === kpi.key ? "selected" : ""}>${esc(kpi.label)}</option>`)
+    .join("");
+  const sourceOptions = sourceKeys
+    .map(key => `<option value="${esc(key)}" ${performanceDashboardFilters.source === key ? "selected" : ""}>${esc(key === "all" ? "Source : toutes" : performanceSourceLabel(key))}</option>`)
+    .join("");
+  return `
+    <div class="performance-filter-wrap">
+      <div class="performance-filter-row">
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('period', this.value)">
+          <option value="all">Période : toutes</option>${periodOptions}
+        </select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('family', this.value)">
+          <option value="all">Famille : toutes</option>${familyOptions}
+        </select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('kpi', this.value)">
+          <option value="all">KPI : tous</option>${kpiSelectOptions}
+        </select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('source', this.value)">${sourceOptions}</select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('view', this.value)">
+          <option value="all" ${performanceDashboardFilters.view === "all" ? "selected" : ""}>Vue : complète</option>
+          <option value="direction" ${performanceDashboardFilters.view === "direction" ? "selected" : ""}>Vue : direction</option>
+        </select>
+        <label class="performance-filter-anomaly">
+          <input type="checkbox" ${performanceDashboardFilters.anomalies === "on" ? "checked" : ""} onchange="setPerformanceDashboardFilter('anomalies', this.checked ? 'on' : 'off')">
+          Anomalies uniquement
+        </label>
+        <button class="secondary" onclick="resetPerformanceDashboardFilters()">Réinitialiser les filtres</button>
+      </div>
+    </div>
+  `;
+}
+
+function performanceSummaryRowsFiltered(period) {
+  const allRows = performanceSummaryBuildRows(period);
+  return allRows.filter(row => {
+    if (performanceDashboardFilters.family !== "all" && row.family !== performanceDashboardFilters.family) return false;
+    if (performanceDashboardFilters.kpi !== "all" && row.metricKey !== performanceDashboardFilters.kpi) return false;
+    if (performanceDashboardFilters.source !== "all" && row.source !== performanceDashboardFilters.source) return false;
+    if (performanceDashboardFilters.anomalies === "on" && !ensureArray(row.warnings).length) return false;
+    return true;
+  });
+}
+
+function performanceStatusBadgeV519(row) {
+  return `<span class="performance-kpi-status performance-kpi-status-${esc(row.statusTone)}">${esc(row.statusLabel)}</span>`;
+}
+
+function performanceWarningsBadgesV519(row) {
+  const badges = ensureArray(row.warnings);
+  if (!badges.length) return `<span class="performance-badge performance-badge-ok">Aucune alerte</span>`;
+  return badges.map(flag => `<span class="performance-badge">${esc(flag)}</span>`).join("");
+}
+
+function performanceDirectionCards(period) {
+  const cardOrder = ["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis"];
+  const rows = performanceSummaryRowsFiltered(period).filter(row => cardOrder.includes(row.metricKey));
+  const ordered = cardOrder.map(key => rows.find(row => row.metricKey === key)).filter(Boolean).slice(0, 6);
+  if (!ordered.length) return `<div class="empty">Aucune carte Direction disponible avec les filtres en cours.</div>`;
+  const cards = ordered.map(row => `
+    <article class="performance-summary-direction-card">
+      <header>
+        <h3>${esc(row.label)}</h3>
+        ${performanceStatusBadgeV519(row)}
+      </header>
+      <div class="performance-summary-direction-value">${esc(performanceSummaryFormatValue(row.value, row.unit, row.metricKey))}</div>
+      <div class="performance-summary-direction-meta">Source : ${esc(row.sourceLabel || performanceSourceLabel(row.source))}</div>
+      <div class="performance-summary-direction-lines">
+        <div>Objectif/Budget : ${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</div>
+        <div>Écart : ${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</div>
+        <div>Tendance : ${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</div>
+      </div>
+      <div class="performance-summary-direction-badges">${performanceWarningsBadgesV519(row)}</div>
+      <button class="secondary" onclick="openPerformanceSummaryDetail('${esc(row.metricKey)}')">Voir le détail</button>
+    </article>
+  `).join("");
+  return `<div class="performance-summary-direction-grid">${cards}</div>`;
 }
 
 function performanceSummaryCards(records) {
-  const latestPrimary = performanceLatestRecordByKpi(records.filter(record => record.scope === "principal"));
-  if (!latestPrimary.length) return `<div class="empty">Aucun KPI principal disponible avec les filtres en cours.</div>`;
-  return `<div class="performance-summary-grid">${latestPrimary.map(record => {
-    const previous = performancePreviousRecord(records, record);
-    const objective = performanceObjectiveDefinition(record);
-    const gap = performanceObjectiveGap(record);
-    const delta = previous && previous.unit === record.unit ? Number(record.value) - Number(previous.value) : "";
-    return `<div class="performance-summary-card"><div class="performance-summary-head"><strong>${esc(record.label)}</strong>${performanceStatusBadge(record)}</div><div class="performance-summary-value">${esc(perfFmt(record.value))}${record.unit ? ` <small>${esc(record.unit)}</small>` : ""}</div><div class="performance-summary-meta">${esc(record.periodTitle)} · ${esc(record.source || "Saisie / DEOS")}</div><div class="performance-summary-lines"><span>Objectif : ${objective.mode === "range" ? `${perfHas(objective.min) ? esc(perfFmt(objective.min)) : "-"} / ${perfHas(objective.max) ? esc(perfFmt(objective.max)) : "-"}` : perfHas(objective.objective) ? esc(perfFmt(objective.objective)) : "À compléter"}${objective.unit ? ` ${esc(objective.unit)}` : ""}</span><span>Écart : ${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || performanceDeltaUnit(record)))}</span><span>Évolution : ${!previous ? "Historique insuffisant" : delta === "" ? "À compléter" : esc(performanceFormatSignedValue(delta, performanceDeltaUnit(record)))}${previous ? ` · vs ${esc(previous.periodTitle)}` : ""}</span></div><div class="performance-summary-flags">${performanceFlagsBadges(record.qualityFlags)}</div></div>`;
-  }).join("")}</div>`;
+  const period = performanceDashboardFilters.period !== "all"
+    ? performanceDashboardFilters.period
+    : (records.slice().sort((a, b) => performancePeriodSortValue(b.period) - performancePeriodSortValue(a.period))[0]?.period || performancePeriodKey(perfSelected() || {}));
+  return performanceDirectionCards(period);
+}
+
+function resetPerformanceDashboardFilters() {
+  performanceDashboardFilters.period = "all";
+  performanceDashboardFilters.family = "all";
+  performanceDashboardFilters.kpi = "all";
+  performanceDashboardFilters.source = "all";
+  performanceDashboardFilters.view = "all";
+  performanceDashboardFilters.anomalies = "off";
+  renderPerformance();
 }
 
 function performanceResolveSelectedKpi(records) {
@@ -8926,15 +9336,157 @@ function performanceComplementarySection(records) {
   }).join("") : `<tr><td colspan="7">Aucun KPI complémentaire avec les filtres en cours.</td></tr>`}</tbody></table></div>` : `<div class="muted">${latestComplementary.length} KPI complémentaire(s) disponible(s).</div>`}</div>`;
 }
 
+function performanceLatestImportMeta(period) {
+  const selected = state.performance_imports
+    .filter(item => importMatchesPeriod(item, period))
+    .sort((a, b) => String(b.importDate || "").localeCompare(String(a.importDate || "")))[0] || null;
+  if (!selected) return { source: "Aucune", date: "Non disponible" };
+  return { source: performanceImportSourceLabel(selected), date: selected.importDate || "Non disponible" };
+}
+
+function performanceSummaryRowsForPeriod(period) {
+  const rows = performanceSummaryRowsFiltered(period);
+  if (performanceDashboardFilters.view === "direction") {
+    const directionSet = new Set(["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis"]);
+    return rows.filter(row => directionSet.has(row.metricKey));
+  }
+  return rows;
+}
+
+function performanceSummarySectionTable(period, familyKey, rows) {
+  const familyRows = rows.filter(row => row.family === familyKey);
+  const collapsed = Boolean(performanceSectionCollapsed[familyKey]);
+  const header = `
+    <header class="performance-summary-family-header">
+      <h3>${esc(performanceSummaryFamilyLabels[familyKey])}</h3>
+      <div class="row-actions">
+        <span class="muted">${familyRows.length} KPI</span>
+        <button class="secondary" onclick="togglePerformanceSummarySection('${esc(familyKey)}')">${collapsed ? "Déplier" : "Replier"}</button>
+      </div>
+    </header>
+  `;
+  if (collapsed) return `<section class="performance-summary-family">${header}</section>`;
+  const bodyRows = familyRows.length
+    ? familyRows.map(row => `
+      <tr>
+        <td>${esc(row.label)}</td>
+        <td>${esc(performanceSummaryFormatValue(row.value, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.historical, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</td>
+        <td>${esc(row.sourceLabel || performanceSourceLabel(row.source))}</td>
+        <td>${performanceStatusBadgeV519(row)}</td>
+        <td>${performanceWarningsBadgesV519(row)}</td>
+        <td><button class="secondary" onclick="openPerformanceSummaryDetail('${esc(row.metricKey)}')">Détail</button></td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="10">Aucune donnée pour cette famille.</td></tr>`;
+  return `
+    <section class="performance-summary-family">
+      ${header}
+      <div class="performance-summary-table-wrap">
+        <table class="performance-summary-table">
+          <thead>
+            <tr><th>KPI</th><th>Réel</th><th>Objectif</th><th>Historique</th><th>Écart</th><th>Tendance</th><th>Source</th><th>Statut</th><th>Alertes</th><th>Détail</th></tr>
+          </thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function performanceSummaryDetailPanel(period, rows) {
+  if (!performanceSummaryDetailMetricKey) return "";
+  const row = rows.find(item => item.metricKey === performanceSummaryDetailMetricKey);
+  if (!row) return "";
+  const alternatives = row.alternatives.length
+    ? row.alternatives.map(alt => `
+      <div class="item">
+        <strong>${esc(performanceSourceLabel(alt.source))}</strong>
+        <span class="muted">${esc(performanceSummaryFormatValue(alt.value, alt.unit || row.unit, row.metricKey))}</span>
+        <span class="meta">${esc((alt.warnings || []).join(" · ") || "Aucun signal")}</span>
+      </div>
+    `).join("")
+    : `<div class="empty">Aucune alternative disponible.</div>`;
+  return `
+    <div class="performance-summary-detail-backdrop" onclick="closePerformanceSummaryDetail()">
+      <div class="performance-summary-detail-panel" onclick="event.stopPropagation()">
+        <div class="performance-summary-detail-head">
+          <h3>Détail KPI · ${esc(row.label)}</h3>
+          <button class="icon-close" onclick="closePerformanceSummaryDetail()">×</button>
+        </div>
+        <div class="performance-summary-detail-grid">
+          <div><strong>Valeur principale</strong><p>${esc(performanceSummaryFormatValue(row.value, row.unit, row.metricKey))}</p></div>
+          <div><strong>Source officielle</strong><p>${esc(row.sourceLabel || performanceSourceLabel(row.source))}</p></div>
+          <div><strong>Budget</strong><p>${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</p></div>
+          <div><strong>Historique</strong><p>${esc(performanceSummaryFormatValue(row.historical, row.unit, row.metricKey))}</p></div>
+          <div><strong>Écart</strong><p>${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</p></div>
+          <div><strong>Tendance</strong><p>${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</p></div>
+          <div><strong>Période</strong><p>${esc(performancePeriodTitle(period))}</p></div>
+          <div><strong>Qualité</strong><p>${esc(row.confidence || "moyenne")}</p></div>
+        </div>
+        <div class="performance-summary-detail-badges">${performanceWarningsBadgesV519(row)}</div>
+        <h4>Valeurs alternatives par source</h4>
+        <div class="performance-summary-detail-alt">${alternatives}</div>
+      </div>
+    </div>
+  `;
+}
+
+function performanceSummaryFamilies(period, rows) {
+  return Object.keys(performanceSummaryFamilyLabels).map(key => performanceSummarySectionTable(period, key, rows)).join("");
+}
+
 function performanceOverviewSection() {
   const allRecords = performanceAllRecords();
-  const filtered = performanceApplyFilters(allRecords);
-  return `<div class="card full-span"><div class="row"><div><h2>Synthèse Performance</h2><p class="muted">Vue consolidée des KPI disponibles, des objectifs configurés et des signaux de qualité.</p></div></div>${performanceDashboardFilterBar(allRecords)}${performanceSummaryCards(filtered)}</div><div class="card full-span"><h2>Historique et tendances</h2>${performanceAnalysisPanel(allRecords)}</div>${performanceComplementarySection(allRecords)}`;
+  const selectedPeriod = performanceDashboardFilters.period !== "all"
+    ? performanceDashboardFilters.period
+    : (allRecords.slice().sort((a, b) => performancePeriodSortValue(b.period) - performancePeriodSortValue(a.period))[0]?.period || performancePeriodKey(perfSelected() || {}));
+  const importMeta = performanceLatestImportMeta(selectedPeriod);
+  const rows = performanceSummaryRowsForPeriod(selectedPeriod);
+  return `
+    <div class="card full-span performance-summary-root">
+      <div class="performance-summary-headline">
+        <div>
+          <h2>Synthèse Performance</h2>
+          <p class="muted">Période ${esc(performancePeriodTitle(selectedPeriod))} · Dernière source ${esc(importMeta.source)} · Import ${esc(importMeta.date)}</p>
+        </div>
+        <div class="row-actions">
+          <button class="secondary" onclick="startPerformanceImport()">Importer des données</button>
+          <button class="secondary" onclick="resetPerformanceDashboardFilters()">Réinitialiser les filtres</button>
+        </div>
+      </div>
+      ${performanceDashboardFilterBar(allRecords)}
+      <div class="performance-summary-direction-block">
+        <h3>Synthèse Direction</h3>
+        ${performanceSummaryCards(allRecords)}
+      </div>
+      <div class="performance-summary-families">${performanceSummaryFamilies(selectedPeriod, rows)}</div>
+      ${performanceSummaryDetailPanel(selectedPeriod, rows)}
+    </div>
+  `;
 }
 
 function setPerformanceDashboardFilter(name, value) {
   performanceDashboardFilters[name] = value || "all";
   if (name === "kpi") performanceDashboardSelectedKpi = "";
+  renderPerformance();
+}
+
+function togglePerformanceSummarySection(sectionKey) {
+  performanceSectionCollapsed[sectionKey] = !performanceSectionCollapsed[sectionKey];
+  renderPerformance();
+}
+
+function openPerformanceSummaryDetail(metricKey) {
+  performanceSummaryDetailMetricKey = metricKey || "";
+  renderPerformance();
+}
+
+function closePerformanceSummaryDetail() {
+  performanceSummaryDetailMetricKey = "";
   renderPerformance();
 }
 
