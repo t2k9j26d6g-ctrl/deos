@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.18.3";
+const DEOS_VERSION = "V5.20";
 const DEOS_BACKUP_VERSION = 1;
 const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
 
@@ -175,8 +175,35 @@ let managerDeleteDialog = {
   busy: false,
   impact: null
 };
+let documentsFilterState = {
+  type: "all",
+  managerId: "all",
+  status: "all",
+  confidentiality: "all",
+  period: "all",
+  nextUpcoming: "off"
+};
+let documentTemplatePickerDialog = {
+  open: false
+};
+let documentEditDialog = {
+  open: false,
+  mode: "create",
+  documentId: "",
+  templateKey: "",
+  previousDocumentId: "",
+  continueAfterSave: false,
+  error: ""
+};
+let documentDeleteDialog = {
+  open: false,
+  documentId: "",
+  error: ""
+};
 let a5PrintCleanupBound = false;
 let modalEscapeBound = false;
+let actionTitleMigrationMode = false;
+let actionTitleMigrationStats = { corrected: 0, examples: [] };
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -298,7 +325,7 @@ function identitySignature() {
 }
 
 function applyIdentity() {
-  document.title = `${identity.appName} ${identity.appVersion || ""}`.trim();
+  document.title = `${identity.appName} ${DEOS_VERSION}`.trim();
   const logo = document.getElementById("brandLogo");
   if (logo) {
     logo.textContent = "";
@@ -343,6 +370,7 @@ function appHtml(html) {
   renderA5SummaryOverlay();
   renderActionModalOverlays();
   renderDecisionModalOverlays();
+  renderDocumentModalOverlays();
 }
 
 function badge(status) {
@@ -897,6 +925,47 @@ function repairEncodingValue(value) {
   return value;
 }
 
+function shouldKeepLeadingQuestionTitle(restTitle) {
+  return /^(qui|que|quoi|quand|comment|pourquoi|ou|où|est-ce|doit|faut|peut|peux|pouvons|y a-t-il)\b/i.test(String(restTitle || ""));
+}
+
+function cleanActionTitleArtifact(value) {
+  const original = String(value ?? "");
+  if (!original) return { title: "", changed: false, reason: "empty" };
+
+  const withoutBom = original.replace(/^\uFEFF+/, "");
+  if (withoutBom !== original) {
+    return { title: withoutBom, changed: true, reason: "leading-bom" };
+  }
+
+  const replacementPrefix = original.match(/^[\uFFFD]+[\s.:;\-]*/u);
+  if (replacementPrefix) {
+    const rest = original.slice(replacementPrefix[0].length).trimStart();
+    return rest ? { title: rest, changed: true, reason: "replacement-char-prefix" } : { title: original, changed: false, reason: "replacement-char-empty" };
+  }
+
+  const questionPrefix = original.match(/^(?:\?{1,3}|¿)\s+/u);
+  if (questionPrefix) {
+    const rest = original.slice(questionPrefix[0].length).trimStart();
+    if (rest && !shouldKeepLeadingQuestionTitle(rest)) {
+      return { title: rest, changed: true, reason: "leading-question-placeholder" };
+    }
+  }
+
+  return { title: original, changed: false, reason: "none" };
+}
+
+function normalizeActionTitle(value) {
+  const cleaned = cleanActionTitleArtifact(value);
+  if (actionTitleMigrationMode && cleaned.changed) {
+    actionTitleMigrationStats.corrected += 1;
+    if (actionTitleMigrationStats.examples.length < 5) {
+      actionTitleMigrationStats.examples.push({ before: String(value || ""), after: cleaned.title, reason: cleaned.reason });
+    }
+  }
+  return cleaned.title;
+}
+
 function normalizeEntity(name, item) {
   item = repairEncodingValue(item);
   const base = { ...item, id: item.id || newId(name) };
@@ -924,8 +993,77 @@ function normalizeEntity(name, item) {
     return { ...merged, tags: ensureArray(merged.tags), linkedManagers: ensureArray(merged.linkedManagers), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedActions: ensureArray(merged.linkedActions), linkedDocuments: ensureArray(merged.linkedDocuments), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events) };
   }
   if (name === "documents") {
-    const merged = { type: "", category: "", status: "Brouillon", owner: "", author: "", version: "V1", date: base.updatedAt || isoToday(), updatedAt: isoToday(), summary: "", tags: [], content: "", linkedManagers: [], linkedProjects: [], linkedFolders: [], linkedDecisions: [], linkedJournal: [], linkedActions: [], linkedPerformance: [], sourceType: "", sourceId: "", reportTemplate: "", ...base };
-    return { ...merged, tags: ensureArray(merged.tags), linkedManagers: ensureArray(merged.linkedManagers), linkedProjects: ensureArray(merged.linkedProjects), linkedFolders: ensureArray(merged.linkedFolders), linkedDecisions: ensureArray(merged.linkedDecisions), linkedJournal: ensureArray(merged.linkedJournal), linkedActions: ensureArray(merged.linkedActions), linkedPerformance: ensureArray(merged.linkedPerformance) };
+    const merged = {
+      type: "",
+      category: "",
+      status: "Brouillon",
+      owner: "",
+      author: "",
+      version: "V1",
+      date: base.updatedAt || isoToday(),
+      updatedAt: isoToday(),
+      createdAt: base.createdAt || isoToday(),
+      summary: "",
+      tags: [],
+      content: "",
+      documentType: "",
+      interviewTemplate: null,
+      startTime: "",
+      endTime: "",
+      duration: "",
+      period: "",
+      location: "",
+      participants: "",
+      managerIds: [],
+      linkedManagers: [],
+      linkedProjects: [],
+      linkedFolders: [],
+      linkedDecisions: [],
+      linkedJournal: [],
+      linkedActions: [],
+      linkedPerformance: [],
+      linkedMeetingIds: [],
+      nextInterviewDate: "",
+      confidentiality: "normal",
+      sourceType: "",
+      sourceId: "",
+      reportTemplate: "",
+      previousDocumentId: "",
+      ...base
+    };
+    const interviewTemplate = normalizeInterviewTemplate(merged.interviewTemplate || merged.reportTemplate || "");
+    const linkedManagers = normalizeLinkedManagerIds(ensureArray(merged.managerIds).length ? merged.managerIds : ensureArray(merged.linkedManagers));
+    const linkedProjects = normalizeLinkedIdArray(merged.linkedProjects);
+    const linkedFolders = normalizeLinkedIdArray(merged.linkedFolders);
+    const linkedDecisions = normalizeLinkedIdArray(merged.linkedDecisions);
+    const linkedActions = normalizeLinkedIdArray(merged.linkedActions);
+    const linkedJournal = normalizeLinkedIdArray(merged.linkedJournal);
+    const linkedPerformance = normalizeLinkedIdArray(merged.linkedPerformance);
+    const linkedMeetingIds = normalizeLinkedIdArray(merged.linkedMeetingIds || merged.linkedMeetings || []);
+    const documentType = merged.documentType || (interviewTemplate ? "interview_report" : "document");
+    const content = normalizeDocumentStructuredContent(merged, interviewTemplate);
+    const status = interviewTemplate ? normalizeInterviewStatus(merged.status || "draft") : (merged.status || "Brouillon");
+    return {
+      ...merged,
+      tags: ensureArray(merged.tags),
+      documentType,
+      interviewTemplate,
+      status,
+      confidentiality: normalizeInterviewConfidentiality(merged.confidentiality || "normal"),
+      managerIds: linkedManagers,
+      linkedManagers,
+      linkedProjects,
+      linkedFolders,
+      linkedDecisions,
+      linkedJournal,
+      linkedActions,
+      linkedPerformance,
+      linkedMeetingIds,
+      participants: merged.participants || "",
+      content,
+      createdAt: merged.createdAt || merged.updatedAt || isoToday(),
+      updatedAt: merged.updatedAt || isoToday()
+    };
   }
   if (name === "activity") return { detail: "", date: new Date().toLocaleString("fr-FR"), entityId: "", ...base };
   if (name === "agenda") {
@@ -968,7 +1106,7 @@ function normalizeEntity(name, item) {
     };
     return merged;
   }
-  if (name === "actions") return { link: "", owner: "", due: "", level: "orange", done: false, linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
+  if (name === "actions") return { link: "", owner: "", due: "", level: "orange", done: false, linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, title: normalizeActionTitle(base.title), linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
   if (name === "performance") return normalizePerformance(base);
   if (name === "performance_imports") {
     const merged = { importDate: new Date().toLocaleString("fr-FR"), sourceFile: "", sourceType: "", period: "", indicators: [], status: "brouillon", validatedBy: "", comments: "", files: [], preview: [], conflicts: [], ...base };
@@ -1011,9 +1149,18 @@ async function init() {
   identity = savedIdentity(await loadIdentityDefaults());
   persistIdentity();
   applyIdentity();
+  actionTitleMigrationMode = true;
+  actionTitleMigrationStats = { corrected: 0, examples: [] };
   for (const name of entities) {
     state[name] = normalizeCollection(name, saved(name, await loadJson(name)));
     persist(name);
+  }
+  actionTitleMigrationMode = false;
+  if (actionTitleMigrationStats.corrected > 0) {
+    console.info("[DEOS Actions] Migration des titres appliquée", {
+      corrected: actionTitleMigrationStats.corrected,
+      examples: actionTitleMigrationStats.examples
+    });
   }
   state.settings = ensureSettings(saved("settings", {}));
   // V5.5 — Charger les événements externes (Google Calendar)
@@ -2874,6 +3021,21 @@ function ensureActionModalHooks() {
   if (modalEscapeBound) return;
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
+    if (documentDeleteDialog.open) {
+      closeDocumentDeleteModal();
+      event.preventDefault();
+      return;
+    }
+    if (documentEditDialog.open) {
+      closeDocumentEditModal();
+      event.preventDefault();
+      return;
+    }
+    if (documentTemplatePickerDialog.open) {
+      closeDocumentTemplatePicker();
+      event.preventDefault();
+      return;
+    }
     if (managerDeleteDialog.open) {
       closeManagerDeleteModal();
       event.preventDefault();
@@ -3067,7 +3229,7 @@ function saveActionEdit(id) {
   }
   state.actions[i] = normalizeEntity("actions", next);
   persist("actions");
-  addActivity("? Action modifiée", state.actions[i].title, state.actions[i].link || state.actions[i].owner || "", id);
+  addActivity("Action modifiée", state.actions[i].title, state.actions[i].link || state.actions[i].owner || "", id);
   if (a5SummaryDialog.open && a5SummaryDialog.type === "action" && sameId(a5SummaryDialog.sourceId, id)) {
     a5SummaryDialog.model = buildActionA5Summary(id);
   }
@@ -3742,7 +3904,7 @@ function completeCockpitAction(id) {
   if (!a) return;
   a.done = true;
   persist("actions");
-  addActivity("? Action terminée", a.title, a.link || "", a.id);
+  addActivity("Action terminée", a.title, a.link || "", a.id);
   renderCockpit();
 }
 
@@ -3954,7 +4116,8 @@ function deosLinkBadge(type, name) {
     project: { icon: "📊", label: "Projet" },
     action: { icon: "✅", label: "Action" },
     decision: { icon: "📌", label: "Décision" },
-    manager: { icon: "👥", label: "Manager" }
+    manager: { icon: "👥", label: "Manager" },
+    document: { icon: "📄", label: "Document" }
   }[type] || { icon: "🔖", label: "Objet" };
   return `<span class="deos-link-badge deos-link-badge--${type}"><span class="deos-link-badge__icon">${meta.icon}</span><span class="deos-link-badge__type">${meta.label}</span><span class="deos-link-badge__sep">·</span><span class="deos-link-badge__name">${esc(name || "Sans titre")}</span></span>`;
 }
@@ -3969,12 +4132,16 @@ function agendaLinkedBadges(a) {
   const managerIds = normalizeLinkedManagerIds(ensureArray(item.linkedManagerIds).length ? item.linkedManagerIds : ensureArray(item.linkedManagers));
   const actionIds = normalizeLinkedIdArray([...(item.linkedActionIds || []), ...(item.linkedActions || [])]);
   const decisionIds = normalizeLinkedIdArray([...(item.linkedDecisionIds || []), ...(item.linkedDecisions || [])]);
+  const documentIds = state.documents
+    .filter(document => ensureArray(document.linkedMeetingIds).includes(String(item.id || "")) || (document.sourceType === "agenda" && sameId(document.sourceId, item.id)))
+    .map(document => String(document.id));
   const badges = [];
   state.folders.filter(f => ensureArray(item.linkedFolders).includes(f.id)).forEach(f => badges.push(deosLinkBadge("folder", f.name)));
   state.projects.filter(p => ensureArray(item.linkedProjects).includes(p.id)).forEach(p => badges.push(deosLinkBadge("project", p.name)));
   state.managers.filter(m => managerIds.includes(String(m.id))).forEach(m => badges.push(deosLinkBadge("manager", m.name)));
   state.actions.filter(action => actionIds.includes(String(action.id))).forEach(action => badges.push(deosLinkBadge("action", action.title)));
   state.decisions.filter(decision => decisionIds.includes(String(decision.id))).forEach(decision => badges.push(deosLinkBadge("decision", decision.title)));
+  state.documents.filter(document => documentIds.includes(String(document.id))).forEach(document => badges.push(deosLinkBadge("document", document.title)));
   return badges.length ? `<div class="deos-link-summary">${deosLinkBadgesHtml(badges)}</div>` : "";
 }
 
@@ -4218,7 +4385,7 @@ function createActionFromMeeting(source, meetingRef, payload) {
   }
 
   try {
-    state.actions.unshift(action);
+    state.actions.unshift(normalizeEntity("actions", action));
     persist("actions");
 
     if (source === "manual") {
@@ -4232,7 +4399,7 @@ function createActionFromMeeting(source, meetingRef, payload) {
       saveExternalEventEnrichment(String(meetingRef), enrichment);
     }
 
-    addActivity("? Action", action.title, `Créée depuis le rendez-vous: ${payload.meetingTitle}`, action.id);
+    addActivity("Action", action.title, `Créée depuis le rendez-vous: ${payload.meetingTitle}`, action.id);
     return action;
   } catch (error) {
     rollbackMeetingObjectCreation(snapshot);
@@ -5200,7 +5367,7 @@ function transformIdeaToAction(id, ideaId) {
   const p = prepById(id), a = byId("agenda", p?.agendaId), idea = p?.ideas.find(x => x.id === ideaId);
   if (!p || !idea) return;
   const action = { id: newId("action"), title: idea.text, link: a?.title || "Réunion", owner: "", level: idea.importance === "critique" ? "red" : idea.importance === "importante" ? "orange" : "green", due: "", done: false, linkedManagers: idea.managerId ? [idea.managerId] : p.linkedManagers, linkedProjects: idea.projectId ? [idea.projectId] : p.linkedProjects, linkedFolders: idea.folderId ? [idea.folderId] : p.linkedFolders, linkedMeetingPreparations: [p.id] };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   p.linkedActions = [...new Set([...(p.linkedActions || []), action.id])];
   persist("actions");
   addActivity("Action", action.title, "Créée depuis préparation réunion", action.id);
@@ -5283,7 +5450,7 @@ function createActionFromPrepItem(id, itemId) {
   const p = prepById(id), item = p?.prepItems.find(x => x.id === itemId), a = byId("agenda", p?.agendaId);
   if (!p || !item) return;
   const action = { id: newId("action"), title: item.title, owner: item.owner || "", due: item.due || "", level: item.priority === "critique" ? "red" : item.priority === "importante" ? "orange" : "green", link: a?.title || "Réunion", done: item.status === "Prêt", linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedMeetingPreparations: [p.id] };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   p.linkedActions = [...new Set([...(p.linkedActions || []), action.id])];
   persist("actions");
   addActivity("Action", action.title, "Créée depuis élément à préparer", action.id);
@@ -5311,7 +5478,7 @@ function addPrepDocument(id) {
 function createDocumentFromPrep(id, prepDocId) {
   const p = prepById(id), prepDoc = p?.usefulDocuments.find(x => x.id === prepDocId), a = byId("agenda", p?.agendaId);
   if (!p || !prepDoc) return;
-  const doc = { id: newId("document"), title: prepDoc.title || "Document réunion", type: prepDoc.type || "Support réunion", category: "Réunion", status: prepDoc.status || "À préparer", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: prepDoc.version || "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: `Document utile pour ${a?.title || "réunion"}`, content: "", tags: ["Réunion", "Préparation"], linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId };
+  const doc = normalizeEntity("documents", { id: newId("document"), title: prepDoc.title || "Document réunion", type: prepDoc.type || "Support réunion", category: "Réunion", status: prepDoc.status || "À préparer", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: prepDoc.version || "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: `Document utile pour ${a?.title || "réunion"}`, content: "", tags: ["Réunion", "Préparation"], linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedMeetingPreparations: [p.id], linkedMeetingIds: [p.agendaId], sourceType: "agenda", sourceId: p.agendaId });
   state.documents.unshift(doc);
   prepDoc.documentId = doc.id;
   p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), doc.id])];
@@ -5397,7 +5564,7 @@ function createConductAction(id) {
   const p = prepById(id), text = document.getElementById("runAction")?.value.trim(), a = byId("agenda", p?.agendaId);
   if (!p || !text) return;
   const action = { id: newId("action"), title: text, link: a?.title || "Réunion", owner: "", due: "", level: "orange", done: false, linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedMeetingPreparations: [p.id] };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   p.linkedActions = [...new Set([...(p.linkedActions || []), action.id])];
   p.run.actions.push({ id: newId("run"), type: "Action", text, createdAt: new Date().toLocaleString("fr-FR"), actionId: action.id });
   persist("actions");
@@ -5438,7 +5605,7 @@ function meetingReportContent(p) {
 function generateMeetingReport(id) {
   const p = prepById(id), a = byId("agenda", p?.agendaId);
   if (!p || !a) return;
-  const doc = { id: newId("document"), title: `Compte rendu - ${a.title}`, type: "Compte rendu", category: p.template || a.type || "Réunion", status: "Brouillon", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: p.objectiveMain || a.notes || "", content: meetingReportContent(p), tags: ["Compte rendu", "Réunion", p.template || a.type || ""].filter(Boolean), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], sourceType: "agenda", sourceId: p.agendaId, reportTemplate: p.template || "Réunion" };
+  const doc = normalizeEntity("documents", { id: newId("document"), title: `Compte rendu - ${a.title}`, type: "Compte rendu", category: p.template || a.type || "Réunion", status: "Brouillon", owner: p.organizer || identityName(), author: p.organizer || identityName(), version: "V1", date: localIsoDate(), updatedAt: localIsoDate(), summary: p.objectiveMain || a.notes || "", content: meetingReportContent(p), tags: ["Compte rendu", "Réunion", p.template || a.type || ""].filter(Boolean), linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedActions: p.linkedActions, linkedPerformance: p.linkedPerformance, linkedMeetingPreparations: [p.id], linkedMeetingIds: [p.agendaId], sourceType: "agenda", sourceId: p.agendaId, reportTemplate: p.template || "Réunion" });
   state.documents.unshift(doc);
   p.finalReportId = doc.id;
   p.linkedDocuments = [...new Set([...(p.linkedDocuments || []), doc.id])];
@@ -6391,7 +6558,7 @@ function saveFolderAction(folderId) {
   const title = document.getElementById("faTitle").value.trim();
   if (!folder || !title) return;
   const a = { id: newId("action"), title, link: folder.name, owner: document.getElementById("faOwner").value.trim(), due: document.getElementById("faDue").value, done: false, linkedFolders: [folder.id] };
-  state.actions.unshift(a);
+  state.actions.unshift(normalizeEntity("actions", a));
   persist("actions");
   addActivity("Action", a.title, folder.name, a.id);
   openFolder(folder.id);
@@ -6481,7 +6648,7 @@ function folderManagersList(items, folder) {
 
 function folderActionsList(items, folderId) {
   const sorted = [...items].sort((a, b) => Number(Boolean(a.done)) - Number(Boolean(b.done)) || (daysUntil(a.due) ?? 9999) - (daysUntil(b.due) ?? 9999) || levelRank(a.level || "orange") - levelRank(b.level || "orange"));
-  return sorted.map(a => `<div class="item row"><div class="clickable" onclick="setView('actions')"><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.priorityLevel || a.level || "À suivre")} · ${esc(a.owner || "")}</span><span class="meta">Échéance ${esc(a.due || "Non définie")}</span></div><button class="secondary" onclick="completeFolderAction('${a.id}','${folderId}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || folderEmpty(folderId, "action", "action");
+  return sorted.map(a => `<div class="item row"><div class="clickable" onclick="setView('actions')"><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.priorityLevel || a.level || "À suivre")} · ${esc(a.owner || "")}</span><span class="meta">Échéance ${esc(a.due || "Non définie")}</span></div><button class="secondary" onclick="completeFolderAction('${a.id}','${folderId}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || folderEmpty(folderId, "action", "action");
 }
 
 function completeFolderAction(actionId, folderId) {
@@ -6536,16 +6703,16 @@ function actionItem(a) {
   const folders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id)).map(f => f.name).join(" · ");
   const projects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
   const decisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
-  return `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="openAction('${a.id}')">Ouvrir</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="openAction('${a.id}')">Ouvrir</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function addAction() {
   const title = document.getElementById("aTitle").value.trim();
   if (!title) return;
   const a = { id: newId("action"), title, link: document.getElementById("aLink").value.trim(), done: false, linkedFolders: checkedValues("aFolders"), linkedProjects: checkedValues("aProjects"), linkedDecisions: checkedValues("aDecisions") };
-  state.actions.unshift(a);
+  state.actions.unshift(normalizeEntity("actions", a));
   persist("actions");
-  addActivity("? Action", a.title, a.link, a.id);
+  addActivity("Action", a.title, a.link, a.id);
   if (closeCockpitQuickCreateIfNeeded("action")) return;
   renderActions();
 }
@@ -6559,7 +6726,7 @@ function toggleAction(id) {
   if (!a) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action modifiée", a.title, a.done ? "Terminée" : "Réouverte", a.id);
+  addActivity("Action modifiée", a.title, a.done ? "Terminée" : "Réouverte", a.id);
   renderActions();
 }
 
@@ -6602,7 +6769,7 @@ function optionLines(items, currentIds, labelFn) {
 
 function linkedActionsList(m) {
   const linked = state.actions.filter(a => (m.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedManagerAction('${m.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedManagerAction('${m.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
 }
 
 function linkedProjectsList(m) {
@@ -6808,7 +6975,7 @@ function toggleLinkedManagerAction(managerId, actionId) {
   if (!a || !m) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action liée modifiée", a.title, a.done ? "Terminée" : "Réouverte", managerId);
+  addActivity("Action liée modifiée", a.title, a.done ? "Terminée" : "Réouverte", managerId);
   openManager(managerId);
 }
 
@@ -7092,7 +7259,7 @@ function projectManagersList(p) {
 
 function projectActionsList(p) {
   const linked = state.actions.filter(a => (p.linkedActions || []).includes(a.id) || ensureArray(a.linkedProjects).includes(p.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedProjectAction('${p.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedProjectAction('${p.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
 }
 
 function projectDecisionsList(p) {
@@ -7195,7 +7362,7 @@ function toggleLinkedProjectAction(projectId, actionId) {
   if (!a || !p) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action projet modifiée", a.title, a.done ? "Terminée" : "Réouverte", projectId);
+  addActivity("Action projet modifiée", a.title, a.done ? "Terminée" : "Réouverte", projectId);
   openProject(projectId);
 }
 
@@ -7559,7 +7726,7 @@ function decisionProjectsList(d) {
 
 function decisionActionsList(d) {
   const linked = state.actions.filter(a => (d.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedDecisionAction('${d.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedDecisionAction('${d.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
 }
 
 function decisionDocumentsList(d) {
@@ -7875,7 +8042,7 @@ function saveDecisionAction(id) {
   const title = document.getElementById("daTitle").value.trim();
   if (!title) return;
   const action = { id: newId("action"), title, link: d.title, done: false };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   d.linkedActions = ensureArray(d.linkedActions);
   d.linkedActions.unshift(action.id);
   checkedValues("daManagers").forEach(managerId => {
@@ -7896,7 +8063,7 @@ function saveDecisionAction(id) {
   persist("decisions");
   persist("managers");
   persist("projects");
-  addActivity("? Action créée depuis décision", action.title, d.title, id);
+  addActivity("Action créée depuis décision", action.title, d.title, id);
   openDecision(id);
 }
 
@@ -7905,7 +8072,7 @@ function toggleLinkedDecisionAction(decisionId, actionId) {
   if (!a) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action décision modifiée", a.title, a.done ? "Terminée" : "Réouverte", decisionId);
+  addActivity("Action décision modifiée", a.title, a.done ? "Terminée" : "Réouverte", decisionId);
   openDecision(decisionId);
 }
 
@@ -7961,7 +8128,7 @@ function journalDecisionsList(j) {
 
 function journalActionsList(j) {
   const linked = state.actions.filter(a => (j.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item"><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
+  return linked.map(a => `<div class="item"><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
 }
 
 function journalDocumentsList(j) {
@@ -8011,7 +8178,7 @@ function saveJournalAction(id) {
   const title = document.getElementById("jaTitle").value.trim();
   if (!title) return;
   const action = { id: newId("action"), title, link: j.title, done: false };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   j.linkedActions = ensureArray(j.linkedActions);
   j.linkedActions.unshift(action.id);
   checkedValues("jaManagers").forEach(managerId => {
@@ -8036,7 +8203,7 @@ function saveJournalAction(id) {
     }
   });
   persist("actions"); persist("journal"); persist("managers"); persist("projects"); persist("decisions");
-  addActivity("? Action créée depuis Journal", action.title, j.title, id);
+  addActivity("Action créée depuis Journal", action.title, j.title, id);
   openJournal(id);
 }
 
@@ -8199,9 +8366,20 @@ const performanceImportTargetCatalog = [
 ];
 let performanceEdit = false;
 let performanceSelectedId = "";
-let performanceDashboardFilters = { period: "all", kpi: "all", category: "all", source: "all", scope: "all" };
+let performanceDashboardFilters = { period: "all", family: "all", kpi: "all", source: "all", view: "all", anomalies: "off", category: "all", scope: "all" };
 let performanceDashboardSelectedKpi = "";
 let performanceComplementaryExpanded = false;
+let performanceSummaryDetailMetricKey = "";
+let performanceSectionCollapsed = {
+  pilotage_direction: false,
+  activite: false,
+  productivites: false,
+  heures: false,
+  absenteisme: false,
+  preparation_detaillee: false,
+  economie_qualite: false,
+  affectations_dispersion: false
+};
 const performancePrimaryKpiCatalog = [
   { id: "activity.colis_total", label: "Colis totaux préparés", metricPath: "activity", targetPath: "activity.actual", valueField: "actual", objectiveField: "budget", unit: "colis", category: "Activité", destinationLabels: ["Colis totaux préparés", "Activité colis", "Colis"] },
   { id: "ipo.total", label: "IPO Total", metricPath: "ipo.total", targetPath: "ipo.total.actual", valueField: "actual", objectiveField: "budget", unit: IPO_UNIT, category: "IPO", destinationLabels: ["IPO Total", "IPO total"] },
@@ -8218,6 +8396,61 @@ const performancePrimaryKpiCatalog = [
   { id: "quality.litiges", label: "Litiges", metricPath: "quality.indicators.Litiges", targetPath: "quality.indicators.Litiges.actual", valueField: "actual", objectiveField: "budget", unit: "u.", category: "Qualité", destinationLabels: ["Litiges"] },
   { id: "pallet.height", label: "Hauteur palette", metricPath: "palletHeight", targetPath: "palletHeight.actual", valueField: "actual", objectiveField: "objective", unit: "", category: "Hauteur palette", destinationLabels: ["Hauteur palette", "Hauteur Palette"] }
 ];
+
+const performanceSummaryMetricDefinitions = [
+  { metricKey: "ipo.total", label: "IPO total", family: "pilotage_direction", unit: IPO_UNIT, targetPath: "ipo.total.actual", metricPath: "ipo.total", aliases: ["ipo total"] },
+  { metricKey: "activity.colis_total", label: "Activité principale", family: "pilotage_direction", unit: "colis", targetPath: "activity.actual", metricPath: "activity", aliases: ["colis totaux préparés", "colis"] },
+  { metricKey: "productivity.preparation", label: "Productivité Préparation", family: "pilotage_direction", unit: "colis/h", targetPath: "productivity.Préparation.actual", metricPath: "productivity.Préparation", aliases: ["préparation"] },
+  { metricKey: "hours.indirect", label: "Heures indirectes", family: "pilotage_direction", unit: "h", targetPath: "hours.indirect.actual", metricPath: "hours.indirect", aliases: ["heures indirectes"] },
+  { metricKey: "absenteeism.total", label: "Absentéisme", family: "pilotage_direction", unit: "%", targetPath: "absenteeism.total.actual", metricPath: "absenteeism.total", aliases: ["absentéisme total"] },
+  { metricKey: "economy.cout_total_par_colis", label: "Coût total par colis", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy_cout_total_par_colis", metricPath: "", aliases: ["cout total par colis", "coût total par colis"] },
+  { metricKey: "ipo.variable", label: "IPO variable", family: "activite", unit: IPO_UNIT, targetPath: "ipo.variable.actual", metricPath: "ipo.variable", aliases: ["ipo variable"] },
+  { metricKey: "activity.colis_total", label: "Colis", family: "activite", unit: "colis", targetPath: "activity.actual", metricPath: "activity", aliases: ["colis"] },
+  { metricKey: "activity.uo_reception", label: "Palettes réceptionnées", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_reception", metricPath: "", aliases: ["uo reception", "palettes réceptionnées"] },
+  { metricKey: "activity.uo_manutention", label: "Palettes manutentionnées", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_manutention", metricPath: "", aliases: ["uo manutention", "palettes manutentionnées"] },
+  { metricKey: "activity.uo_chargement", label: "Supports chargés", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_chargement", metricPath: "", aliases: ["uo chargement", "supports chargés"] },
+  { metricKey: "productivity.reception", label: "Productivité Réception", family: "productivites", unit: "palettes/h", targetPath: "productivity.Réception.actual", metricPath: "productivity.Réception", aliases: ["réception"] },
+  { metricKey: "productivity.manutention", label: "Productivité Manutention", family: "productivites", unit: "palettes/h", targetPath: "productivity.Manutention.actual", metricPath: "productivity.Manutention", aliases: ["manutention"] },
+  { metricKey: "productivity.chargement", label: "Productivité Chargement", family: "productivites", unit: "palettes/h", targetPath: "productivity.Chargement.actual", metricPath: "productivity.Chargement", aliases: ["chargement"] },
+  { metricKey: "productivity.transit", label: "Productivité Transit", family: "productivites", unit: "palettes/h", targetPath: "productivity.Transit.actual", metricPath: "productivity.Transit", aliases: ["transit"] },
+  { metricKey: "hours.total", label: "Heures totales", family: "heures", unit: "h", targetPath: "hours.total.actual", metricPath: "hours.total", aliases: ["heures totales"] },
+  { metricKey: "hours.direct", label: "Heures directes", family: "heures", unit: "h", targetPath: "hours.direct.actual", metricPath: "hours.direct", aliases: ["heures directes"] },
+  { metricKey: "hours.indirect_share", label: "Poids heures indirectes", family: "heures", unit: "%", targetPath: "hours.indirect.totalShare", metricPath: "hours.indirect", valueField: "totalShare", aliases: ["poids heures indirectes"] },
+  { metricKey: "cgtab.premium_hours.overtime_25", label: "Heures majorées HS25", family: "heures", unit: "h", targetPath: "complementary.cgtab.premium_hours_overtime_25", metricPath: "", aliases: ["hs25"] },
+  { metricKey: "absenteeism.maladie", label: "Absentéisme maladie", family: "absenteisme", unit: "%", targetPath: "absenteeism.details.Maladie.actual", metricPath: "absenteeism.details.Maladie", aliases: ["maladie"] },
+  { metricKey: "absenteeism.accident_travail", label: "Absentéisme AT", family: "absenteisme", unit: "%", targetPath: "absenteeism.details.Accidents du travail.actual", metricPath: "absenteeism.details.Accidents du travail", aliases: ["accidents du travail", "at"] },
+  { metricKey: "cgtab.absence.sickness_hours", label: "Heures maladie (CGTAB)", family: "absenteisme", unit: "h", targetPath: "complementary.cgtab.absence_sickness_hours", metricPath: "", aliases: ["maladie"] },
+  { metricKey: "tbag.preparation.productivity.total", label: "Préparation - Productivité globale", family: "preparation_detaillee", unit: "colis/h", targetPath: "complementary.tbag.preparation_productivity_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - productivité globale"] },
+  { metricKey: "tbag.preparation.volume.total", label: "Préparation - Volume total", family: "preparation_detaillee", unit: "colis", targetPath: "complementary.tbag.preparation_volume_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - volume total"] },
+  { metricKey: "tbag.preparation.hours.total", label: "Préparation - Heures directes", family: "preparation_detaillee", unit: "h", targetPath: "complementary.tbag.preparation_hours_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - heures directes"] },
+  { metricKey: "economy.resultat_operationnel", label: "Résultat opérationnel", family: "economie_qualite", unit: "k€", targetPath: "complementary.zgemed.economy_resultat_operationnel", metricPath: "", aliases: ["résultat opérationnel"] },
+  { metricKey: "economy.ebit", label: "EBIT", family: "economie_qualite", unit: "k€", targetPath: "complementary.zgemed.economy_ebit", metricPath: "", aliases: ["ebit"] },
+  { metricKey: "quality.demarque_marchandises", label: "Démarque marchandises", family: "economie_qualite", unit: "k€", targetPath: "complementary.zgemed.quality_demarque_marchandises", metricPath: "", aliases: ["démarque marchandises"] },
+  { metricKey: "ga_detail.multi_activity_rate", label: "Part salariés multi-activités", family: "affectations_dispersion", unit: "%", targetPath: "complementary.ga_detail.ga_detail_workforce_multi_activity_rate.scope_fry8mc", metricPath: "", aliases: ["part salariés multi-activités"] },
+  { metricKey: "ga_detail.indirect_concentration", label: "Concentration heures indirectes top10", family: "affectations_dispersion", unit: "%", targetPath: "complementary.ga_detail.ga_detail_indirect_concentration_top10.scope_fry8mc.dir_ind", metricPath: "", aliases: ["concentration heures indirectes top10"] }
+];
+
+const performanceSummaryFamilyLabels = {
+  pilotage_direction: "Pilotage Direction",
+  activite: "Activité",
+  productivites: "Productivités",
+  heures: "Heures",
+  absenteisme: "Absentéisme",
+  preparation_detaillee: "Préparation détaillée",
+  economie_qualite: "Économie et qualité",
+  affectations_dispersion: "Affectations et dispersion"
+};
+
+const performanceSourcePriorityByFamily = {
+  ipo: ["GPO"],
+  productivites_officielles: ["GPO"],
+  activite: ["Z_GEMED", "SUIVI_GA"],
+  heures: ["GPO", "SUIVI_GA", "GA_DETAIL_AGGREGATED"],
+  absenteisme: ["GPO", "CGTAB"],
+  preparation_detaillee: ["T_BAG"],
+  economie_qualite: ["Z_GEMED"],
+  affectations_dispersion: ["GA_DETAIL_AGGREGATED"]
+};
 
 function normalizePerformanceLabel(value) {
   return normalizeText(value).replace(/\s+/g, " ").trim();
@@ -8455,6 +8688,260 @@ function performancePeriodTitle(period) {
 function performancePeriodSortValue(period) {
   const [month, year] = String(period || "").split("/").map(Number);
   return (Number(year) || 0) * 100 + (Number(month) || 0);
+}
+
+function performanceSourceKey(value = "") {
+  const text = normalizeText(value);
+  if (text.includes("gpo")) return "GPO";
+  if (text.includes("z gemed") || text.includes("z_gemed") || text.includes("gemed")) return "Z_GEMED";
+  if (text.includes("suivi ga")) return "SUIVI_GA";
+  if (text.includes("ga detail") || text.includes("detail salarie") || text.includes("detail ga")) return "GA_DETAIL_AGGREGATED";
+  if (text.includes("cgtab")) return "CGTAB";
+  if (text.includes("t bag") || text.includes("t_bag") || text.includes("tbag")) return "T_BAG";
+  if (text.includes("deos") || text.includes("saisie")) return "DEOS";
+  return String(value || "").trim() || "DEOS";
+}
+
+function performanceSourceLabel(sourceKey = "") {
+  return {
+    GPO: "GPO",
+    Z_GEMED: "Z GEMED",
+    SUIVI_GA: "Suivi GA",
+    GA_DETAIL_AGGREGATED: "GA détail agrégé",
+    CGTAB: "CGTAB agrégé",
+    T_BAG: "T-Bag",
+    DEOS: "Saisie DEOS"
+  }[sourceKey] || sourceKey || "Source inconnue";
+}
+
+function performanceMetricFamilyPriorityKey(metricDef = {}) {
+  const key = String(metricDef.metricKey || "").toLowerCase();
+  if (key.startsWith("ipo.")) return "ipo";
+  if (key.startsWith("productivity.")) return "productivites_officielles";
+  if (metricDef.family === "activite") return "activite";
+  if (metricDef.family === "heures") return "heures";
+  if (metricDef.family === "absenteisme") return "absenteisme";
+  if (metricDef.family === "preparation_detaillee") return "preparation_detaillee";
+  if (metricDef.family === "economie_qualite") return "economie_qualite";
+  if (metricDef.family === "affectations_dispersion") return "affectations_dispersion";
+  return "activite";
+}
+
+function performanceRowsForPeriod(period = "") {
+  const rows = [];
+  state.performance_imports.forEach(item => {
+    ensureArray(item.indicators).forEach(row => {
+      if (String(row.period || "") !== String(period || "")) return;
+      rows.push(row);
+    });
+  });
+  return rows;
+}
+
+function performanceMatchesMetricDef(row = {}, metricDef = {}) {
+  const rowPath = String(row.destinationPath || "").trim();
+  const rowMetricKey = String(row.metricKey || "").trim().toLowerCase();
+  const rowLabel = normalizePerformanceLabel(row.indicator || row.label || row.destinationLabel || "");
+  const aliases = [metricDef.label, ...(metricDef.aliases || [])].map(normalizePerformanceLabel).filter(Boolean);
+  if (metricDef.targetPath && rowPath && rowPath === metricDef.targetPath) return true;
+  if (metricDef.metricKey && rowMetricKey && rowMetricKey === String(metricDef.metricKey).toLowerCase()) return true;
+  return aliases.some(alias => alias && (rowLabel === alias || rowLabel.includes(alias)));
+}
+
+function performancePrimaryValueForMetric(periodRecord, metricDef) {
+  if (!periodRecord || !metricDef.metricPath) return null;
+  const metric = perfPath(periodRecord, metricDef.metricPath);
+  if (!metric) return null;
+  const valueField = metricDef.valueField || "actual";
+  const value = metric[valueField];
+  if (!perfHas(value)) return null;
+  return {
+    value,
+    budget: perfHas(metric.budget) ? metric.budget : "",
+    historical: perfHas(metric.historical) ? metric.historical : "",
+    unit: metricDef.unit || "",
+    source: "DEOS",
+    sourceLabel: "Saisie DEOS",
+    confidence: "moyenne",
+    sourceRef: metric.comment || "",
+    periodType: "monthly"
+  };
+}
+
+function performanceCandidateWarnings(candidate, metricDef) {
+  const warnings = [];
+  if (!perfHas(candidate?.value)) warnings.push("Donnée manquante");
+  const sourceKey = candidate?.source || "";
+  const priorityKey = performanceMetricFamilyPriorityKey(metricDef);
+  const priority = performanceSourcePriorityByFamily[priorityKey] || [];
+  if (priority.length && sourceKey && !priority.includes(sourceKey)) warnings.push("Source secondaire");
+  if ((priorityKey === "ipo" || priorityKey === "productivites_officielles") && sourceKey === "Z_GEMED") warnings.push("Ancienne donnée non prioritaire");
+  if (sourceKey === "CGTAB" || sourceKey === "GA_DETAIL_AGGREGATED") warnings.push("Confidentialité agrégée");
+  if (performanceIsValueSuspect({ value: candidate?.value, unit: candidate?.unit || metricDef.unit || "" })) warnings.push("Valeur suspecte");
+  const expected = performanceNormalizedUnit(metricDef.unit || "");
+  const actual = performanceNormalizedUnit(candidate?.unit || "");
+  if (expected && actual && expected !== actual) warnings.push("Unité à vérifier");
+  if (!perfHas(candidate?.historical)) warnings.push("Historique insuffisant");
+  return [...new Set(warnings)];
+}
+
+function performanceMetricCandidates(metricDef, period, periodRecord, importRows) {
+  const candidates = [];
+  importRows.filter(row => performanceMatchesMetricDef(row, metricDef)).forEach(row => {
+    const value = row.actual ?? row.value;
+    candidates.push({
+      value,
+      budget: row.budget ?? "",
+      historical: row.historical ?? "",
+      unit: row.unit || metricDef.unit || "",
+      source: performanceSourceKey(row.source || row.sourceType || "Import"),
+      sourceLabel: performanceSourceLabel(performanceSourceKey(row.source || row.sourceType || "Import")),
+      confidence: row.confidence || "moyenne",
+      sourceRef: row.sourceRef || row.sourceCell || "",
+      periodType: row.periodType || "monthly"
+    });
+  });
+  const primary = performancePrimaryValueForMetric(periodRecord, metricDef);
+  if (primary) candidates.push(primary);
+  const unique = [];
+  const seen = new Set();
+  candidates.forEach(candidate => {
+    const key = `${candidate.source}|${candidate.value}|${candidate.budget}|${candidate.historical}|${candidate.unit}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(candidate);
+  });
+  return unique;
+}
+
+function getPreferredPerformanceValue(metricKey, period) {
+  const metricDef = performanceSummaryMetricDefinitions.find(def => def.metricKey === metricKey);
+  if (!metricDef) {
+    return {
+      value: "",
+      budget: "",
+      historical: "",
+      unit: "",
+      source: "",
+      sourceLabel: "Source inconnue",
+      confidence: "faible",
+      alternatives: [],
+      warnings: ["Donnée manquante"]
+    };
+  }
+  const periodRecord = getPerformanceByPeriod(period);
+  const importRows = performanceRowsForPeriod(period);
+  const candidates = performanceMetricCandidates(metricDef, period, periodRecord, importRows);
+  const priorityKey = performanceMetricFamilyPriorityKey(metricDef);
+  const priority = performanceSourcePriorityByFamily[priorityKey] || [];
+  let selected = null;
+  for (const sourceKey of priority) {
+    selected = candidates.find(candidate => candidate.source === sourceKey && perfHas(candidate.value));
+    if (selected) break;
+  }
+  if (!selected && !priority.length) selected = candidates.find(candidate => perfHas(candidate.value)) || null;
+  const requiresOfficial = priorityKey === "ipo" || priorityKey === "productivites_officielles";
+  if (!selected && !requiresOfficial) selected = candidates.find(candidate => perfHas(candidate.value)) || null;
+  if (!selected) {
+    const alternatives = candidates.map(candidate => ({ ...candidate, warnings: performanceCandidateWarnings(candidate, metricDef) }));
+    return {
+      value: "",
+      budget: "",
+      historical: "",
+      unit: metricDef.unit || "",
+      source: priority[0] || "",
+      sourceLabel: priority[0] === "GPO" ? "Donnée GPO non disponible" : "Donnée non disponible",
+      confidence: "faible",
+      alternatives,
+      warnings: [...new Set(["Donnée manquante", ...(requiresOfficial ? ["Donnée GPO non disponible"] : [])])]
+    };
+  }
+  const alternatives = candidates
+    .filter(candidate => candidate !== selected)
+    .map(candidate => ({ ...candidate, warnings: performanceCandidateWarnings(candidate, metricDef) }));
+  const priorityIndex = priority.indexOf(selected.source);
+  const confidence = priorityIndex === 0 ? "élevée" : priorityIndex > 0 ? "moyenne" : "faible";
+  const warnings = [...new Set([...performanceCandidateWarnings(selected, metricDef), ...(alternatives.length ? ["Sources différentes"] : [])])];
+  return {
+    value: selected.value,
+    budget: selected.budget,
+    historical: selected.historical,
+    unit: selected.unit || metricDef.unit || "",
+    source: selected.source,
+    sourceLabel: selected.sourceLabel,
+    confidence,
+    alternatives,
+    warnings
+  };
+}
+
+function performanceSummaryMetricStatus(metricKey, period, preferredValue) {
+  if (!perfHas(preferredValue.value)) {
+    return { label: "Donnée manquante", tone: "missing", badges: preferredValue.warnings || ["Donnée manquante"] };
+  }
+  const pseudoRecord = {
+    kpiId: metricKey,
+    category: metricKey.startsWith("ipo.") ? "IPO" : "",
+    value: preferredValue.value,
+    objective: preferredValue.budget,
+    unit: preferredValue.unit,
+    targetPath: "",
+    label: metricKey,
+    qualityFlags: []
+  };
+  const objective = performanceObjectiveDefinition(pseudoRecord);
+  if (!objective.configured) {
+    return { label: "Non évalué", tone: "none", badges: [...new Set(["Seuil à définir", ...(preferredValue.warnings || [])])] };
+  }
+  const status = performanceStatus(pseudoRecord);
+  if (status.tone === "red") return { label: "Critique", tone: "critical", badges: preferredValue.warnings || [] };
+  if (status.tone === "orange") return { label: "Vigilance", tone: "warning", badges: preferredValue.warnings || [] };
+  if (status.tone === "green") return { label: "Conforme", tone: "ok", badges: preferredValue.warnings || [] };
+  return { label: "Non évalué", tone: "none", badges: preferredValue.warnings || [] };
+}
+
+function performanceSummaryFormatValue(value, unit, metricKey = "") {
+  if (!perfHas(value)) return "Donnée non disponible";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  const normalizedUnit = String(unit || "").toLowerCase();
+  if (normalizedUnit === "%" || normalizedUnit === "pourcentage") {
+    const ratioValue = numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric;
+    return `${ratioValue.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} %`;
+  }
+  const digits = /hours|heures|\bh\b/.test(normalizedUnit) ? 2 : (metricKey.startsWith("ipo.") ? 2 : 1);
+  const formatted = numeric.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function performanceSummaryBuildRows(period) {
+  return performanceSummaryMetricDefinitions.map(def => {
+    const preferred = getPreferredPerformanceValue(def.metricKey, period);
+    const status = performanceSummaryMetricStatus(def.metricKey, period, preferred);
+    const value = perfHas(preferred.value) ? Number(preferred.value) : "";
+    const budget = perfHas(preferred.budget) ? Number(preferred.budget) : "";
+    const historical = perfHas(preferred.historical) ? Number(preferred.historical) : "";
+    const gap = (Number.isFinite(value) && Number.isFinite(budget)) ? value - budget : "";
+    const trend = (Number.isFinite(value) && Number.isFinite(historical)) ? value - historical : "";
+    return {
+      metricKey: def.metricKey,
+      label: def.label,
+      family: def.family,
+      unit: preferred.unit || def.unit || "",
+      value,
+      budget,
+      historical,
+      gap,
+      trend,
+      source: preferred.source,
+      sourceLabel: preferred.sourceLabel,
+      confidence: preferred.confidence,
+      alternatives: preferred.alternatives,
+      warnings: status.badges,
+      statusLabel: status.label,
+      statusTone: status.tone
+    };
+  });
 }
 
 function performancePrimaryTargetOptions() {
@@ -8772,19 +9259,109 @@ function performanceFlagsBadges(flags) {
 
 function performanceDashboardFilterBar(records) {
   const options = performanceFilterOptions(records);
-  return `<div class="performance-dashboard-filters"><select onchange="setPerformanceDashboardFilter('period', this.value)"><option value="all">Toutes les périodes</option>${options.periods.map(period => `<option value="${esc(period)}" ${performanceDashboardFilters.period === period ? "selected" : ""}>${esc(performancePeriodTitle(period))}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('kpi', this.value)"><option value="all">Tous les KPI</option>${options.kpis.map(kpi => `<option value="${esc(kpi)}" ${performanceDashboardFilters.kpi === kpi ? "selected" : ""}>${esc(kpi)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('category', this.value)"><option value="all">Toutes les catégories</option>${options.categories.map(category => `<option value="${esc(category)}" ${performanceDashboardFilters.category === category ? "selected" : ""}>${esc(category)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('source', this.value)"><option value="all">Toutes les sources</option>${options.sources.map(source => `<option value="${esc(source)}" ${performanceDashboardFilters.source === source ? "selected" : ""}>${esc(source)}</option>`).join("")}</select><select onchange="setPerformanceDashboardFilter('scope', this.value)"><option value="all" ${performanceDashboardFilters.scope === "all" ? "selected" : ""}>Principaux + complémentaires</option><option value="principal" ${performanceDashboardFilters.scope === "principal" ? "selected" : ""}>Principaux uniquement</option><option value="complementary" ${performanceDashboardFilters.scope === "complementary" ? "selected" : ""}>Complémentaires uniquement</option></select></div>`;
+  const families = Object.entries(performanceSummaryFamilyLabels);
+  const kpiOptions = performanceSummaryMetricDefinitions.map(def => ({ key: def.metricKey, label: def.label }));
+  const sourceKeys = ["all", "GPO", "Z_GEMED", "SUIVI_GA", "CGTAB", "T_BAG", "GA_DETAIL_AGGREGATED", "DEOS"];
+  const periodOptions = options.periods
+    .map(period => `<option value="${esc(period)}" ${performanceDashboardFilters.period === period ? "selected" : ""}>${esc(performancePeriodTitle(period))}</option>`)
+    .join("");
+  const familyOptions = families
+    .map(([key, label]) => `<option value="${esc(key)}" ${performanceDashboardFilters.family === key ? "selected" : ""}>${esc(label)}</option>`)
+    .join("");
+  const kpiSelectOptions = kpiOptions
+    .map(kpi => `<option value="${esc(kpi.key)}" ${performanceDashboardFilters.kpi === kpi.key ? "selected" : ""}>${esc(kpi.label)}</option>`)
+    .join("");
+  const sourceOptions = sourceKeys
+    .map(key => `<option value="${esc(key)}" ${performanceDashboardFilters.source === key ? "selected" : ""}>${esc(key === "all" ? "Source : toutes" : performanceSourceLabel(key))}</option>`)
+    .join("");
+  return `
+    <div class="performance-filter-wrap">
+      <div class="performance-filter-row">
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('period', this.value)">
+          <option value="all">Période : toutes</option>${periodOptions}
+        </select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('family', this.value)">
+          <option value="all">Famille : toutes</option>${familyOptions}
+        </select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('kpi', this.value)">
+          <option value="all">KPI : tous</option>${kpiSelectOptions}
+        </select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('source', this.value)">${sourceOptions}</select>
+        <select class="performance-filter-control" onchange="setPerformanceDashboardFilter('view', this.value)">
+          <option value="all" ${performanceDashboardFilters.view === "all" ? "selected" : ""}>Vue : complète</option>
+          <option value="direction" ${performanceDashboardFilters.view === "direction" ? "selected" : ""}>Vue : direction</option>
+        </select>
+        <label class="performance-filter-anomaly">
+          <input type="checkbox" ${performanceDashboardFilters.anomalies === "on" ? "checked" : ""} onchange="setPerformanceDashboardFilter('anomalies', this.checked ? 'on' : 'off')">
+          Anomalies uniquement
+        </label>
+        <button class="secondary" onclick="resetPerformanceDashboardFilters()">Réinitialiser les filtres</button>
+      </div>
+    </div>
+  `;
+}
+
+function performanceSummaryRowsFiltered(period) {
+  const allRows = performanceSummaryBuildRows(period);
+  return allRows.filter(row => {
+    if (performanceDashboardFilters.family !== "all" && row.family !== performanceDashboardFilters.family) return false;
+    if (performanceDashboardFilters.kpi !== "all" && row.metricKey !== performanceDashboardFilters.kpi) return false;
+    if (performanceDashboardFilters.source !== "all" && row.source !== performanceDashboardFilters.source) return false;
+    if (performanceDashboardFilters.anomalies === "on" && !ensureArray(row.warnings).length) return false;
+    return true;
+  });
+}
+
+function performanceStatusBadgeV519(row) {
+  return `<span class="performance-kpi-status performance-kpi-status-${esc(row.statusTone)}">${esc(row.statusLabel)}</span>`;
+}
+
+function performanceWarningsBadgesV519(row) {
+  const badges = ensureArray(row.warnings);
+  if (!badges.length) return `<span class="performance-badge performance-badge-ok">Aucune alerte</span>`;
+  return badges.map(flag => `<span class="performance-badge">${esc(flag)}</span>`).join("");
+}
+
+function performanceDirectionCards(period) {
+  const cardOrder = ["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis"];
+  const rows = performanceSummaryRowsFiltered(period).filter(row => cardOrder.includes(row.metricKey));
+  const ordered = cardOrder.map(key => rows.find(row => row.metricKey === key)).filter(Boolean).slice(0, 6);
+  if (!ordered.length) return `<div class="empty">Aucune carte Direction disponible avec les filtres en cours.</div>`;
+  const cards = ordered.map(row => `
+    <article class="performance-summary-direction-card">
+      <header>
+        <h3>${esc(row.label)}</h3>
+        ${performanceStatusBadgeV519(row)}
+      </header>
+      <div class="performance-summary-direction-value">${esc(performanceSummaryFormatValue(row.value, row.unit, row.metricKey))}</div>
+      <div class="performance-summary-direction-meta">Source : ${esc(row.sourceLabel || performanceSourceLabel(row.source))}</div>
+      <div class="performance-summary-direction-lines">
+        <div>Objectif/Budget : ${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</div>
+        <div>Écart : ${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</div>
+        <div>Tendance : ${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</div>
+      </div>
+      <div class="performance-summary-direction-badges">${performanceWarningsBadgesV519(row)}</div>
+      <button class="secondary" onclick="openPerformanceSummaryDetail('${esc(row.metricKey)}')">Voir le détail</button>
+    </article>
+  `).join("");
+  return `<div class="performance-summary-direction-grid">${cards}</div>`;
 }
 
 function performanceSummaryCards(records) {
-  const latestPrimary = performanceLatestRecordByKpi(records.filter(record => record.scope === "principal"));
-  if (!latestPrimary.length) return `<div class="empty">Aucun KPI principal disponible avec les filtres en cours.</div>`;
-  return `<div class="performance-summary-grid">${latestPrimary.map(record => {
-    const previous = performancePreviousRecord(records, record);
-    const objective = performanceObjectiveDefinition(record);
-    const gap = performanceObjectiveGap(record);
-    const delta = previous && previous.unit === record.unit ? Number(record.value) - Number(previous.value) : "";
-    return `<div class="performance-summary-card"><div class="performance-summary-head"><strong>${esc(record.label)}</strong>${performanceStatusBadge(record)}</div><div class="performance-summary-value">${esc(perfFmt(record.value))}${record.unit ? ` <small>${esc(record.unit)}</small>` : ""}</div><div class="performance-summary-meta">${esc(record.periodTitle)} · ${esc(record.source || "Saisie / DEOS")}</div><div class="performance-summary-lines"><span>Objectif : ${objective.mode === "range" ? `${perfHas(objective.min) ? esc(perfFmt(objective.min)) : "-"} / ${perfHas(objective.max) ? esc(perfFmt(objective.max)) : "-"}` : perfHas(objective.objective) ? esc(perfFmt(objective.objective)) : "À compléter"}${objective.unit ? ` ${esc(objective.unit)}` : ""}</span><span>Écart : ${gap === "" ? "À compléter" : !performanceGapIsReliable(record) ? "À vérifier" : esc(performanceFormatSignedValue(gap, objective.unit || performanceDeltaUnit(record)))}</span><span>Évolution : ${!previous ? "Historique insuffisant" : delta === "" ? "À compléter" : esc(performanceFormatSignedValue(delta, performanceDeltaUnit(record)))}${previous ? ` · vs ${esc(previous.periodTitle)}` : ""}</span></div><div class="performance-summary-flags">${performanceFlagsBadges(record.qualityFlags)}</div></div>`;
-  }).join("")}</div>`;
+  const period = performanceDashboardFilters.period !== "all"
+    ? performanceDashboardFilters.period
+    : (records.slice().sort((a, b) => performancePeriodSortValue(b.period) - performancePeriodSortValue(a.period))[0]?.period || performancePeriodKey(perfSelected() || {}));
+  return performanceDirectionCards(period);
+}
+
+function resetPerformanceDashboardFilters() {
+  performanceDashboardFilters.period = "all";
+  performanceDashboardFilters.family = "all";
+  performanceDashboardFilters.kpi = "all";
+  performanceDashboardFilters.source = "all";
+  performanceDashboardFilters.view = "all";
+  performanceDashboardFilters.anomalies = "off";
+  renderPerformance();
 }
 
 function performanceResolveSelectedKpi(records) {
@@ -8874,15 +9451,157 @@ function performanceComplementarySection(records) {
   }).join("") : `<tr><td colspan="7">Aucun KPI complémentaire avec les filtres en cours.</td></tr>`}</tbody></table></div>` : `<div class="muted">${latestComplementary.length} KPI complémentaire(s) disponible(s).</div>`}</div>`;
 }
 
+function performanceLatestImportMeta(period) {
+  const selected = state.performance_imports
+    .filter(item => importMatchesPeriod(item, period))
+    .sort((a, b) => String(b.importDate || "").localeCompare(String(a.importDate || "")))[0] || null;
+  if (!selected) return { source: "Aucune", date: "Non disponible" };
+  return { source: performanceImportSourceLabel(selected), date: selected.importDate || "Non disponible" };
+}
+
+function performanceSummaryRowsForPeriod(period) {
+  const rows = performanceSummaryRowsFiltered(period);
+  if (performanceDashboardFilters.view === "direction") {
+    const directionSet = new Set(["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis"]);
+    return rows.filter(row => directionSet.has(row.metricKey));
+  }
+  return rows;
+}
+
+function performanceSummarySectionTable(period, familyKey, rows) {
+  const familyRows = rows.filter(row => row.family === familyKey);
+  const collapsed = Boolean(performanceSectionCollapsed[familyKey]);
+  const header = `
+    <header class="performance-summary-family-header">
+      <h3>${esc(performanceSummaryFamilyLabels[familyKey])}</h3>
+      <div class="row-actions">
+        <span class="muted">${familyRows.length} KPI</span>
+        <button class="secondary" onclick="togglePerformanceSummarySection('${esc(familyKey)}')">${collapsed ? "Déplier" : "Replier"}</button>
+      </div>
+    </header>
+  `;
+  if (collapsed) return `<section class="performance-summary-family">${header}</section>`;
+  const bodyRows = familyRows.length
+    ? familyRows.map(row => `
+      <tr>
+        <td>${esc(row.label)}</td>
+        <td>${esc(performanceSummaryFormatValue(row.value, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.historical, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</td>
+        <td>${esc(row.sourceLabel || performanceSourceLabel(row.source))}</td>
+        <td>${performanceStatusBadgeV519(row)}</td>
+        <td>${performanceWarningsBadgesV519(row)}</td>
+        <td><button class="secondary" onclick="openPerformanceSummaryDetail('${esc(row.metricKey)}')">Détail</button></td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="10">Aucune donnée pour cette famille.</td></tr>`;
+  return `
+    <section class="performance-summary-family">
+      ${header}
+      <div class="performance-summary-table-wrap">
+        <table class="performance-summary-table">
+          <thead>
+            <tr><th>KPI</th><th>Réel</th><th>Objectif</th><th>Historique</th><th>Écart</th><th>Tendance</th><th>Source</th><th>Statut</th><th>Alertes</th><th>Détail</th></tr>
+          </thead>
+          <tbody>${bodyRows}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function performanceSummaryDetailPanel(period, rows) {
+  if (!performanceSummaryDetailMetricKey) return "";
+  const row = rows.find(item => item.metricKey === performanceSummaryDetailMetricKey);
+  if (!row) return "";
+  const alternatives = row.alternatives.length
+    ? row.alternatives.map(alt => `
+      <div class="item">
+        <strong>${esc(performanceSourceLabel(alt.source))}</strong>
+        <span class="muted">${esc(performanceSummaryFormatValue(alt.value, alt.unit || row.unit, row.metricKey))}</span>
+        <span class="meta">${esc((alt.warnings || []).join(" · ") || "Aucun signal")}</span>
+      </div>
+    `).join("")
+    : `<div class="empty">Aucune alternative disponible.</div>`;
+  return `
+    <div class="performance-summary-detail-backdrop" onclick="closePerformanceSummaryDetail()">
+      <div class="performance-summary-detail-panel" onclick="event.stopPropagation()">
+        <div class="performance-summary-detail-head">
+          <h3>Détail KPI · ${esc(row.label)}</h3>
+          <button class="icon-close" onclick="closePerformanceSummaryDetail()">×</button>
+        </div>
+        <div class="performance-summary-detail-grid">
+          <div><strong>Valeur principale</strong><p>${esc(performanceSummaryFormatValue(row.value, row.unit, row.metricKey))}</p></div>
+          <div><strong>Source officielle</strong><p>${esc(row.sourceLabel || performanceSourceLabel(row.source))}</p></div>
+          <div><strong>Budget</strong><p>${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</p></div>
+          <div><strong>Historique</strong><p>${esc(performanceSummaryFormatValue(row.historical, row.unit, row.metricKey))}</p></div>
+          <div><strong>Écart</strong><p>${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</p></div>
+          <div><strong>Tendance</strong><p>${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</p></div>
+          <div><strong>Période</strong><p>${esc(performancePeriodTitle(period))}</p></div>
+          <div><strong>Qualité</strong><p>${esc(row.confidence || "moyenne")}</p></div>
+        </div>
+        <div class="performance-summary-detail-badges">${performanceWarningsBadgesV519(row)}</div>
+        <h4>Valeurs alternatives par source</h4>
+        <div class="performance-summary-detail-alt">${alternatives}</div>
+      </div>
+    </div>
+  `;
+}
+
+function performanceSummaryFamilies(period, rows) {
+  return Object.keys(performanceSummaryFamilyLabels).map(key => performanceSummarySectionTable(period, key, rows)).join("");
+}
+
 function performanceOverviewSection() {
   const allRecords = performanceAllRecords();
-  const filtered = performanceApplyFilters(allRecords);
-  return `<div class="card full-span"><div class="row"><div><h2>Synthèse Performance</h2><p class="muted">Vue consolidée des KPI disponibles, des objectifs configurés et des signaux de qualité.</p></div></div>${performanceDashboardFilterBar(allRecords)}${performanceSummaryCards(filtered)}</div><div class="card full-span"><h2>Historique et tendances</h2>${performanceAnalysisPanel(allRecords)}</div>${performanceComplementarySection(allRecords)}`;
+  const selectedPeriod = performanceDashboardFilters.period !== "all"
+    ? performanceDashboardFilters.period
+    : (allRecords.slice().sort((a, b) => performancePeriodSortValue(b.period) - performancePeriodSortValue(a.period))[0]?.period || performancePeriodKey(perfSelected() || {}));
+  const importMeta = performanceLatestImportMeta(selectedPeriod);
+  const rows = performanceSummaryRowsForPeriod(selectedPeriod);
+  return `
+    <div class="card full-span performance-summary-root">
+      <div class="performance-summary-headline">
+        <div>
+          <h2>Synthèse Performance</h2>
+          <p class="muted">Période ${esc(performancePeriodTitle(selectedPeriod))} · Dernière source ${esc(importMeta.source)} · Import ${esc(importMeta.date)}</p>
+        </div>
+        <div class="row-actions">
+          <button class="secondary" onclick="startPerformanceImport()">Importer des données</button>
+          <button class="secondary" onclick="resetPerformanceDashboardFilters()">Réinitialiser les filtres</button>
+        </div>
+      </div>
+      ${performanceDashboardFilterBar(allRecords)}
+      <div class="performance-summary-direction-block">
+        <h3>Synthèse Direction</h3>
+        ${performanceSummaryCards(allRecords)}
+      </div>
+      <div class="performance-summary-families">${performanceSummaryFamilies(selectedPeriod, rows)}</div>
+      ${performanceSummaryDetailPanel(selectedPeriod, rows)}
+    </div>
+  `;
 }
 
 function setPerformanceDashboardFilter(name, value) {
   performanceDashboardFilters[name] = value || "all";
   if (name === "kpi") performanceDashboardSelectedKpi = "";
+  renderPerformance();
+}
+
+function togglePerformanceSummarySection(sectionKey) {
+  performanceSectionCollapsed[sectionKey] = !performanceSectionCollapsed[sectionKey];
+  renderPerformance();
+}
+
+function openPerformanceSummaryDetail(metricKey) {
+  performanceSummaryDetailMetricKey = metricKey || "";
+  renderPerformance();
+}
+
+function closePerformanceSummaryDetail() {
+  performanceSummaryDetailMetricKey = "";
   renderPerformance();
 }
 
@@ -9195,7 +9914,7 @@ function performanceIndicatorAction(id, label) {
   const p = byId("performance", id);
   const title = `Performance ${perfPeriodLabel(p)} - ${label}`;
   if (state.actions.some(a => a.title === title)) return;
-  state.actions.unshift({ id: newId("action"), title, link: label, owner: "", level: "orange", due: "", done: false, linkedFolders: p.linkedFolders, linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedPerformance: [id] });
+  state.actions.unshift(normalizeEntity("actions", { id: newId("action"), title, link: label, owner: "", level: "orange", due: "", done: false, linkedFolders: p.linkedFolders, linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedPerformance: [id] }));
   persist("actions");
   addActivity("Action", title, "Créée depuis Performance", id);
   renderPerformance();
@@ -12480,7 +13199,7 @@ function generatedReportPayload(status) {
 }
 
 function saveGeneratedReport(status = "Brouillon") {
-  const doc = generatedReportPayload(status);
+  const doc = normalizeEntity("documents", generatedReportPayload(status));
   state.documents.unshift(doc);
   persist("documents");
   addActivity("Document", doc.title, `Compte rendu ${status}`, doc.id);
@@ -12512,7 +13231,7 @@ function createReportAction() {
   const text = document.getElementById("rwLine")?.value.trim();
   if (!text || state.actions.some(a => a.title === text)) return;
   const action = { id: newId("action"), title: text, owner: document.getElementById("rwLineOwner").value.trim(), due: document.getElementById("rwLineDue").value, level: document.getElementById("rwLinePriority").value, done: false, link: reportWizard.title, linkedFolders: reportLinkedIds("Folders"), linkedManagers: reportLinkedIds("Managers"), linkedProjects: reportLinkedIds("Projects"), linkedDecisions: reportLinkedIds("Decisions") };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   persist("actions");
   addActivity("Action", action.title, "Créée depuis compte rendu", action.id);
   reportWizard.selectedActions = [...new Set([...(reportWizard.selectedActions || []), action.id])];
@@ -12531,49 +13250,1256 @@ function createReportDecision() {
   renderReportWizard();
 }
 
+const interviewTemplateCatalog = [
+  {
+    key: "biweekly_performance",
+    title: "Point bimensuel de performance",
+    description: "Point court de 15 à 20 minutes centré sur les résultats, les écarts et les actions à conduire.",
+    badge: "Entretien performance"
+  },
+  {
+    key: "managerial_full",
+    title: "Entretien managérial complet",
+    description: "Entretien structuré portant sur les résultats, le management, les difficultés, le développement et les engagements réciproques.",
+    badge: "Entretien managérial"
+  },
+  {
+    key: "free_report",
+    title: "Compte-rendu libre",
+    description: "Trame simplifiée pour tout autre type d'entretien ou de réunion individuelle.",
+    badge: "Compte-rendu libre"
+  }
+];
+
+const interviewStatusLabels = {
+  draft: "Brouillon",
+  to_review: "À relire",
+  validated: "Validé",
+  shared: "Partagé",
+  archived: "Archivé"
+};
+
+const interviewConfidentialityLabels = {
+  normal: "Normal",
+  restricted: "Restreint",
+  confidential: "Confidentiel"
+};
+
+function normalizeInterviewTemplate(value = "") {
+  const key = normalizeText(value);
+  if (["biweekly_performance", "managerial_full", "free_report"].includes(String(value || ""))) return String(value);
+  if (key.includes("bimensuel") || key.includes("performance")) return "biweekly_performance";
+  if (key.includes("managerial") || key.includes("manager") || key.includes("entretien manager")) return "managerial_full";
+  if (key.includes("libre")) return "free_report";
+  return null;
+}
+
+function normalizeInterviewStatus(value = "draft") {
+  const key = normalizeText(value);
+  if (["draft", "to_review", "validated", "shared", "archived"].includes(String(value || ""))) return String(value);
+  if (key === "brouillon") return "draft";
+  if (key.includes("relire") || key.includes("valider")) return "to_review";
+  if (key.includes("valide")) return "validated";
+  if (key.includes("partage")) return "shared";
+  if (key.includes("archive")) return "archived";
+  return "draft";
+}
+
+function normalizeInterviewConfidentiality(value = "normal") {
+  const key = normalizeText(value);
+  if (["normal", "restricted", "confidential"].includes(String(value || ""))) return String(value);
+  if (key.includes("restreint")) return "restricted";
+  if (key.includes("confidentiel")) return "confidential";
+  return "normal";
+}
+
+function interviewTemplateLabel(key) {
+  return interviewTemplateCatalog.find(item => item.key === key)?.title || "Document";
+}
+
+function documentStatusLabelV520(doc) {
+  if (interviewStatusLabels[doc.status]) return interviewStatusLabels[doc.status];
+  return doc.status || "Brouillon";
+}
+
+function documentConfidentialityLabelV520(doc) {
+  return interviewConfidentialityLabels[normalizeInterviewConfidentiality(doc.confidentiality || "normal")] || "Normal";
+}
+
+function defaultResultsRows() {
+  return [
+    "Productivité",
+    "Polyvalence",
+    "Heures supplémentaires",
+    "Présentéisme",
+    "Qualité",
+    "Sécurité",
+    "Management / climat équipe"
+  ].map(label => ({ indicator: label, result: "", objective: "", gap: "", trend: "non évaluée", comment: "" }));
+}
+
+function interviewTemplateContent(templateKey) {
+  if (templateKey === "biweekly_performance") {
+    return {
+      info: {
+        previousInterview: "",
+        examinedPeriod: "",
+        duration: "20",
+        nextInterviewPlanned: ""
+      },
+      keyResults: defaultResultsRows(),
+      synthesis: {
+        mainSuccess: "",
+        mainDifficulty: "",
+        managerAnalysis: "",
+        identifiedCauses: "",
+        expectedDirectorSupport: "",
+        nextPriority: ""
+      },
+      actionPlan: [],
+      conclusion: {
+        keyTakeaway: "",
+        expectedNextResult: "",
+        nextPointDate: "",
+        preparationItems: ""
+      }
+    };
+  }
+  if (templateKey === "managerial_full") {
+    return {
+      general: {
+        interviewType: "Performance",
+        previousInterview: "",
+        nextInterviewPlanned: "",
+        examinedPeriod: ""
+      },
+      objectContext: { subject: "", context: "", expectedExchangeResult: "" },
+      review: { keyFacts: "", successes: "", difficulties: "", changes: "" },
+      commitments: [],
+      keyResults: defaultResultsRows(),
+      sharedAnalysis: {
+        worksWell: "",
+        vigilancePoints: "",
+        organizationCauses: "",
+        resourcesCauses: "",
+        skillsCauses: "",
+        steeringCauses: "",
+        externalCauses: "",
+        pendingChecks: ""
+      },
+      managerExpression: {
+        analysis: "",
+        difficulties: "",
+        needs: "",
+        proposedSolutions: "",
+        proposedCommitments: ""
+      },
+      managerialAssessment: {
+        strengthsObserved: "",
+        progressPoints: "",
+        autonomyLevel: "",
+        globalAssessment: "non évaluée",
+        mandatoryComment: ""
+      },
+      actionPlan: [],
+      expectedSupport: {
+        arbitration: "",
+        means: "",
+        coaching: "",
+        training: "",
+        hrIntervention: "",
+        crossTeamCoordination: "",
+        pendingDecision: "",
+        other: ""
+      },
+      conclusion: {
+        keyTakeaway: "",
+        priority: "",
+        expectedResult: "",
+        nextMeeting: "",
+        preparationItems: ""
+      }
+    };
+  }
+  return {
+    free: {
+      subject: "",
+      context: "",
+      discussedItems: "",
+      decisionsTaken: "",
+      actions: "",
+      owners: "",
+      dueDates: "",
+      vigilancePoints: "",
+      nextStep: "",
+      nextMeeting: ""
+    },
+    actionPlan: []
+  };
+}
+
+function normalizeDocumentStructuredContent(documentItem, interviewTemplate) {
+  const current = documentItem?.content;
+  if (!interviewTemplate) {
+    if (current && typeof current === "object" && !Array.isArray(current)) return current;
+    return String(current || "");
+  }
+  const base = interviewTemplateContent(interviewTemplate);
+  if (!current || typeof current !== "object" || Array.isArray(current)) return base;
+  return {
+    ...base,
+    ...current,
+    info: { ...(base.info || {}), ...(current.info || {}) },
+    synthesis: { ...(base.synthesis || {}), ...(current.synthesis || {}) },
+    conclusion: { ...(base.conclusion || {}), ...(current.conclusion || {}) },
+    general: { ...(base.general || {}), ...(current.general || {}) },
+    objectContext: { ...(base.objectContext || {}), ...(current.objectContext || {}) },
+    review: { ...(base.review || {}), ...(current.review || {}) },
+    sharedAnalysis: { ...(base.sharedAnalysis || {}), ...(current.sharedAnalysis || {}) },
+    managerExpression: { ...(base.managerExpression || {}), ...(current.managerExpression || {}) },
+    managerialAssessment: { ...(base.managerialAssessment || {}), ...(current.managerialAssessment || {}) },
+    expectedSupport: { ...(base.expectedSupport || {}), ...(current.expectedSupport || {}) },
+    free: { ...(base.free || {}), ...(current.free || {}) },
+    keyResults: Array.isArray(current.keyResults) ? current.keyResults : (base.keyResults || []),
+    commitments: Array.isArray(current.commitments) ? current.commitments : (base.commitments || []),
+    actionPlan: Array.isArray(current.actionPlan) ? current.actionPlan : (base.actionPlan || [])
+  };
+}
+
+function documentIsInterview(doc) {
+  return Boolean(normalizeInterviewTemplate(doc?.interviewTemplate || ""));
+}
+
+function interviewDocumentBadge(doc) {
+  const template = normalizeInterviewTemplate(doc.interviewTemplate || "");
+  if (!template) return `<span class="badge">Document</span>`;
+  const label = interviewTemplateCatalog.find(item => item.key === template)?.badge || "Compte-rendu";
+  return `<span class="badge green">${esc(label)}</span>`;
+}
+
+function documentNextInterviewDate(doc) {
+  return doc.nextInterviewDate || doc.content?.conclusion?.nextPointDate || doc.content?.conclusion?.nextMeeting || doc.content?.general?.nextInterviewPlanned || "";
+}
+
+function documentSummaryPreview(doc) {
+  if (!documentIsInterview(doc)) return String(doc.summary || doc.content || "").slice(0, 220);
+  const content = doc.content || {};
+  if (doc.interviewTemplate === "biweekly_performance") {
+    return [content.synthesis?.mainSuccess, content.synthesis?.mainDifficulty, content.conclusion?.expectedNextResult].filter(Boolean).join(" · ") || "Compte-rendu d'entretien";
+  }
+  if (doc.interviewTemplate === "managerial_full") {
+    return [content.objectContext?.subject, content.managerialAssessment?.globalAssessment, content.conclusion?.priority].filter(Boolean).join(" · ") || "Entretien managérial";
+  }
+  return [content.free?.subject, content.free?.nextStep].filter(Boolean).join(" · ") || "Compte-rendu libre";
+}
+
+function documentPeriodLabel(doc) {
+  return String(doc.period || "").trim() || "Sans période";
+}
+
+function documentManagerNames(doc) {
+  return state.managers.filter(manager => ensureArray(doc.managerIds || doc.linkedManagers).includes(manager.id)).map(manager => manager.name).join(" · ");
+}
+
+function setDocumentsFilter(field, value) {
+  documentsFilterState[field] = value;
+  renderDocuments();
+}
+
+function resetDocumentsFilters() {
+  documentsFilterState = {
+    type: "all",
+    managerId: "all",
+    status: "all",
+    confidentiality: "all",
+    period: "all",
+    nextUpcoming: "off"
+  };
+  renderDocuments();
+}
+
+function documentStatusFilterValue(doc) {
+  if (interviewStatusLabels[doc.status]) return doc.status;
+  const normalized = normalizeInterviewStatus(doc.status || "draft");
+  return normalized || "draft";
+}
+
+function documentTypeFilterValue(doc) {
+  const template = normalizeInterviewTemplate(doc.interviewTemplate || "");
+  if (template) return template;
+  return "classic";
+}
+
+function documentsFilteredItems() {
+  const todayDate = isoToday();
+  return state.documents.filter(doc => {
+    if (documentsFilterState.type !== "all" && documentTypeFilterValue(doc) !== documentsFilterState.type) return false;
+    if (documentsFilterState.managerId !== "all" && !ensureArray(doc.managerIds || doc.linkedManagers).includes(documentsFilterState.managerId)) return false;
+    if (documentsFilterState.status !== "all" && documentStatusFilterValue(doc) !== documentsFilterState.status) return false;
+    if (documentsFilterState.confidentiality !== "all" && normalizeInterviewConfidentiality(doc.confidentiality || "normal") !== documentsFilterState.confidentiality) return false;
+    if (documentsFilterState.period !== "all" && String(doc.period || "") !== String(documentsFilterState.period || "")) return false;
+    if (documentsFilterState.nextUpcoming === "on") {
+      const nextDate = documentNextInterviewDate(doc);
+      if (!nextDate || nextDate < todayDate) return false;
+    }
+    return true;
+  }).slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+
+function documentsFilterBar() {
+  const periods = [...new Set(state.documents.map(doc => String(doc.period || "").trim()).filter(Boolean))].sort();
+  return `
+    <div class="card documents-filter-bar">
+      <div class="form-grid">
+        <select onchange="setDocumentsFilter('type', this.value)">
+          <option value="all" ${documentsFilterState.type === "all" ? "selected" : ""}>Type: tous</option>
+          <option value="biweekly_performance" ${documentsFilterState.type === "biweekly_performance" ? "selected" : ""}>Entretien performance</option>
+          <option value="managerial_full" ${documentsFilterState.type === "managerial_full" ? "selected" : ""}>Entretien managérial</option>
+          <option value="free_report" ${documentsFilterState.type === "free_report" ? "selected" : ""}>Compte-rendu libre</option>
+          <option value="classic" ${documentsFilterState.type === "classic" ? "selected" : ""}>Document classique</option>
+        </select>
+        <select onchange="setDocumentsFilter('managerId', this.value)">
+          <option value="all" ${documentsFilterState.managerId === "all" ? "selected" : ""}>Manager: tous</option>
+          ${state.managers.map(manager => `<option value="${esc(manager.id)}" ${documentsFilterState.managerId === manager.id ? "selected" : ""}>${esc(manager.name)}</option>`).join("")}
+        </select>
+        <select onchange="setDocumentsFilter('status', this.value)">
+          <option value="all" ${documentsFilterState.status === "all" ? "selected" : ""}>Statut: tous</option>
+          ${Object.entries(interviewStatusLabels).map(([key, label]) => `<option value="${esc(key)}" ${documentsFilterState.status === key ? "selected" : ""}>${esc(label)}</option>`).join("")}
+        </select>
+        <select onchange="setDocumentsFilter('confidentiality', this.value)">
+          <option value="all" ${documentsFilterState.confidentiality === "all" ? "selected" : ""}>Confidentialité: toutes</option>
+          ${Object.entries(interviewConfidentialityLabels).map(([key, label]) => `<option value="${esc(key)}" ${documentsFilterState.confidentiality === key ? "selected" : ""}>${esc(label)}</option>`).join("")}
+        </select>
+        <select onchange="setDocumentsFilter('period', this.value)">
+          <option value="all" ${documentsFilterState.period === "all" ? "selected" : ""}>Période: toutes</option>
+          ${periods.map(period => `<option value="${esc(period)}" ${documentsFilterState.period === period ? "selected" : ""}>${esc(period)}</option>`).join("")}
+        </select>
+        <label class="check-row"><input type="checkbox" ${documentsFilterState.nextUpcoming === "on" ? "checked" : ""} onchange="setDocumentsFilter('nextUpcoming', this.checked ? 'on' : 'off')"><span>Prochain entretien à venir</span></label>
+      </div>
+      <div class="row-actions"><button class="secondary" onclick="resetDocumentsFilters()">Réinitialiser les filtres</button></div>
+    </div>
+  `;
+}
+
+function documentBadgesRow(doc) {
+  const statusLabel = documentStatusLabelV520(doc);
+  const confidentialityLabel = documentConfidentialityLabelV520(doc);
+  const managerLabel = documentManagerNames(doc);
+  const nextDate = documentNextInterviewDate(doc);
+  return `
+    <div class="documents-badges-row">
+      ${interviewDocumentBadge(doc)}
+      <span class="badge orange">${esc(statusLabel)}</span>
+      <span class="badge ${normalizeInterviewConfidentiality(doc.confidentiality || "normal") === "confidential" ? "red" : normalizeInterviewConfidentiality(doc.confidentiality || "normal") === "restricted" ? "orange" : "green"}">${esc(confidentialityLabel)}</span>
+      ${managerLabel ? `<span class="badge">Manager: ${esc(managerLabel)}</span>` : ""}
+      ${nextDate ? `<span class="badge">Prochain entretien: ${esc(nextDate)}</span>` : ""}
+    </div>
+  `;
+}
+
 function renderDocuments() {
   document.getElementById("viewTitle").textContent = "Documents";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "documents"));
-  appHtml(`<div class="card hero"><div class="row"><div><h2>Documents</h2><p class="muted">Le document conserve : centralisez ici les pièces et supports utiles à votre pilotage.</p></div><button class="action" onclick="startReport('free')">Générer un compte rendu</button></div></div><div class="card"><h2>Ajouter un document</h2><input id="docTitle" placeholder="Titre"><div class="form-grid"><input id="docType" placeholder="Type"><input id="docOwner" placeholder="Responsable"><input id="docStatus" placeholder="Statut" value="Brouillon"><input id="docTags" placeholder="Tags"></div><textarea id="docContent" placeholder="Contenu ou structure"></textarea><div class="grid two manager-links"><div><label>Dossiers liés</label>${folderSelect("docFolders")}</div><div><label>Projets liés</label>${checkboxList("docProjects", state.projects, [], p => p.name)}</div></div><button class="action" onclick="addDocument()">Ajouter</button></div><div class="grid two">${state.documents.map(documentCard).join("") || `<div class="card empty">Aucun document.</div>`}</div>`);
+  const items = documentsFilteredItems();
+  appHtml(`
+    <div class="card hero documents-hero">
+      <div class="row">
+        <div>
+          <h2>Documents</h2>
+          <p class="muted">Centralisez les pièces, comptes-rendus et entretiens sans perdre l'historique existant.</p>
+        </div>
+        <div class="row-actions">
+          <button class="action" onclick="openDocumentTemplatePicker()">Créer un compte-rendu d'entretien</button>
+          <button class="secondary" onclick="startReport('free')">Assistant compte-rendu</button>
+          <button class="secondary" onclick="openDocumentEditModalCreate('free_report')">Nouveau document libre</button>
+        </div>
+      </div>
+    </div>
+    ${documentsFilterBar()}
+    <div class="grid two">
+      ${items.map(documentCard).join("") || `<div class="card empty">Aucun document.</div>`}
+    </div>
+  `);
 }
 
-function documentCard(d) {
-  return `<div class="card"><h2>${esc(d.title)}</h2><span class="muted">${esc(d.type || "")}${d.category ? " · " + esc(d.category) : ""}${d.status ? " · " + esc(d.status) : ""}${d.owner ? " · " + esc(d.owner) : ""}</span><p>${esc(d.summary || d.content || "")}</p><span class="meta">ID ${esc(d.id)} ? MAJ ${esc(d.updatedAt || "")}</span><br><button class="secondary" onclick="editDocument('${d.id}')">Modifier</button><button class="secondary" onclick="startReport('documents','${d.id}')">Générer un compte rendu</button><button class="danger" onclick="deleteDocument('${d.id}')">Supprimer</button></div>`;
+function documentCard(doc) {
+  const preview = documentSummaryPreview(doc);
+  return `
+    <article class="card document-card-v520">
+      <h2>${esc(doc.title || "Document")}</h2>
+      ${documentBadgesRow(doc)}
+      <p>${esc(preview || "")}</p>
+      <span class="meta">MAJ ${esc(doc.updatedAt || "")}${doc.period ? ` · Période ${esc(doc.period)}` : ""}</span>
+      <div class="row-actions">
+        <button class="secondary" onclick="editDocument('${esc(doc.id)}')">Modifier</button>
+        ${documentIsInterview(doc) ? `<button class="secondary" onclick="duplicateInterviewDocumentForNext('${esc(doc.id)}')">Dupliquer pour le prochain entretien</button>` : ""}
+        ${documentIsInterview(doc) ? `<button class="secondary" onclick="printInterviewDocument('${esc(doc.id)}','A4')">Imprimer A4</button><button class="secondary" onclick="printInterviewDocument('${esc(doc.id)}','A5')">Imprimer A5</button>` : `<button class="secondary" onclick="startReport('documents','${esc(doc.id)}')">Générer un compte rendu</button>`}
+        <button class="danger" onclick="openDocumentDeleteModal('${esc(doc.id)}')">Supprimer</button>
+      </div>
+    </article>
+  `;
 }
 
-function addDocument() {
-  const title = document.getElementById("docTitle").value.trim();
-  if (!title) return;
-  const d = { id: newId("document"), title, type: document.getElementById("docType").value.trim(), owner: document.getElementById("docOwner").value.trim(), status: document.getElementById("docStatus").value.trim(), tags: splitTags(document.getElementById("docTags").value), content: document.getElementById("docContent").value.trim(), linkedFolders: checkedValues("docFolders"), linkedManagers: [], linkedProjects: checkedValues("docProjects"), linkedDecisions: [], linkedJournal: [], linkedActions: [], updatedAt: isoToday() };
-  state.documents.unshift(d);
-  persist("documents");
-  addActivity("📄 Document", d.title, d.type, d.id);
-  renderDocuments();
+function openDocumentTemplatePicker() {
+  ensureActionModalHooks();
+  documentTemplatePickerDialog.open = true;
+  renderDocumentModalOverlays();
+}
+
+function closeDocumentTemplatePicker() {
+  documentTemplatePickerDialog.open = false;
+  renderDocumentModalOverlays();
+}
+
+function openDocumentEditModalCreate(templateKey = "free_report", seed = {}) {
+  ensureActionModalHooks();
+  documentTemplatePickerDialog.open = false;
+  documentEditDialog = {
+    open: true,
+    mode: "create",
+    documentId: "",
+    templateKey: normalizeInterviewTemplate(templateKey) || "free_report",
+    previousDocumentId: seed.previousDocumentId || "",
+    continueAfterSave: false,
+    error: ""
+  };
+  renderDocumentModalOverlays();
 }
 
 function editDocument(id) {
-  const d = byId("documents", id);
-  if (!d) return;
-  appHtml(`<div class="card"><h2>Modifier document</h2><input id="edocTitle" value="${esc(d.title)}"><div class="form-grid"><input id="edocType" value="${esc(d.type || "")}" placeholder="Type"><input id="edocOwner" value="${esc(d.owner || "")}" placeholder="Responsable"><input id="edocStatus" value="${esc(d.status || "")}" placeholder="Statut"><input id="edocTags" value="${esc((d.tags || []).join(", "))}" placeholder="Tags"></div><textarea id="edocContent">${esc(d.content || "")}</textarea><div class="grid two manager-links"><div><label>Dossiers liés</label>${folderSelect("edocFolders", d.linkedFolders || [])}</div><div><label>Projets liés</label>${checkboxList("edocProjects", state.projects, d.linkedProjects || [], p => p.name)}</div></div><button class="action" onclick="saveDocument('${d.id}')">Enregistrer</button><button class="secondary" onclick="renderDocuments()">Annuler</button></div>`);
+  const existing = byId("documents", id);
+  if (!existing) return;
+  ensureActionModalHooks();
+  documentEditDialog = {
+    open: true,
+    mode: "edit",
+    documentId: String(id),
+    templateKey: normalizeInterviewTemplate(existing.interviewTemplate || "") || "",
+    previousDocumentId: existing.previousDocumentId || "",
+    continueAfterSave: false,
+    error: ""
+  };
+  renderDocumentModalOverlays();
 }
 
-function saveDocument(id) {
-  const i = indexById("documents", id);
-  if (i < 0) return;
-  state.documents[i] = { ...state.documents[i], title: document.getElementById("edocTitle").value.trim(), type: document.getElementById("edocType").value.trim(), owner: document.getElementById("edocOwner").value.trim(), status: document.getElementById("edocStatus").value.trim(), tags: splitTags(document.getElementById("edocTags").value), content: document.getElementById("edocContent").value.trim(), linkedFolders: checkedValues("edocFolders"), linkedProjects: checkedValues("edocProjects"), updatedAt: isoToday() };
+function closeDocumentEditModal() {
+  documentEditDialog = {
+    open: false,
+    mode: "create",
+    documentId: "",
+    templateKey: "",
+    previousDocumentId: "",
+    continueAfterSave: false,
+    error: ""
+  };
+  renderDocumentModalOverlays();
+}
+
+function documentDraftFromDialog() {
+  if (documentEditDialog.mode === "edit") {
+    const current = byId("documents", documentEditDialog.documentId);
+    return current ? normalizeEntity("documents", current) : null;
+  }
+  const template = documentEditDialog.templateKey || "free_report";
+  const now = isoToday();
+  const title = template === "biweekly_performance"
+    ? `Point bimensuel - ${now}`
+    : template === "managerial_full"
+      ? `Entretien managérial - ${now}`
+      : `Compte-rendu libre - ${now}`;
+  return normalizeEntity("documents", {
+    id: newId("document"),
+    title,
+    type: "Compte rendu",
+    category: interviewTemplateLabel(template),
+    documentType: "interview_report",
+    interviewTemplate: template,
+    status: "draft",
+    confidentiality: "normal",
+    owner: identityName(),
+    author: identityName(),
+    createdAt: now,
+    updatedAt: now,
+    date: now,
+    content: interviewTemplateContent(template),
+    linkedManagers: [],
+    managerIds: [],
+    linkedFolders: [],
+    linkedProjects: [],
+    linkedActions: [],
+    linkedDecisions: [],
+    linkedMeetingIds: [],
+    linkedPerformance: [],
+    previousDocumentId: documentEditDialog.previousDocumentId || "",
+    sourceType: "documents",
+    sourceId: ""
+  });
+}
+
+function parseTableRows(containerId, mapper) {
+  const container = document.getElementById(containerId);
+  if (!container) return [];
+  return [...container.querySelectorAll("[data-row]")].map(row => mapper(row)).filter(Boolean);
+}
+
+function collectDocumentFromModal() {
+  const base = documentDraftFromDialog();
+  if (!base) return { error: "Document introuvable." };
+  const interviewTemplate = normalizeInterviewTemplate(document.getElementById("idocInterviewTemplate")?.value || base.interviewTemplate || "") || null;
+  const title = document.getElementById("idocTitle")?.value.trim() || "";
+  const date = document.getElementById("idocDate")?.value || "";
+  const summary = document.getElementById("idocSummary")?.value.trim() || "";
+  const managerIds = normalizeLinkedManagerIds(checkedValues("idocManagers"));
+  if (!title) return { error: "Le titre est obligatoire." };
+  if (!date) return { error: "La date est obligatoire." };
+  if (interviewTemplate && ["biweekly_performance", "managerial_full"].includes(interviewTemplate) && !managerIds.length) {
+    return { error: "Le manager est obligatoire pour ce modèle." };
+  }
+  if (!summary && !interviewTemplate) return { error: "Le champ objet/synthèse est obligatoire." };
+
+  const content = normalizeDocumentStructuredContent(base, interviewTemplate);
+  if (interviewTemplate) {
+    const keyResults = parseTableRows("idocResultsRows", row => ({
+      indicator: row.querySelector('[data-field="indicator"]')?.value.trim() || "",
+      result: row.querySelector('[data-field="result"]')?.value.trim() || "",
+      objective: row.querySelector('[data-field="objective"]')?.value.trim() || "",
+      gap: row.querySelector('[data-field="gap"]')?.value.trim() || "",
+      trend: row.querySelector('[data-field="trend"]')?.value || "non évaluée",
+      comment: row.querySelector('[data-field="comment"]')?.value.trim() || ""
+    }));
+    const actionPlan = parseTableRows("idocActionPlanRows", row => ({
+      id: row.dataset.actionPlanId || newId("docplan"),
+      action: row.querySelector('[data-field="action"]')?.value.trim() || "",
+      owner: row.querySelector('[data-field="owner"]')?.value.trim() || "",
+      due: row.querySelector('[data-field="due"]')?.value || "",
+      priority: row.querySelector('[data-field="priority"]')?.value || "Moyenne",
+      successIndicator: row.querySelector('[data-field="successIndicator"]')?.value.trim() || "",
+      createInDeos: Boolean(row.querySelector('[data-field="createInDeos"]')?.checked),
+      actionId: row.dataset.actionId || ""
+    }));
+    content.keyResults = keyResults;
+    content.actionPlan = actionPlan;
+
+    if (interviewTemplate === "biweekly_performance") {
+      content.info = {
+        ...(content.info || {}),
+        previousInterview: document.getElementById("idocInfoPrevious")?.value.trim() || "",
+        examinedPeriod: document.getElementById("idocInfoPeriod")?.value.trim() || "",
+        duration: document.getElementById("idocDuration")?.value.trim() || "",
+        nextInterviewPlanned: document.getElementById("idocNextInterviewDate")?.value || ""
+      };
+      content.synthesis = {
+        ...(content.synthesis || {}),
+        mainSuccess: document.getElementById("idocSynMainSuccess")?.value.trim() || "",
+        mainDifficulty: document.getElementById("idocSynMainDifficulty")?.value.trim() || "",
+        managerAnalysis: document.getElementById("idocSynManagerAnalysis")?.value.trim() || "",
+        identifiedCauses: document.getElementById("idocSynCauses")?.value.trim() || "",
+        expectedDirectorSupport: document.getElementById("idocSynSupport")?.value.trim() || "",
+        nextPriority: document.getElementById("idocSynPriority")?.value.trim() || ""
+      };
+      content.conclusion = {
+        ...(content.conclusion || {}),
+        keyTakeaway: document.getElementById("idocConclusionTakeaway")?.value.trim() || "",
+        expectedNextResult: document.getElementById("idocConclusionExpected")?.value.trim() || "",
+        nextPointDate: document.getElementById("idocNextInterviewDate")?.value || "",
+        preparationItems: document.getElementById("idocConclusionPrep")?.value.trim() || ""
+      };
+    } else if (interviewTemplate === "managerial_full") {
+      content.general = {
+        ...(content.general || {}),
+        interviewType: document.getElementById("idocGeneralType")?.value || "Performance",
+        previousInterview: document.getElementById("idocInfoPrevious")?.value.trim() || "",
+        nextInterviewPlanned: document.getElementById("idocNextInterviewDate")?.value || "",
+        examinedPeriod: document.getElementById("idocInfoPeriod")?.value.trim() || ""
+      };
+      content.objectContext = {
+        ...(content.objectContext || {}),
+        subject: document.getElementById("idocCtxSubject")?.value.trim() || "",
+        context: document.getElementById("idocCtxContext")?.value.trim() || "",
+        expectedExchangeResult: document.getElementById("idocCtxExpected")?.value.trim() || ""
+      };
+      content.review = {
+        ...(content.review || {}),
+        keyFacts: document.getElementById("idocReviewFacts")?.value.trim() || "",
+        successes: document.getElementById("idocReviewSuccess")?.value.trim() || "",
+        difficulties: document.getElementById("idocReviewDifficulties")?.value.trim() || "",
+        changes: document.getElementById("idocReviewChanges")?.value.trim() || ""
+      };
+      content.commitments = parseTableRows("idocCommitmentsRows", row => ({
+        id: row.dataset.commitmentId || newId("commitment"),
+        engagement: row.querySelector('[data-field="engagement"]')?.value.trim() || "",
+        owner: row.querySelector('[data-field="owner"]')?.value.trim() || "",
+        due: row.querySelector('[data-field="due"]')?.value || "",
+        status: row.querySelector('[data-field="status"]')?.value || "À faire",
+        comment: row.querySelector('[data-field="comment"]')?.value.trim() || ""
+      }));
+      content.sharedAnalysis = {
+        ...(content.sharedAnalysis || {}),
+        worksWell: document.getElementById("idocAnalysisWorksWell")?.value.trim() || "",
+        vigilancePoints: document.getElementById("idocAnalysisVigilance")?.value.trim() || "",
+        organizationCauses: document.getElementById("idocAnalysisOrg")?.value.trim() || "",
+        resourcesCauses: document.getElementById("idocAnalysisResources")?.value.trim() || "",
+        skillsCauses: document.getElementById("idocAnalysisSkills")?.value.trim() || "",
+        steeringCauses: document.getElementById("idocAnalysisSteering")?.value.trim() || "",
+        externalCauses: document.getElementById("idocAnalysisExternal")?.value.trim() || "",
+        pendingChecks: document.getElementById("idocAnalysisChecks")?.value.trim() || ""
+      };
+      content.managerExpression = {
+        ...(content.managerExpression || {}),
+        analysis: document.getElementById("idocExprAnalysis")?.value.trim() || "",
+        difficulties: document.getElementById("idocExprDifficulties")?.value.trim() || "",
+        needs: document.getElementById("idocExprNeeds")?.value.trim() || "",
+        proposedSolutions: document.getElementById("idocExprSolutions")?.value.trim() || "",
+        proposedCommitments: document.getElementById("idocExprCommitments")?.value.trim() || ""
+      };
+      content.managerialAssessment = {
+        ...(content.managerialAssessment || {}),
+        strengthsObserved: document.getElementById("idocAssessStrengths")?.value.trim() || "",
+        progressPoints: document.getElementById("idocAssessProgress")?.value.trim() || "",
+        autonomyLevel: document.getElementById("idocAssessAutonomy")?.value || "",
+        globalAssessment: document.getElementById("idocAssessGlobal")?.value || "non évaluée",
+        mandatoryComment: document.getElementById("idocAssessComment")?.value.trim() || ""
+      };
+      if (content.managerialAssessment.globalAssessment !== "non évaluée" && !content.managerialAssessment.mandatoryComment) {
+        return { error: "Le commentaire est obligatoire quand une appréciation globale est sélectionnée." };
+      }
+      content.expectedSupport = {
+        ...(content.expectedSupport || {}),
+        arbitration: document.getElementById("idocSupportArbitration")?.value.trim() || "",
+        means: document.getElementById("idocSupportMeans")?.value.trim() || "",
+        coaching: document.getElementById("idocSupportCoaching")?.value.trim() || "",
+        training: document.getElementById("idocSupportTraining")?.value.trim() || "",
+        hrIntervention: document.getElementById("idocSupportHr")?.value.trim() || "",
+        crossTeamCoordination: document.getElementById("idocSupportCoord")?.value.trim() || "",
+        pendingDecision: document.getElementById("idocSupportDecision")?.value.trim() || "",
+        other: document.getElementById("idocSupportOther")?.value.trim() || ""
+      };
+      content.conclusion = {
+        ...(content.conclusion || {}),
+        keyTakeaway: document.getElementById("idocConclusionTakeaway")?.value.trim() || "",
+        priority: document.getElementById("idocConclusionPriority")?.value.trim() || "",
+        expectedResult: document.getElementById("idocConclusionExpected")?.value.trim() || "",
+        nextMeeting: document.getElementById("idocNextInterviewDate")?.value || "",
+        preparationItems: document.getElementById("idocConclusionPrep")?.value.trim() || ""
+      };
+    } else {
+      content.free = {
+        ...(content.free || {}),
+        subject: document.getElementById("idocFreeSubject")?.value.trim() || "",
+        context: document.getElementById("idocFreeContext")?.value.trim() || "",
+        discussedItems: document.getElementById("idocFreeDiscussed")?.value.trim() || "",
+        decisionsTaken: document.getElementById("idocFreeDecisions")?.value.trim() || "",
+        actions: document.getElementById("idocFreeActions")?.value.trim() || "",
+        owners: document.getElementById("idocFreeOwners")?.value.trim() || "",
+        dueDates: document.getElementById("idocFreeDue")?.value.trim() || "",
+        vigilancePoints: document.getElementById("idocFreeVigilance")?.value.trim() || "",
+        nextStep: document.getElementById("idocFreeNextStep")?.value.trim() || "",
+        nextMeeting: document.getElementById("idocNextInterviewDate")?.value || ""
+      };
+    }
+  }
+
+  const linkedMeetingId = document.getElementById("idocMeeting")?.value || "";
+  const linkedMeetingIds = linkedMeetingId ? [linkedMeetingId] : normalizeLinkedIdArray(base.linkedMeetingIds || []);
+  const next = normalizeEntity("documents", {
+    ...base,
+    title,
+    type: document.getElementById("idocType")?.value.trim() || "Compte rendu",
+    category: document.getElementById("idocCategory")?.value.trim() || interviewTemplateLabel(interviewTemplate || "") || "Document",
+    documentType: interviewTemplate ? "interview_report" : (document.getElementById("idocDocumentType")?.value.trim() || base.documentType || "document"),
+    interviewTemplate,
+    date,
+    startTime: document.getElementById("idocStartTime")?.value || "",
+    endTime: document.getElementById("idocEndTime")?.value || "",
+    duration: document.getElementById("idocDuration")?.value.trim() || "",
+    period: document.getElementById("idocPeriod")?.value.trim() || "",
+    location: document.getElementById("idocLocation")?.value.trim() || "",
+    participants: document.getElementById("idocParticipants")?.value.trim() || "",
+    managerIds,
+    linkedManagers: managerIds,
+    linkedFolders: normalizeLinkedIdArray(checkedValues("idocFolders")),
+    linkedProjects: normalizeLinkedIdArray(checkedValues("idocProjects")),
+    linkedActions: normalizeLinkedIdArray(checkedValues("idocActions")),
+    linkedDecisions: normalizeLinkedIdArray(checkedValues("idocDecisions")),
+    linkedMeetingIds,
+    linkedPerformance: normalizeLinkedIdArray(base.linkedPerformance || []),
+    status: interviewTemplate ? normalizeInterviewStatus(document.getElementById("idocStatus")?.value || base.status || "draft") : (document.getElementById("idocLegacyStatus")?.value.trim() || base.status || "Brouillon"),
+    confidentiality: normalizeInterviewConfidentiality(document.getElementById("idocConfidentiality")?.value || base.confidentiality || "normal"),
+    summary,
+    tags: splitTags(document.getElementById("idocTags")?.value || ""),
+    content,
+    nextInterviewDate: document.getElementById("idocNextInterviewDate")?.value || "",
+    owner: document.getElementById("idocOwner")?.value.trim() || base.owner || identityName(),
+    author: document.getElementById("idocOwner")?.value.trim() || base.author || identityName(),
+    updatedAt: isoToday(),
+    previousDocumentId: documentEditDialog.previousDocumentId || base.previousDocumentId || ""
+  });
+
+  if (!next.summary && interviewTemplate) {
+    next.summary = documentSummaryPreview(next);
+  }
+
+  if (documentEditDialog.mode === "create") {
+    const resume = Boolean(document.getElementById("idocResumeCommitments")?.checked);
+    if (resume && ["biweekly_performance", "managerial_full"].includes(interviewTemplate || "") && managerIds.length) {
+      const previous = findPreviousInterviewForManager(managerIds[0]);
+      if (previous && previous.content?.commitments) {
+        next.content.commitments = ensureArray(previous.content.commitments).filter(item => !["Réalisé", "Abandonné"].includes(item.status));
+      }
+    }
+  }
+
+  return { value: next };
+}
+
+function syncDocumentBacklinks(nextDoc, previousDoc = null) {
+  const previousProjectIds = normalizeLinkedIdArray(previousDoc?.linkedProjects || []);
+  const nextProjectIds = normalizeLinkedIdArray(nextDoc.linkedProjects || []);
+  state.projects.forEach(project => {
+    project.linkedDocuments = normalizeLinkedIdArray(project.linkedDocuments || []);
+    const has = project.linkedDocuments.includes(nextDoc.id);
+    if (nextProjectIds.includes(project.id) && !has) project.linkedDocuments.push(nextDoc.id);
+    if (previousProjectIds.includes(project.id) && !nextProjectIds.includes(project.id) && has) {
+      project.linkedDocuments = project.linkedDocuments.filter(id => id !== nextDoc.id);
+    }
+  });
+
+  const previousDecisionIds = normalizeLinkedIdArray(previousDoc?.linkedDecisions || []);
+  const nextDecisionIds = normalizeLinkedIdArray(nextDoc.linkedDecisions || []);
+  state.decisions.forEach(decision => {
+    decision.linkedDocuments = normalizeLinkedIdArray(decision.linkedDocuments || []);
+    const has = decision.linkedDocuments.includes(nextDoc.id);
+    if (nextDecisionIds.includes(decision.id) && !has) decision.linkedDocuments.push(nextDoc.id);
+    if (previousDecisionIds.includes(decision.id) && !nextDecisionIds.includes(decision.id) && has) {
+      decision.linkedDocuments = decision.linkedDocuments.filter(id => id !== nextDoc.id);
+    }
+  });
+  persist("projects");
+  persist("decisions");
+}
+
+function syncInterviewDocumentActions(nextDoc, previousDoc = null) {
+  if (!documentIsInterview(nextDoc)) return [];
+  const rows = ensureArray(nextDoc.content?.actionPlan);
+  const errors = [];
+  rows.forEach(row => {
+    if (!row || !row.createInDeos || !row.action) return;
+    if (row.actionId && byId("actions", row.actionId)) {
+      if (!ensureArray(nextDoc.linkedActions).includes(row.actionId)) nextDoc.linkedActions = [...new Set([...(nextDoc.linkedActions || []), row.actionId])];
+      return;
+    }
+    const duplicate = state.actions.find(action => String(action.title || "").trim().toLowerCase() === String(row.action || "").trim().toLowerCase()
+      && String(action.owner || "").trim().toLowerCase() === String(row.owner || "").trim().toLowerCase()
+      && String(action.due || "") === String(row.due || ""));
+    if (duplicate) {
+      row.actionId = duplicate.id;
+      nextDoc.linkedActions = [...new Set([...(nextDoc.linkedActions || []), duplicate.id])];
+      return;
+    }
+    try {
+      const created = normalizeEntity("actions", {
+        id: newId("action"),
+        title: row.action,
+        owner: row.owner || "",
+        due: row.due || "",
+        level: row.priority === "Haute" ? "red" : row.priority === "Basse" ? "green" : "orange",
+        done: false,
+        link: `Document: ${nextDoc.title}`,
+        linkedFolders: normalizeLinkedIdArray(nextDoc.linkedFolders || []),
+        linkedProjects: normalizeLinkedIdArray(nextDoc.linkedProjects || []),
+        linkedDecisions: normalizeLinkedIdArray(nextDoc.linkedDecisions || []),
+        linkedManagers: normalizeLinkedManagerIds(nextDoc.linkedManagers || []),
+        linkedMeetingPreparations: []
+      });
+      state.actions.unshift(created);
+      row.actionId = created.id;
+      nextDoc.linkedActions = [...new Set([...(nextDoc.linkedActions || []), created.id])];
+      addActivity("✅ Action", created.title, "Créée depuis compte-rendu d'entretien", created.id);
+    } catch (error) {
+      errors.push(`Action non créée pour "${row.action}": ${error.message || String(error)}`);
+    }
+  });
+  persist("actions");
+  return errors;
+}
+
+function saveDocumentFromModal(continueEditing = false) {
+  const collected = collectDocumentFromModal();
+  if (collected.error) {
+    documentEditDialog.error = collected.error;
+    renderDocumentModalOverlays();
+    return false;
+  }
+  const next = collected.value;
+  const previous = documentEditDialog.mode === "edit" ? byId("documents", documentEditDialog.documentId) : null;
+  const actionErrors = syncInterviewDocumentActions(next, previous);
+  if (documentEditDialog.mode === "edit") {
+    const index = indexById("documents", next.id);
+    if (index >= 0) state.documents[index] = next;
+  } else {
+    state.documents.unshift(next);
+  }
+  syncDocumentBacklinks(next, previous);
   persist("documents");
-  addActivity("📄 Document modifié", state.documents[i].title, state.documents[i].type, id);
+  addActivity("📄 Document", next.title, documentEditDialog.mode === "edit" ? "Modifié" : "Créé", next.id);
+
+  if (actionErrors.length) {
+    documentEditDialog.error = actionErrors.join("\n");
+    if (!continueEditing) {
+      closeDocumentEditModal();
+      alert(`Document enregistré avec avertissement:\n${actionErrors.join("\n")}`);
+      renderDocuments();
+      return true;
+    }
+  }
+
+  if (continueEditing) {
+    documentEditDialog.mode = "edit";
+    documentEditDialog.documentId = next.id;
+    documentEditDialog.error = actionErrors.join("\n");
+    renderDocumentModalOverlays();
+    return true;
+  }
+
+  closeDocumentEditModal();
   renderDocuments();
+  return true;
+}
+
+function saveDocument(id = "") {
+  if (id && !documentEditDialog.open) {
+    editDocument(id);
+    return;
+  }
+  saveDocumentFromModal(false);
+}
+
+function saveDocumentAndContinue() {
+  saveDocumentFromModal(true);
+}
+
+function openDocumentDeleteModal(id) {
+  const doc = byId("documents", id);
+  if (!doc) return;
+  ensureActionModalHooks();
+  documentDeleteDialog = { open: true, documentId: String(id), error: "" };
+  renderDocumentModalOverlays();
+}
+
+function closeDocumentDeleteModal() {
+  documentDeleteDialog = { open: false, documentId: "", error: "" };
+  renderDocumentModalOverlays();
+}
+
+function confirmDocumentDelete(id = "") {
+  const targetId = id || documentDeleteDialog.documentId;
+  const index = indexById("documents", targetId);
+  if (index < 0) return false;
+  const doc = state.documents[index];
+  state.documents.splice(index, 1);
+  state.projects.forEach(project => project.linkedDocuments = normalizeLinkedIdArray(ensureArray(project.linkedDocuments).filter(link => !sameId(link, targetId))));
+  state.decisions.forEach(decision => decision.linkedDocuments = normalizeLinkedIdArray(ensureArray(decision.linkedDocuments).filter(link => !sameId(link, targetId))));
+  persist("documents");
+  persist("projects");
+  persist("decisions");
+  addActivity("🗑️ Document supprimé", doc.title || "Document");
+  closeDocumentDeleteModal();
+  renderDocuments();
+  return true;
 }
 
 function deleteDocument(id) {
-  const i = indexById("documents", id);
-  if (i < 0 || !confirm("Supprimer ce document ?")) return;
-  const t = state.documents[i].title;
-  state.documents.splice(i, 1);
+  openDocumentDeleteModal(id);
+}
+
+function findPreviousInterviewForManager(managerId, excludeId = "") {
+  return state.documents
+    .filter(doc => documentIsInterview(doc)
+      && ensureArray(doc.managerIds || doc.linkedManagers).includes(managerId)
+      && (!excludeId || !sameId(doc.id, excludeId)))
+    .slice()
+    .sort((a, b) => String(b.date || b.updatedAt || "").localeCompare(String(a.date || a.updatedAt || "")))[0] || null;
+}
+
+function duplicateInterviewDocumentForNext(id) {
+  const source = byId("documents", id);
+  if (!source || !documentIsInterview(source)) return;
+  const cloned = JSON.parse(JSON.stringify(source));
+  cloned.id = newId("document");
+  cloned.previousDocumentId = source.id;
+  cloned.date = "";
+  cloned.startTime = "";
+  cloned.endTime = "";
+  cloned.updatedAt = isoToday();
+  cloned.createdAt = isoToday();
+  cloned.status = "draft";
+  cloned.title = `${source.title || "Compte-rendu"} - Prochain entretien`;
+  cloned.nextInterviewDate = "";
+
+  if (cloned.interviewTemplate === "managerial_full") {
+    const assessment = cloned.content?.managerialAssessment || {};
+    cloned.content.managerialAssessment = {
+      ...assessment,
+      globalAssessment: "non évaluée",
+      mandatoryComment: "",
+      strengthsObserved: "",
+      progressPoints: "",
+      autonomyLevel: ""
+    };
+    cloned.content.conclusion = {
+      ...(cloned.content.conclusion || {}),
+      keyTakeaway: "",
+      priority: "",
+      expectedResult: "",
+      nextMeeting: "",
+      preparationItems: ""
+    };
+    cloned.content.commitments = ensureArray(cloned.content.commitments).filter(item => !["Réalisé", "Abandonné"].includes(item.status || ""));
+  }
+
+  if (cloned.interviewTemplate === "biweekly_performance") {
+    cloned.content.conclusion = {
+      ...(cloned.content.conclusion || {}),
+      keyTakeaway: "",
+      expectedNextResult: "",
+      nextPointDate: "",
+      preparationItems: ""
+    };
+  }
+
+  cloned.content.actionPlan = ensureArray(cloned.content.actionPlan).map(row => ({
+    ...row,
+    actionId: "",
+    createInDeos: Boolean(row.createInDeos) && !["Réalisé", "Terminée", "Done"].includes(String(row.status || ""))
+  }));
+  state.documents.unshift(normalizeEntity("documents", cloned));
   persist("documents");
-  addActivity("🗑️ Document supprimé", t);
-  renderDocuments();
+  addActivity("📄 Document", cloned.title, "Dupliqué pour prochain entretien", cloned.id);
+  editDocument(cloned.id);
+}
+
+function appendDocumentTableRow(containerId, rowHtml) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.insertAdjacentHTML("beforeend", rowHtml);
+}
+
+function removeDocumentRow(button) {
+  const row = button.closest("[data-row]");
+  if (row) row.remove();
+}
+
+function documentResultRowHtml(row = {}) {
+  return `
+    <div class="doc-row" data-row>
+      <input data-field="indicator" value="${esc(row.indicator || "")}" placeholder="Indicateur">
+      <input data-field="result" value="${esc(row.result || "")}" placeholder="Résultat">
+      <input data-field="objective" value="${esc(row.objective || "")}" placeholder="Objectif">
+      <input data-field="gap" value="${esc(row.gap || "")}" placeholder="Écart">
+      <select data-field="trend">
+        <option value="hausse" ${row.trend === "hausse" ? "selected" : ""}>hausse</option>
+        <option value="stable" ${row.trend === "stable" ? "selected" : ""}>stable</option>
+        <option value="baisse" ${row.trend === "baisse" ? "selected" : ""}>baisse</option>
+        <option value="non évaluée" ${!row.trend || row.trend === "non évaluée" ? "selected" : ""}>non évaluée</option>
+      </select>
+      <input data-field="comment" value="${esc(row.comment || "")}" placeholder="Commentaire">
+      <button class="danger" type="button" onclick="removeDocumentRow(this)">Supprimer</button>
+    </div>
+  `;
+}
+
+function addInterviewResultRow() {
+  appendDocumentTableRow("idocResultsRows", documentResultRowHtml({ trend: "non évaluée" }));
+}
+
+function documentActionPlanRowHtml(row = {}) {
+  return `
+    <div class="doc-row" data-row data-action-plan-id="${esc(row.id || newId("docplan"))}" data-action-id="${esc(row.actionId || "")}">
+      <input data-field="action" value="${esc(row.action || "")}" placeholder="Action">
+      <input data-field="owner" value="${esc(row.owner || "")}" placeholder="Responsable">
+      <input data-field="due" type="date" value="${esc(row.due || "")}" placeholder="Échéance">
+      <select data-field="priority">
+        <option ${row.priority === "Haute" ? "selected" : ""}>Haute</option>
+        <option ${!row.priority || row.priority === "Moyenne" ? "selected" : ""}>Moyenne</option>
+        <option ${row.priority === "Basse" ? "selected" : ""}>Basse</option>
+      </select>
+      <input data-field="successIndicator" value="${esc(row.successIndicator || "")}" placeholder="Indicateur de réussite">
+      <label class="check-row"><input data-field="createInDeos" type="checkbox" ${row.createInDeos ? "checked" : ""}><span>Créer dans DEOS</span></label>
+      <button class="danger" type="button" onclick="removeDocumentRow(this)">Supprimer</button>
+    </div>
+  `;
+}
+
+function addInterviewActionPlanRow() {
+  appendDocumentTableRow("idocActionPlanRows", documentActionPlanRowHtml({ priority: "Moyenne", createInDeos: false }));
+}
+
+function documentCommitmentRowHtml(row = {}) {
+  return `
+    <div class="doc-row" data-row data-commitment-id="${esc(row.id || newId("commitment"))}">
+      <input data-field="engagement" value="${esc(row.engagement || "")}" placeholder="Engagement">
+      <input data-field="owner" value="${esc(row.owner || "")}" placeholder="Responsable">
+      <input data-field="due" type="date" value="${esc(row.due || "")}" placeholder="Échéance">
+      <select data-field="status">
+        <option ${!row.status || row.status === "À faire" ? "selected" : ""}>À faire</option>
+        <option ${row.status === "En cours" ? "selected" : ""}>En cours</option>
+        <option ${row.status === "Réalisé" ? "selected" : ""}>Réalisé</option>
+        <option ${row.status === "Bloqué" ? "selected" : ""}>Bloqué</option>
+        <option ${row.status === "Abandonné" ? "selected" : ""}>Abandonné</option>
+      </select>
+      <input data-field="comment" value="${esc(row.comment || "")}" placeholder="Commentaire">
+      <button class="danger" type="button" onclick="removeDocumentRow(this)">Supprimer</button>
+    </div>
+  `;
+}
+
+function addInterviewCommitmentRow() {
+  appendDocumentTableRow("idocCommitmentsRows", documentCommitmentRowHtml({ status: "À faire" }));
+}
+
+function loadPreviousInterviewForManager() {
+  const managerId = checkedValues("idocManagers")[0];
+  if (!managerId) return;
+  const previous = findPreviousInterviewForManager(managerId, documentEditDialog.documentId);
+  if (!previous) {
+    alert("Aucun entretien précédent trouvé pour ce manager.");
+    return;
+  }
+  documentEditDialog.previousDocumentId = previous.id;
+  const rows = ensureArray(previous.content?.commitments).filter(item => !["Réalisé", "Abandonné"].includes(item.status || ""));
+  const root = document.getElementById("idocCommitmentsRows");
+  if (root) {
+    root.innerHTML = rows.map(documentCommitmentRowHtml).join("");
+  }
+  alert(`Engagements repris depuis: ${previous.title}`);
+}
+
+function openLinkedMeetingFromDocument(meetingId) {
+  if (!meetingId) return;
+  setView("activity");
+  editAgenda(meetingId);
+}
+
+function documentFormBody(doc) {
+  const interviewTemplate = normalizeInterviewTemplate(doc.interviewTemplate || documentEditDialog.templateKey || "") || "";
+  const content = normalizeDocumentStructuredContent(doc, interviewTemplate);
+  const managerIds = normalizeLinkedManagerIds(ensureArray(doc.managerIds || doc.linkedManagers));
+  const previous = managerIds[0] ? findPreviousInterviewForManager(managerIds[0], doc.id) : null;
+  const meetingOptions = state.agenda.map(meeting => `<option value="${esc(meeting.id)}" ${ensureArray(doc.linkedMeetingIds).includes(meeting.id) ? "selected" : ""}>${esc(meeting.date || "")} · ${esc(meeting.title || "Rendez-vous")}</option>`).join("");
+
+  const common = `
+    <div class="form-grid">
+      <input id="idocTitle" class="full" value="${esc(doc.title || "")}" placeholder="Titre *">
+      <input id="idocDate" type="date" value="${esc(doc.date || isoToday())}" placeholder="Date *">
+      <input id="idocStartTime" type="time" value="${esc(doc.startTime || "")}" placeholder="Heure de début">
+      <input id="idocEndTime" type="time" value="${esc(doc.endTime || "")}" placeholder="Heure de fin">
+      <input id="idocDuration" value="${esc(doc.duration || content.info?.duration || "")}" placeholder="Durée (min)">
+      <input id="idocPeriod" value="${esc(doc.period || content.info?.examinedPeriod || content.general?.examinedPeriod || "")}" placeholder="Période examinée">
+      <input id="idocLocation" value="${esc(doc.location || "")}" placeholder="Lieu">
+      <input id="idocParticipants" class="full" value="${esc(doc.participants || "")}" placeholder="Participants">
+      <input id="idocOwner" value="${esc(doc.owner || identityName())}" placeholder="Auteur / propriétaire">
+      <input id="idocTags" value="${esc(ensureArray(doc.tags).join(", "))}" placeholder="Tags">
+      <select id="idocConfidentiality">
+        ${Object.entries(interviewConfidentialityLabels).map(([key, label]) => `<option value="${esc(key)}" ${normalizeInterviewConfidentiality(doc.confidentiality || "normal") === key ? "selected" : ""}>${esc(label)}</option>`).join("")}
+      </select>
+      ${interviewTemplate
+        ? `<select id="idocStatus">${Object.entries(interviewStatusLabels).map(([key, label]) => `<option value="${esc(key)}" ${normalizeInterviewStatus(doc.status || "draft") === key ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`
+        : `<input id="idocLegacyStatus" value="${esc(doc.status || "Brouillon")}" placeholder="Statut">`
+      }
+      <input id="idocType" value="${esc(doc.type || "Compte rendu")}" placeholder="Type">
+      <input id="idocCategory" value="${esc(doc.category || interviewTemplateLabel(interviewTemplate) || "Document")}" placeholder="Catégorie">
+      <input id="idocDocumentType" value="${esc(doc.documentType || (interviewTemplate ? "interview_report" : "document"))}" placeholder="Document type">
+      <input id="idocNextInterviewDate" type="date" value="${esc(doc.nextInterviewDate || documentNextInterviewDate(doc) || "")}" placeholder="Prochain entretien prévu">
+      <input id="idocSummary" class="full" value="${esc(doc.summary || "")}" placeholder="Objet / synthèse minimale *">
+      <select id="idocInterviewTemplate">
+        <option value="">Sans modèle d'entretien</option>
+        ${interviewTemplateCatalog.map(item => `<option value="${esc(item.key)}" ${interviewTemplate === item.key ? "selected" : ""}>${esc(item.title)}</option>`).join("")}
+      </select>
+      <select id="idocMeeting"><option value="">Rendez-vous Agenda lié</option>${meetingOptions}</select>
+    </div>
+    <div class="grid two manager-links">
+      <div><label>Managers liés</label>${checkboxList("idocManagers", state.managers, managerIds, manager => `${manager.name} · ${manager.role || ""}`)}</div>
+      <div><label>Dossiers liés</label>${folderSelect("idocFolders", normalizeLinkedIdArray(doc.linkedFolders))}</div>
+      <div><label>Projets liés</label>${checkboxList("idocProjects", state.projects, normalizeLinkedIdArray(doc.linkedProjects), project => project.name)}</div>
+      <div><label>Actions liées</label>${checkboxList("idocActions", state.actions, normalizeLinkedIdArray(doc.linkedActions), action => action.title)}</div>
+      <div><label>Décisions liées</label>${checkboxList("idocDecisions", state.decisions, normalizeLinkedIdArray(doc.linkedDecisions), decision => decision.title)}</div>
+      <div><label>Période performance</label><input value="${esc(doc.period || "")}" disabled></div>
+    </div>
+    ${ensureArray(doc.linkedMeetingIds).length ? `<div class="card"><h3>Rendez-vous lié</h3>${ensureArray(doc.linkedMeetingIds).map(id => {
+      const meeting = byId("agenda", id);
+      if (!meeting) return "";
+      return `<div class="item row"><div><strong>${esc(meeting.title || "Rendez-vous")}</strong><span class="muted">${esc(meeting.date || "")}${meeting.startTime ? ` · ${esc(meeting.startTime)}` : ""}</span></div><button class="secondary" type="button" onclick="openLinkedMeetingFromDocument('${esc(id)}')">Ouvrir</button></div>`;
+    }).join("")}</div>` : ""}
+  `;
+
+  if (!interviewTemplate) {
+    return `${common}<textarea id="idocClassicContent" placeholder="Contenu">${esc(typeof doc.content === "string" ? doc.content : JSON.stringify(doc.content || {}, null, 2))}</textarea>`;
+  }
+
+  const resultsRows = ensureArray(content.keyResults).map(documentResultRowHtml).join("");
+  const actionRows = ensureArray(content.actionPlan).map(documentActionPlanRowHtml).join("");
+
+  if (interviewTemplate === "biweekly_performance") {
+    return `
+      ${common}
+      <div class="card"><h3>Informations</h3><div class="form-grid"><input id="idocInfoPrevious" value="${esc(content.info?.previousInterview || "")}" placeholder="Entretien précédent"><input id="idocInfoPeriod" value="${esc(content.info?.examinedPeriod || "")}" placeholder="Période examinée"></div></div>
+      <div class="card"><h3>Résultats clés</h3><div class="doc-row doc-row-head"><span>Indicateur</span><span>Résultat</span><span>Objectif</span><span>Écart</span><span>Tendance</span><span>Commentaire</span><span></span></div><div id="idocResultsRows" class="doc-rows">${resultsRows}</div><button class="secondary" type="button" onclick="addInterviewResultRow()">Ajouter une ligne</button></div>
+      <div class="card"><h3>Synthèse</h3><div class="form-grid"><textarea id="idocSynMainSuccess" placeholder="Réussite principale">${esc(content.synthesis?.mainSuccess || "")}</textarea><textarea id="idocSynMainDifficulty" placeholder="Écart ou difficulté principale">${esc(content.synthesis?.mainDifficulty || "")}</textarea><textarea id="idocSynManagerAnalysis" placeholder="Analyse du manager">${esc(content.synthesis?.managerAnalysis || "")}</textarea><textarea id="idocSynCauses" placeholder="Causes identifiées">${esc(content.synthesis?.identifiedCauses || "")}</textarea><textarea id="idocSynSupport" placeholder="Soutien attendu du Directeur">${esc(content.synthesis?.expectedDirectorSupport || "")}</textarea><textarea id="idocSynPriority" placeholder="Priorité jusqu'au prochain point">${esc(content.synthesis?.nextPriority || "")}</textarea></div></div>
+      <div class="card"><h3>Plan d'action</h3><div class="doc-row doc-row-head"><span>Action</span><span>Responsable</span><span>Échéance</span><span>Priorité</span><span>Indicateur de réussite</span><span>Créer dans DEOS</span><span></span></div><div id="idocActionPlanRows" class="doc-rows">${actionRows}</div><button class="secondary" type="button" onclick="addInterviewActionPlanRow()">Ajouter une action</button></div>
+      <div class="card"><h3>Conclusion</h3><div class="form-grid"><textarea id="idocConclusionTakeaway" placeholder="À retenir">${esc(content.conclusion?.keyTakeaway || "")}</textarea><textarea id="idocConclusionExpected" placeholder="Résultat attendu au prochain point">${esc(content.conclusion?.expectedNextResult || "")}</textarea><textarea id="idocConclusionPrep" placeholder="Éléments à préparer">${esc(content.conclusion?.preparationItems || "")}</textarea></div></div>
+    `;
+  }
+
+  if (interviewTemplate === "managerial_full") {
+    const commitmentRows = ensureArray(content.commitments).map(documentCommitmentRowHtml).join("");
+    return `
+      ${common}
+      <div class="card"><h3>Informations générales</h3><div class="form-grid"><select id="idocGeneralType"><option ${content.general?.interviewType === "Performance" ? "selected" : ""}>Performance</option><option ${content.general?.interviewType === "Managérial" ? "selected" : ""}>Managérial</option><option ${content.general?.interviewType === "Suivi d'objectifs" ? "selected" : ""}>Suivi d'objectifs</option><option ${content.general?.interviewType === "Accompagnement" ? "selected" : ""}>Accompagnement</option><option ${content.general?.interviewType === "Recadrage" ? "selected" : ""}>Recadrage</option><option ${content.general?.interviewType === "Développement / carrière" ? "selected" : ""}>Développement / carrière</option><option ${content.general?.interviewType === "Autre" ? "selected" : ""}>Autre</option></select><input id="idocInfoPrevious" value="${esc(content.general?.previousInterview || "")}" placeholder="Entretien précédent"><input id="idocInfoPeriod" value="${esc(content.general?.examinedPeriod || "")}" placeholder="Période examinée"></div>${previous ? `<p class="muted">Dernier entretien identifié: ${esc(previous.title)} (${esc(previous.date || "")})</p>` : `<p class="muted">Aucun entretien précédent identifié.</p>`}<label class="check-row"><input id="idocResumeCommitments" type="checkbox" ${previous ? "" : "disabled"}><span>Reprendre les engagements du dernier entretien</span></label><button class="secondary" type="button" onclick="loadPreviousInterviewForManager()" ${previous ? "" : "disabled"}>Charger maintenant</button></div>
+      <div class="card"><h3>Objet et contexte</h3><div class="form-grid"><textarea id="idocCtxSubject" placeholder="Objet de l'entretien">${esc(content.objectContext?.subject || "")}</textarea><textarea id="idocCtxContext" placeholder="Contexte">${esc(content.objectContext?.context || "")}</textarea><textarea id="idocCtxExpected" placeholder="Résultat attendu de l'échange">${esc(content.objectContext?.expectedExchangeResult || "")}</textarea></div></div>
+      <div class="card"><h3>Bilan depuis le dernier entretien</h3><div class="form-grid"><textarea id="idocReviewFacts" placeholder="Faits marquants">${esc(content.review?.keyFacts || "")}</textarea><textarea id="idocReviewSuccess" placeholder="Réussites">${esc(content.review?.successes || "")}</textarea><textarea id="idocReviewDifficulties" placeholder="Difficultés">${esc(content.review?.difficulties || "")}</textarea><textarea id="idocReviewChanges" placeholder="Changements intervenus">${esc(content.review?.changes || "")}</textarea></div></div>
+      <div class="card"><h3>Engagements précédents</h3><div class="doc-row doc-row-head"><span>Engagement</span><span>Responsable</span><span>Échéance</span><span>Statut</span><span>Commentaire</span><span></span></div><div id="idocCommitmentsRows" class="doc-rows">${commitmentRows}</div><button class="secondary" type="button" onclick="addInterviewCommitmentRow()">Ajouter un engagement</button></div>
+      <div class="card"><h3>Résultats et performance</h3><div class="doc-row doc-row-head"><span>Indicateur</span><span>Résultat</span><span>Objectif</span><span>Écart</span><span>Tendance</span><span>Commentaire</span><span></span></div><div id="idocResultsRows" class="doc-rows">${resultsRows}</div><button class="secondary" type="button" onclick="addInterviewResultRow()">Ajouter un indicateur</button></div>
+      <div class="card"><h3>Analyse partagée</h3><div class="form-grid"><textarea id="idocAnalysisWorksWell" placeholder="Ce qui fonctionne bien">${esc(content.sharedAnalysis?.worksWell || "")}</textarea><textarea id="idocAnalysisVigilance" placeholder="Points de vigilance">${esc(content.sharedAnalysis?.vigilancePoints || "")}</textarea><textarea id="idocAnalysisOrg" placeholder="Causes liées à l'organisation">${esc(content.sharedAnalysis?.organizationCauses || "")}</textarea><textarea id="idocAnalysisResources" placeholder="Causes liées aux moyens">${esc(content.sharedAnalysis?.resourcesCauses || "")}</textarea><textarea id="idocAnalysisSkills" placeholder="Causes liées aux compétences">${esc(content.sharedAnalysis?.skillsCauses || "")}</textarea><textarea id="idocAnalysisSteering" placeholder="Causes liées au pilotage">${esc(content.sharedAnalysis?.steeringCauses || "")}</textarea><textarea id="idocAnalysisExternal" placeholder="Causes externes">${esc(content.sharedAnalysis?.externalCauses || "")}</textarea><textarea id="idocAnalysisChecks" placeholder="Causes restant à vérifier">${esc(content.sharedAnalysis?.pendingChecks || "")}</textarea></div></div>
+      <div class="card"><h3>Expression du manager</h3><div class="form-grid"><textarea id="idocExprAnalysis" placeholder="Analyse de la situation">${esc(content.managerExpression?.analysis || "")}</textarea><textarea id="idocExprDifficulties" placeholder="Difficultés rencontrées">${esc(content.managerExpression?.difficulties || "")}</textarea><textarea id="idocExprNeeds" placeholder="Besoins exprimés">${esc(content.managerExpression?.needs || "")}</textarea><textarea id="idocExprSolutions" placeholder="Solutions proposées">${esc(content.managerExpression?.proposedSolutions || "")}</textarea><textarea id="idocExprCommitments" placeholder="Engagements proposés">${esc(content.managerExpression?.proposedCommitments || "")}</textarea></div></div>
+      <div class="card"><h3>Appréciation managériale</h3><div class="form-grid"><textarea id="idocAssessStrengths" placeholder="Points forts observés">${esc(content.managerialAssessment?.strengthsObserved || "")}</textarea><textarea id="idocAssessProgress" placeholder="Points de progrès">${esc(content.managerialAssessment?.progressPoints || "")}</textarea><select id="idocAssessAutonomy"><option value="">Niveau d'autonomie</option><option ${content.managerialAssessment?.autonomyLevel === "Fort accompagnement nécessaire" ? "selected" : ""}>Fort accompagnement nécessaire</option><option ${content.managerialAssessment?.autonomyLevel === "Accompagnement régulier" ? "selected" : ""}>Accompagnement régulier</option><option ${content.managerialAssessment?.autonomyLevel === "Autonome" ? "selected" : ""}>Autonome</option><option ${content.managerialAssessment?.autonomyLevel === "Référent / capacité à accompagner les autres" ? "selected" : ""}>Référent / capacité à accompagner les autres</option></select><select id="idocAssessGlobal"><option value="non évaluée" ${!content.managerialAssessment?.globalAssessment || content.managerialAssessment?.globalAssessment === "non évaluée" ? "selected" : ""}>Non évaluée</option><option ${content.managerialAssessment?.globalAssessment === "Très satisfaisante" ? "selected" : ""}>Très satisfaisante</option><option ${content.managerialAssessment?.globalAssessment === "Satisfaisante" ? "selected" : ""}>Satisfaisante</option><option ${content.managerialAssessment?.globalAssessment === "À consolider" ? "selected" : ""}>À consolider</option><option ${content.managerialAssessment?.globalAssessment === "Insuffisante" ? "selected" : ""}>Insuffisante</option></select><textarea id="idocAssessComment" class="full" placeholder="Commentaire obligatoire si appréciation sélectionnée">${esc(content.managerialAssessment?.mandatoryComment || "")}</textarea></div></div>
+      <div class="card"><h3>Décisions et plan d'action</h3><div class="doc-row doc-row-head"><span>Action</span><span>Responsable</span><span>Échéance</span><span>Priorité</span><span>Indicateur de réussite</span><span>Créer dans DEOS</span><span></span></div><div id="idocActionPlanRows" class="doc-rows">${actionRows}</div><button class="secondary" type="button" onclick="addInterviewActionPlanRow()">Ajouter une action</button></div>
+      <div class="card"><h3>Soutien attendu du Directeur</h3><div class="form-grid"><textarea id="idocSupportArbitration" placeholder="Arbitrage">${esc(content.expectedSupport?.arbitration || "")}</textarea><textarea id="idocSupportMeans" placeholder="Moyens">${esc(content.expectedSupport?.means || "")}</textarea><textarea id="idocSupportCoaching" placeholder="Accompagnement">${esc(content.expectedSupport?.coaching || "")}</textarea><textarea id="idocSupportTraining" placeholder="Formation">${esc(content.expectedSupport?.training || "")}</textarea><textarea id="idocSupportHr" placeholder="Intervention RH">${esc(content.expectedSupport?.hrIntervention || "")}</textarea><textarea id="idocSupportCoord" placeholder="Coordination interservices">${esc(content.expectedSupport?.crossTeamCoordination || "")}</textarea><textarea id="idocSupportDecision" placeholder="Décision à prendre">${esc(content.expectedSupport?.pendingDecision || "")}</textarea><textarea id="idocSupportOther" placeholder="Autre">${esc(content.expectedSupport?.other || "")}</textarea></div></div>
+      <div class="card"><h3>Conclusion</h3><div class="form-grid"><textarea id="idocConclusionTakeaway" placeholder="À retenir">${esc(content.conclusion?.keyTakeaway || "")}</textarea><textarea id="idocConclusionPriority" placeholder="Priorité">${esc(content.conclusion?.priority || "")}</textarea><textarea id="idocConclusionExpected" placeholder="Résultat attendu">${esc(content.conclusion?.expectedResult || "")}</textarea><textarea id="idocConclusionPrep" placeholder="Éléments à préparer">${esc(content.conclusion?.preparationItems || "")}</textarea></div></div>
+    `;
+  }
+
+  return `
+    ${common}
+    <div class="card"><h3>Compte-rendu libre</h3><div class="form-grid"><textarea id="idocFreeSubject" placeholder="Objet">${esc(content.free?.subject || "")}</textarea><textarea id="idocFreeContext" placeholder="Contexte">${esc(content.free?.context || "")}</textarea><textarea id="idocFreeDiscussed" placeholder="Éléments abordés">${esc(content.free?.discussedItems || "")}</textarea><textarea id="idocFreeDecisions" placeholder="Décisions prises">${esc(content.free?.decisionsTaken || "")}</textarea><textarea id="idocFreeActions" placeholder="Actions">${esc(content.free?.actions || "")}</textarea><textarea id="idocFreeOwners" placeholder="Responsables">${esc(content.free?.owners || "")}</textarea><textarea id="idocFreeDue" placeholder="Échéances">${esc(content.free?.dueDates || "")}</textarea><textarea id="idocFreeVigilance" placeholder="Points de vigilance">${esc(content.free?.vigilancePoints || "")}</textarea><textarea id="idocFreeNextStep" placeholder="Prochaine étape">${esc(content.free?.nextStep || "")}</textarea></div></div>
+    <div class="card"><h3>Plan d'action</h3><div class="doc-row doc-row-head"><span>Action</span><span>Responsable</span><span>Échéance</span><span>Priorité</span><span>Indicateur de réussite</span><span>Créer dans DEOS</span><span></span></div><div id="idocActionPlanRows" class="doc-rows">${actionRows}</div><button class="secondary" type="button" onclick="addInterviewActionPlanRow()">Ajouter une action</button></div>
+  `;
+}
+
+function renderDocumentTemplatePickerModal() {
+  if (!documentTemplatePickerDialog.open) return "";
+  return `
+    <div class="modal-backdrop document-template-modal" onclick="closeDocumentTemplatePicker()">
+      <div class="modal-panel document-template-panel" onclick="event.stopPropagation()">
+        <div class="modal-head"><h2>Créer un compte-rendu d'entretien</h2><button class="icon-close" type="button" onclick="closeDocumentTemplatePicker()" aria-label="Fermer">×</button></div>
+        <div class="documents-template-grid">
+          ${interviewTemplateCatalog.map(item => `
+            <article class="documents-template-card">
+              <h3>${esc(item.title)}</h3>
+              <p>${esc(item.description)}</p>
+              <button class="action" type="button" onclick="openDocumentEditModalCreate('${esc(item.key)}')">Choisir ce modèle</button>
+            </article>
+          `).join("")}
+        </div>
+        <div class="modal-actions"><button class="secondary" type="button" onclick="closeDocumentTemplatePicker()">Annuler</button></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDocumentEditModal() {
+  if (!documentEditDialog.open) return "";
+  const doc = documentDraftFromDialog();
+  if (!doc) return "";
+  const errorHtml = documentEditDialog.error ? `<p class="folder-delete-error">${esc(documentEditDialog.error)}</p>` : "";
+  return `
+    <div class="modal-backdrop document-edit-modal" onclick="closeDocumentEditModal()">
+      <div class="modal-panel document-edit-panel" onclick="event.stopPropagation()">
+        <div class="modal-head"><h2>${documentEditDialog.mode === "edit" ? "Modifier le document" : "Créer un compte-rendu"}</h2><button class="icon-close" type="button" onclick="closeDocumentEditModal()" aria-label="Fermer">×</button></div>
+        ${errorHtml}
+        <div class="document-edit-shell">${documentFormBody(doc)}</div>
+        <div class="modal-actions">
+          <button class="action" type="button" onclick="saveDocumentFromModal(false)">Enregistrer</button>
+          <button class="secondary" type="button" onclick="saveDocumentAndContinue()">Enregistrer et continuer</button>
+          <button class="secondary" type="button" onclick="closeDocumentEditModal()">Annuler</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDocumentDeleteModal() {
+  if (!documentDeleteDialog.open) return "";
+  const doc = byId("documents", documentDeleteDialog.documentId);
+  if (!doc) return "";
+  return `
+    <div class="modal-backdrop document-delete-modal" onclick="closeDocumentDeleteModal()">
+      <div class="modal-panel" onclick="event.stopPropagation()">
+        <div class="modal-head"><h2>Supprimer le document</h2><button class="icon-close" type="button" onclick="closeDocumentDeleteModal()" aria-label="Fermer">×</button></div>
+        <p>Confirmer la suppression de <strong>${esc(doc.title || "Document")}</strong>.</p>
+        <p class="muted">Cette action ne supprime pas les objets liés (actions, projets, décisions, agenda).</p>
+        <div class="modal-actions">
+          <button class="danger" type="button" onclick="confirmDocumentDelete('${esc(doc.id)}')">Supprimer</button>
+          <button class="secondary" type="button" onclick="closeDocumentDeleteModal()">Annuler</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDocumentModalOverlays() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  root.querySelectorAll(".document-template-modal, .document-edit-modal, .document-delete-modal").forEach(node => node.remove());
+  if (documentTemplatePickerDialog.open) root.insertAdjacentHTML("beforeend", renderDocumentTemplatePickerModal());
+  if (documentEditDialog.open) root.insertAdjacentHTML("beforeend", renderDocumentEditModal());
+  if (documentDeleteDialog.open) root.insertAdjacentHTML("beforeend", renderDocumentDeleteModal());
+}
+
+function printInterviewDocument(id, format = "A4") {
+  const doc = byId("documents", id);
+  if (!doc) return;
+  const content = doc.content || {};
+  const managerLabel = documentManagerNames(doc) || "À compléter";
+  const statusLabel = documentStatusLabelV520(doc);
+  const confLabel = documentConfidentialityLabelV520(doc);
+  const actionRows = ensureArray(content.actionPlan).map(row => `<tr><td>${esc(row.action || "")}</td><td>${esc(row.owner || "")}</td><td>${esc(row.due || "")}</td><td>${esc(row.priority || "")}</td><td>${esc(row.successIndicator || "")}</td></tr>`).join("") || `<tr><td colspan="5">Aucune action</td></tr>`;
+  const resultRows = ensureArray(content.keyResults).map(row => `<tr><td>${esc(row.indicator || "")}</td><td>${esc(row.result || "")}</td><td>${esc(row.objective || "")}</td><td>${esc(row.gap || "")}</td><td>${esc(row.trend || "")}</td><td>${esc(row.comment || "")}</td></tr>`).join("") || `<tr><td colspan="6">Aucun indicateur</td></tr>`;
+  const a4Sections = `
+    <section><h3>Informations</h3><p><strong>Date:</strong> ${esc(doc.date || "")}${doc.startTime ? ` · ${esc(doc.startTime)}` : ""}${doc.endTime ? ` - ${esc(doc.endTime)}` : ""}</p><p><strong>Manager:</strong> ${esc(managerLabel)}</p><p><strong>Période:</strong> ${esc(doc.period || "")}</p><p><strong>Participants:</strong> ${esc(doc.participants || "")}</p><p><strong>Confidentialité:</strong> ${esc(confLabel)}</p></section>
+    <section><h3>Synthèse</h3><p>${esc(doc.summary || documentSummaryPreview(doc) || "")}</p></section>
+    <section><h3>Résultats clés</h3><table><thead><tr><th>Indicateur</th><th>Résultat</th><th>Objectif</th><th>Écart</th><th>Tendance</th><th>Commentaire</th></tr></thead><tbody>${resultRows}</tbody></table></section>
+    <section><h3>Plan d'action</h3><table><thead><tr><th>Action</th><th>Responsable</th><th>Échéance</th><th>Priorité</th><th>Indicateur de réussite</th></tr></thead><tbody>${actionRows}</tbody></table></section>
+  `;
+  const a5Blocks = `
+    <section><h3>Résultats clés</h3><p>${esc((ensureArray(content.keyResults).slice(0, 4).map(row => `${row.indicator || "Indicateur"}: ${row.result || ""}`).join(" · ")) || "À compléter")}</p></section>
+    <section><h3>Réussite</h3><p>${esc(content.synthesis?.mainSuccess || content.review?.successes || "À compléter")}</p></section>
+    <section><h3>Difficulté</h3><p>${esc(content.synthesis?.mainDifficulty || content.review?.difficulties || "À compléter")}</p></section>
+    <section><h3>Décisions</h3><p>${esc(content.free?.decisionsTaken || "À compléter")}</p></section>
+    <section><h3>Actions</h3><p>${esc((ensureArray(content.actionPlan).slice(0, 4).map(row => `${row.action || "Action"} (${row.owner || ""})`).join(" · ")) || "À compléter")}</p></section>
+    <section><h3>Priorité / prochain point</h3><p>${esc(content.synthesis?.nextPriority || content.conclusion?.priority || content.conclusion?.expectedNextResult || "À compléter")}</p><p>${esc(documentNextInterviewDate(doc) || "")}</p></section>
+  `;
+
+  const html = `
+    <html>
+      <head>
+        <title>${esc(doc.title || "Compte-rendu")}</title>
+        <style>
+          body{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;line-height:1.45;padding:16px}
+          h1,h2,h3{margin:0 0 8px 0}
+          .head{border-bottom:1px solid #cbd5e1;padding-bottom:8px;margin-bottom:10px}
+          .meta{font-size:12px;color:#334155}
+          section{border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:10px 0;background:#fff}
+          table{width:100%;border-collapse:collapse;font-size:12px}
+          th,td{border:1px solid #e2e8f0;padding:6px;text-align:left;vertical-align:top}
+          .a5{display:grid;grid-template-columns:1fr;gap:8px;font-size:12px}
+          @media print{button{display:none}}
+        </style>
+      </head>
+      <body>
+        <div class="head"><h1>${esc(doc.title || "Compte-rendu")}</h1><div class="meta">Date ${esc(doc.date || "")} · Manager ${esc(managerLabel)} · Statut ${esc(statusLabel)} · Confidentialité ${esc(confLabel)}</div></div>
+        ${format === "A5" ? `<div class="a5">${a5Blocks}</div>` : a4Sections}
+        <script>window.print()</script>
+      </body>
+    </html>
+  `;
+  const win = window.open("", "_blank");
+  if (!win) return window.print();
+  win.document.write(html);
+  win.document.close();
+}
+
+function addDocument() {
+  openDocumentEditModalCreate("free_report");
 }
 
 const linkCategories = ["Pilotage", "Performance", "RH", "Communication", "Documents", "Sécurité", "Gestion de crise", "Outils Carrefour", "Exploitation", "Social", "Outils", "Tableau de bord", "Autre"];
@@ -12879,14 +14805,14 @@ function renderSettings(message = "") {
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
   const statusMessage = message || restoreSuccessMessage;
   restoreSuccessMessage = "";
-  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(identity.appVersion)}" placeholder="Version" oninput="updateSettingsPreview()"><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button id="backupExportBtn" class="action" onclick="exportBackup()">Exporter toutes les données</button><button id="backupImportBtn" class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button><input id="backupFileInput" type="file" accept=".json,application/json" style="display:none" onchange="onBackupFileInputChange(event)"></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
+  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(DEOS_VERSION)}" placeholder="Version" readonly><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button id="backupExportBtn" class="action" onclick="exportBackup()">Exporter toutes les données</button><button id="backupImportBtn" class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button><input id="backupFileInput" type="file" accept=".json,application/json" style="display:none" onchange="onBackupFileInputChange(event)"></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
 
 function readSettingsForm() {
   return normalizeIdentity({
     ...identity,
     appName: document.getElementById("setAppName")?.value,
-    appVersion: document.getElementById("setAppVersion")?.value,
+    appVersion: DEOS_VERSION,
     siteName: document.getElementById("setSiteName")?.value,
     directorName: document.getElementById("setDirectorName")?.value,
     directorRole: document.getElementById("setDirectorRole")?.value,
