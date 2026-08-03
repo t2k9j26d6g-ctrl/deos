@@ -177,6 +177,8 @@ let managerDeleteDialog = {
 };
 let a5PrintCleanupBound = false;
 let modalEscapeBound = false;
+let actionTitleMigrationMode = false;
+let actionTitleMigrationStats = { corrected: 0, examples: [] };
 
 const labels = { green: "Maîtrisé", orange: "À suivre", red: "Critique", not_configured: "Non configuré", configuration_saved: "Configuration enregistrée", connection_required: "Connexion requise", connected: "Connecté", connection_error: "Erreur de connexion" };
 const icons = { green: "🟢", orange: "🟠", red: "🔴" };
@@ -897,6 +899,47 @@ function repairEncodingValue(value) {
   return value;
 }
 
+function shouldKeepLeadingQuestionTitle(restTitle) {
+  return /^(qui|que|quoi|quand|comment|pourquoi|ou|où|est-ce|doit|faut|peut|peux|pouvons|y a-t-il)\b/i.test(String(restTitle || ""));
+}
+
+function cleanActionTitleArtifact(value) {
+  const original = String(value ?? "");
+  if (!original) return { title: "", changed: false, reason: "empty" };
+
+  const withoutBom = original.replace(/^\uFEFF+/, "");
+  if (withoutBom !== original) {
+    return { title: withoutBom, changed: true, reason: "leading-bom" };
+  }
+
+  const replacementPrefix = original.match(/^[\uFFFD]+[\s.:;\-]*/u);
+  if (replacementPrefix) {
+    const rest = original.slice(replacementPrefix[0].length).trimStart();
+    return rest ? { title: rest, changed: true, reason: "replacement-char-prefix" } : { title: original, changed: false, reason: "replacement-char-empty" };
+  }
+
+  const questionPrefix = original.match(/^(?:\?{1,3}|¿)\s+/u);
+  if (questionPrefix) {
+    const rest = original.slice(questionPrefix[0].length).trimStart();
+    if (rest && !shouldKeepLeadingQuestionTitle(rest)) {
+      return { title: rest, changed: true, reason: "leading-question-placeholder" };
+    }
+  }
+
+  return { title: original, changed: false, reason: "none" };
+}
+
+function normalizeActionTitle(value) {
+  const cleaned = cleanActionTitleArtifact(value);
+  if (actionTitleMigrationMode && cleaned.changed) {
+    actionTitleMigrationStats.corrected += 1;
+    if (actionTitleMigrationStats.examples.length < 5) {
+      actionTitleMigrationStats.examples.push({ before: String(value || ""), after: cleaned.title, reason: cleaned.reason });
+    }
+  }
+  return cleaned.title;
+}
+
 function normalizeEntity(name, item) {
   item = repairEncodingValue(item);
   const base = { ...item, id: item.id || newId(name) };
@@ -968,7 +1011,7 @@ function normalizeEntity(name, item) {
     };
     return merged;
   }
-  if (name === "actions") return { link: "", owner: "", due: "", level: "orange", done: false, linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
+  if (name === "actions") return { link: "", owner: "", due: "", level: "orange", done: false, linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, title: normalizeActionTitle(base.title), linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
   if (name === "performance") return normalizePerformance(base);
   if (name === "performance_imports") {
     const merged = { importDate: new Date().toLocaleString("fr-FR"), sourceFile: "", sourceType: "", period: "", indicators: [], status: "brouillon", validatedBy: "", comments: "", files: [], preview: [], conflicts: [], ...base };
@@ -1011,9 +1054,18 @@ async function init() {
   identity = savedIdentity(await loadIdentityDefaults());
   persistIdentity();
   applyIdentity();
+  actionTitleMigrationMode = true;
+  actionTitleMigrationStats = { corrected: 0, examples: [] };
   for (const name of entities) {
     state[name] = normalizeCollection(name, saved(name, await loadJson(name)));
     persist(name);
+  }
+  actionTitleMigrationMode = false;
+  if (actionTitleMigrationStats.corrected > 0) {
+    console.info("[DEOS Actions] Migration des titres appliquée", {
+      corrected: actionTitleMigrationStats.corrected,
+      examples: actionTitleMigrationStats.examples
+    });
   }
   state.settings = ensureSettings(saved("settings", {}));
   // V5.5 — Charger les événements externes (Google Calendar)
@@ -3067,7 +3119,7 @@ function saveActionEdit(id) {
   }
   state.actions[i] = normalizeEntity("actions", next);
   persist("actions");
-  addActivity("? Action modifiée", state.actions[i].title, state.actions[i].link || state.actions[i].owner || "", id);
+  addActivity("Action modifiée", state.actions[i].title, state.actions[i].link || state.actions[i].owner || "", id);
   if (a5SummaryDialog.open && a5SummaryDialog.type === "action" && sameId(a5SummaryDialog.sourceId, id)) {
     a5SummaryDialog.model = buildActionA5Summary(id);
   }
@@ -3742,7 +3794,7 @@ function completeCockpitAction(id) {
   if (!a) return;
   a.done = true;
   persist("actions");
-  addActivity("? Action terminée", a.title, a.link || "", a.id);
+  addActivity("Action terminée", a.title, a.link || "", a.id);
   renderCockpit();
 }
 
@@ -4218,7 +4270,7 @@ function createActionFromMeeting(source, meetingRef, payload) {
   }
 
   try {
-    state.actions.unshift(action);
+    state.actions.unshift(normalizeEntity("actions", action));
     persist("actions");
 
     if (source === "manual") {
@@ -4232,7 +4284,7 @@ function createActionFromMeeting(source, meetingRef, payload) {
       saveExternalEventEnrichment(String(meetingRef), enrichment);
     }
 
-    addActivity("? Action", action.title, `Créée depuis le rendez-vous: ${payload.meetingTitle}`, action.id);
+    addActivity("Action", action.title, `Créée depuis le rendez-vous: ${payload.meetingTitle}`, action.id);
     return action;
   } catch (error) {
     rollbackMeetingObjectCreation(snapshot);
@@ -5200,7 +5252,7 @@ function transformIdeaToAction(id, ideaId) {
   const p = prepById(id), a = byId("agenda", p?.agendaId), idea = p?.ideas.find(x => x.id === ideaId);
   if (!p || !idea) return;
   const action = { id: newId("action"), title: idea.text, link: a?.title || "Réunion", owner: "", level: idea.importance === "critique" ? "red" : idea.importance === "importante" ? "orange" : "green", due: "", done: false, linkedManagers: idea.managerId ? [idea.managerId] : p.linkedManagers, linkedProjects: idea.projectId ? [idea.projectId] : p.linkedProjects, linkedFolders: idea.folderId ? [idea.folderId] : p.linkedFolders, linkedMeetingPreparations: [p.id] };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   p.linkedActions = [...new Set([...(p.linkedActions || []), action.id])];
   persist("actions");
   addActivity("Action", action.title, "Créée depuis préparation réunion", action.id);
@@ -5283,7 +5335,7 @@ function createActionFromPrepItem(id, itemId) {
   const p = prepById(id), item = p?.prepItems.find(x => x.id === itemId), a = byId("agenda", p?.agendaId);
   if (!p || !item) return;
   const action = { id: newId("action"), title: item.title, owner: item.owner || "", due: item.due || "", level: item.priority === "critique" ? "red" : item.priority === "importante" ? "orange" : "green", link: a?.title || "Réunion", done: item.status === "Prêt", linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedMeetingPreparations: [p.id] };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   p.linkedActions = [...new Set([...(p.linkedActions || []), action.id])];
   persist("actions");
   addActivity("Action", action.title, "Créée depuis élément à préparer", action.id);
@@ -5397,7 +5449,7 @@ function createConductAction(id) {
   const p = prepById(id), text = document.getElementById("runAction")?.value.trim(), a = byId("agenda", p?.agendaId);
   if (!p || !text) return;
   const action = { id: newId("action"), title: text, link: a?.title || "Réunion", owner: "", due: "", level: "orange", done: false, linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedFolders: p.linkedFolders, linkedDecisions: p.linkedDecisions, linkedMeetingPreparations: [p.id] };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   p.linkedActions = [...new Set([...(p.linkedActions || []), action.id])];
   p.run.actions.push({ id: newId("run"), type: "Action", text, createdAt: new Date().toLocaleString("fr-FR"), actionId: action.id });
   persist("actions");
@@ -6391,7 +6443,7 @@ function saveFolderAction(folderId) {
   const title = document.getElementById("faTitle").value.trim();
   if (!folder || !title) return;
   const a = { id: newId("action"), title, link: folder.name, owner: document.getElementById("faOwner").value.trim(), due: document.getElementById("faDue").value, done: false, linkedFolders: [folder.id] };
-  state.actions.unshift(a);
+  state.actions.unshift(normalizeEntity("actions", a));
   persist("actions");
   addActivity("Action", a.title, folder.name, a.id);
   openFolder(folder.id);
@@ -6481,7 +6533,7 @@ function folderManagersList(items, folder) {
 
 function folderActionsList(items, folderId) {
   const sorted = [...items].sort((a, b) => Number(Boolean(a.done)) - Number(Boolean(b.done)) || (daysUntil(a.due) ?? 9999) - (daysUntil(b.due) ?? 9999) || levelRank(a.level || "orange") - levelRank(b.level || "orange"));
-  return sorted.map(a => `<div class="item row"><div class="clickable" onclick="setView('actions')"><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.priorityLevel || a.level || "À suivre")} · ${esc(a.owner || "")}</span><span class="meta">Échéance ${esc(a.due || "Non définie")}</span></div><button class="secondary" onclick="completeFolderAction('${a.id}','${folderId}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || folderEmpty(folderId, "action", "action");
+  return sorted.map(a => `<div class="item row"><div class="clickable" onclick="setView('actions')"><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.priorityLevel || a.level || "À suivre")} · ${esc(a.owner || "")}</span><span class="meta">Échéance ${esc(a.due || "Non définie")}</span></div><button class="secondary" onclick="completeFolderAction('${a.id}','${folderId}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || folderEmpty(folderId, "action", "action");
 }
 
 function completeFolderAction(actionId, folderId) {
@@ -6536,16 +6588,16 @@ function actionItem(a) {
   const folders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id)).map(f => f.name).join(" · ");
   const projects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
   const decisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
-  return `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="openAction('${a.id}')">Ouvrir</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="openAction('${a.id}')">Ouvrir</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function addAction() {
   const title = document.getElementById("aTitle").value.trim();
   if (!title) return;
   const a = { id: newId("action"), title, link: document.getElementById("aLink").value.trim(), done: false, linkedFolders: checkedValues("aFolders"), linkedProjects: checkedValues("aProjects"), linkedDecisions: checkedValues("aDecisions") };
-  state.actions.unshift(a);
+  state.actions.unshift(normalizeEntity("actions", a));
   persist("actions");
-  addActivity("? Action", a.title, a.link, a.id);
+  addActivity("Action", a.title, a.link, a.id);
   if (closeCockpitQuickCreateIfNeeded("action")) return;
   renderActions();
 }
@@ -6559,7 +6611,7 @@ function toggleAction(id) {
   if (!a) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action modifiée", a.title, a.done ? "Terminée" : "Réouverte", a.id);
+  addActivity("Action modifiée", a.title, a.done ? "Terminée" : "Réouverte", a.id);
   renderActions();
 }
 
@@ -6602,7 +6654,7 @@ function optionLines(items, currentIds, labelFn) {
 
 function linkedActionsList(m) {
   const linked = state.actions.filter(a => (m.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedManagerAction('${m.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedManagerAction('${m.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
 }
 
 function linkedProjectsList(m) {
@@ -6808,7 +6860,7 @@ function toggleLinkedManagerAction(managerId, actionId) {
   if (!a || !m) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action liée modifiée", a.title, a.done ? "Terminée" : "Réouverte", managerId);
+  addActivity("Action liée modifiée", a.title, a.done ? "Terminée" : "Réouverte", managerId);
   openManager(managerId);
 }
 
@@ -7092,7 +7144,7 @@ function projectManagersList(p) {
 
 function projectActionsList(p) {
   const linked = state.actions.filter(a => (p.linkedActions || []).includes(a.id) || ensureArray(a.linkedProjects).includes(p.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedProjectAction('${p.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedProjectAction('${p.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action liée.</div>`;
 }
 
 function projectDecisionsList(p) {
@@ -7195,7 +7247,7 @@ function toggleLinkedProjectAction(projectId, actionId) {
   if (!a || !p) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action projet modifiée", a.title, a.done ? "Terminée" : "Réouverte", projectId);
+  addActivity("Action projet modifiée", a.title, a.done ? "Terminée" : "Réouverte", projectId);
   openProject(projectId);
 }
 
@@ -7559,7 +7611,7 @@ function decisionProjectsList(d) {
 
 function decisionActionsList(d) {
   const linked = state.actions.filter(a => (d.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedDecisionAction('${d.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
+  return linked.map(a => `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div><button class="secondary" onclick="toggleLinkedDecisionAction('${d.id}','${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
 }
 
 function decisionDocumentsList(d) {
@@ -7875,7 +7927,7 @@ function saveDecisionAction(id) {
   const title = document.getElementById("daTitle").value.trim();
   if (!title) return;
   const action = { id: newId("action"), title, link: d.title, done: false };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   d.linkedActions = ensureArray(d.linkedActions);
   d.linkedActions.unshift(action.id);
   checkedValues("daManagers").forEach(managerId => {
@@ -7896,7 +7948,7 @@ function saveDecisionAction(id) {
   persist("decisions");
   persist("managers");
   persist("projects");
-  addActivity("? Action créée depuis décision", action.title, d.title, id);
+  addActivity("Action créée depuis décision", action.title, d.title, id);
   openDecision(id);
 }
 
@@ -7905,7 +7957,7 @@ function toggleLinkedDecisionAction(decisionId, actionId) {
   if (!a) return;
   a.done = !a.done;
   persist("actions");
-  addActivity("? Action décision modifiée", a.title, a.done ? "Terminée" : "Réouverte", decisionId);
+  addActivity("Action décision modifiée", a.title, a.done ? "Terminée" : "Réouverte", decisionId);
   openDecision(decisionId);
 }
 
@@ -7961,7 +8013,7 @@ function journalDecisionsList(j) {
 
 function journalActionsList(j) {
   const linked = state.actions.filter(a => (j.linkedActions || []).includes(a.id));
-  return linked.map(a => `<div class="item"><strong>${a.done ? "?" : "?"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
+  return linked.map(a => `<div class="item"><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}</span><span class="meta">ID ${esc(a.id)}</span></div>`).join("") || `<div class="empty">Aucune action générée.</div>`;
 }
 
 function journalDocumentsList(j) {
@@ -8011,7 +8063,7 @@ function saveJournalAction(id) {
   const title = document.getElementById("jaTitle").value.trim();
   if (!title) return;
   const action = { id: newId("action"), title, link: j.title, done: false };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   j.linkedActions = ensureArray(j.linkedActions);
   j.linkedActions.unshift(action.id);
   checkedValues("jaManagers").forEach(managerId => {
@@ -8036,7 +8088,7 @@ function saveJournalAction(id) {
     }
   });
   persist("actions"); persist("journal"); persist("managers"); persist("projects"); persist("decisions");
-  addActivity("? Action créée depuis Journal", action.title, j.title, id);
+  addActivity("Action créée depuis Journal", action.title, j.title, id);
   openJournal(id);
 }
 
@@ -9195,7 +9247,7 @@ function performanceIndicatorAction(id, label) {
   const p = byId("performance", id);
   const title = `Performance ${perfPeriodLabel(p)} - ${label}`;
   if (state.actions.some(a => a.title === title)) return;
-  state.actions.unshift({ id: newId("action"), title, link: label, owner: "", level: "orange", due: "", done: false, linkedFolders: p.linkedFolders, linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedPerformance: [id] });
+  state.actions.unshift(normalizeEntity("actions", { id: newId("action"), title, link: label, owner: "", level: "orange", due: "", done: false, linkedFolders: p.linkedFolders, linkedManagers: p.linkedManagers, linkedProjects: p.linkedProjects, linkedPerformance: [id] }));
   persist("actions");
   addActivity("Action", title, "Créée depuis Performance", id);
   renderPerformance();
@@ -12512,7 +12564,7 @@ function createReportAction() {
   const text = document.getElementById("rwLine")?.value.trim();
   if (!text || state.actions.some(a => a.title === text)) return;
   const action = { id: newId("action"), title: text, owner: document.getElementById("rwLineOwner").value.trim(), due: document.getElementById("rwLineDue").value, level: document.getElementById("rwLinePriority").value, done: false, link: reportWizard.title, linkedFolders: reportLinkedIds("Folders"), linkedManagers: reportLinkedIds("Managers"), linkedProjects: reportLinkedIds("Projects"), linkedDecisions: reportLinkedIds("Decisions") };
-  state.actions.unshift(action);
+  state.actions.unshift(normalizeEntity("actions", action));
   persist("actions");
   addActivity("Action", action.title, "Créée depuis compte rendu", action.id);
   reportWizard.selectedActions = [...new Set([...(reportWizard.selectedActions || []), action.id])];
