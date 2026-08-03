@@ -71,6 +71,308 @@ const state = Object.fromEntries(entities.map(name => [name, []]));
 state.settings = {};
 state.externalCalendarEvents = []; // Événements Google Calendar importés (V5.5)
 state.externalEventEnrichments = {}; // Enrichissements locaux des événements Google (V5.7)
+
+const DEOS_STORAGE_KEYS = Object.freeze({
+  actions: "deos_actions",
+  managers: "deos_managers",
+  projects: "deos_projects",
+  decisions: "deos_decisions",
+  priorities: "deos_priorities",
+  activity: "deos_activity",
+  journal: "deos_journal",
+  documents: "deos_documents",
+  agenda: "deos_agenda",
+  folders: "deos_folders",
+  performance: "deos_performance",
+  meetingPreparations: "deos_meetingPreparations",
+  links: "deos_links",
+  performance_imports: "deos_performance_imports",
+  settings: "deos_settings",
+  identity: "deos_identity",
+  external_events: "deos_external_events",
+  external_event_enrichments: "deos_external_event_enrichments",
+  backupLastExport: "deos_backup_last_export",
+  backupLastRestore: "deos_backup_last_restore",
+  backupCategoryCount: "deos_backup_category_count",
+  restoreSuccessMessage: "deos_restore_success",
+  gcToken: "deos_gc_token",
+  gcEmail: "deos_gc_email"
+});
+
+const DEOS_STORAGE_PREFIX = "deos_";
+const DEOS_STORAGE_DEBUG = false;
+
+function buildStorageError(code, operation, key, message, originalError = null) {
+  return {
+    code,
+    operation,
+    key,
+    message,
+    originalError
+  };
+}
+
+function looksLikeStorageQuotaError(error) {
+  if (!error) return false;
+  return error.name === "QuotaExceededError" || error.code === 22 || error.code === 1014;
+}
+
+function logStorageOperation(scope, operation, key, startedAt, success, extra = "") {
+  if (!DEOS_STORAGE_DEBUG) return;
+  const duration = Math.max(0, Date.now() - startedAt);
+  const suffix = extra ? ` · ${extra}` : "";
+  const status = success ? "ok" : "error";
+  console.info(`[DEOS Storage] ${scope} ${operation} ${key} · ${status} · ${duration}ms${suffix}`);
+}
+
+class BrowserStorageAdapter {
+  constructor(storageArea, scopeLabel) {
+    this.storageArea = storageArea;
+    this.scopeLabel = scopeLabel;
+  }
+
+  getRaw(key) {
+    const startedAt = Date.now();
+    try {
+      const value = this.storageArea.getItem(key);
+      const size = typeof value === "string" ? value.length : 0;
+      logStorageOperation(this.scopeLabel, "getRaw", key, startedAt, true, `size=${size}`);
+      return value;
+    } catch (error) {
+      logStorageOperation(this.scopeLabel, "getRaw", key, startedAt, false);
+      throw buildStorageError("STORAGE_READ_FAILED", "getRaw", key, "Lecture du stockage impossible.", error);
+    }
+  }
+
+  setRaw(key, value) {
+    const startedAt = Date.now();
+    const rawValue = String(value ?? "");
+    try {
+      this.storageArea.setItem(key, rawValue);
+      logStorageOperation(this.scopeLabel, "setRaw", key, startedAt, true, `size=${rawValue.length}`);
+    } catch (error) {
+      const quotaCode = looksLikeStorageQuotaError(error) ? "STORAGE_QUOTA_EXCEEDED" : "STORAGE_WRITE_FAILED";
+      const quotaMessage = looksLikeStorageQuotaError(error)
+        ? "Le quota de stockage est dépasse."
+        : "Ecriture du stockage impossible.";
+      logStorageOperation(this.scopeLabel, "setRaw", key, startedAt, false);
+      throw buildStorageError(quotaCode, "setRaw", key, quotaMessage, error);
+    }
+  }
+
+  remove(key) {
+    const startedAt = Date.now();
+    try {
+      this.storageArea.removeItem(key);
+      logStorageOperation(this.scopeLabel, "remove", key, startedAt, true);
+    } catch (error) {
+      logStorageOperation(this.scopeLabel, "remove", key, startedAt, false);
+      throw buildStorageError("STORAGE_REMOVE_FAILED", "remove", key, "Suppression du stockage impossible.", error);
+    }
+  }
+
+  has(key) {
+    return this.getRaw(key) !== null;
+  }
+
+  keys(prefix = "") {
+    const startedAt = Date.now();
+    try {
+      const all = Object.keys(this.storageArea);
+      const filtered = prefix ? all.filter(key => key.startsWith(prefix)) : all;
+      logStorageOperation(this.scopeLabel, "keys", prefix || "*", startedAt, true, `count=${filtered.length}`);
+      return filtered;
+    } catch (error) {
+      logStorageOperation(this.scopeLabel, "keys", prefix || "*", startedAt, false);
+      throw buildStorageError("STORAGE_KEYS_FAILED", "keys", prefix, "Listing des clés de stockage impossible.", error);
+    }
+  }
+
+  get(key) {
+    const raw = this.getRaw(key);
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      throw buildStorageError("STORAGE_JSON_INVALID", "get", key, "La donnée stockée n'est pas un JSON valide.", error);
+    }
+  }
+
+  set(key, value) {
+    let serialized;
+    try {
+      serialized = JSON.stringify(value);
+    } catch (error) {
+      throw buildStorageError("STORAGE_SERIALIZE_FAILED", "set", key, "La donnée ne peut pas être sérialisée en JSON.", error);
+    }
+    this.setRaw(key, serialized);
+    return serialized;
+  }
+}
+
+class DeosDataService {
+  constructor(adapter, keyMap, options = {}) {
+    this.adapter = adapter;
+    this.keyMap = keyMap || {};
+    this.prefix = options.prefix || "";
+  }
+
+  resolveKey(key) {
+    if (this.keyMap[key]) return this.keyMap[key];
+    if (typeof key === "string" && key.startsWith(this.prefix)) return key;
+    return `${this.prefix}${key}`;
+  }
+
+  load(key, defaultValue, options = {}) {
+    const storageKey = this.resolveKey(key);
+    const raw = this.adapter.getRaw(storageKey);
+    if (raw === null) return defaultValue;
+    if (options.raw) return raw;
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      if (options.safe) return defaultValue;
+      throw buildStorageError("STORAGE_JSON_INVALID", "load", storageKey, "La donnée stockée est invalide.", error);
+    }
+  }
+
+  loadRaw(key, defaultValue = null) {
+    return this.load(key, defaultValue, { raw: true });
+  }
+
+  save(key, value, options = {}) {
+    const storageKey = this.resolveKey(key);
+    const asRaw = !!options.raw;
+    let serialized;
+    if (asRaw) {
+      serialized = String(value ?? "");
+    } else {
+      try {
+        serialized = JSON.stringify(value);
+      } catch (error) {
+        throw buildStorageError("STORAGE_SERIALIZE_FAILED", "save", storageKey, "Impossible de sérialiser la donnée à enregistrer.", error);
+      }
+    }
+    const skipIfUnchanged = options.skipIfUnchanged !== false;
+    if (skipIfUnchanged) {
+      const currentRaw = this.adapter.getRaw(storageKey);
+      if (currentRaw === serialized) {
+        return { written: false, key: storageKey };
+      }
+    }
+    this.adapter.setRaw(storageKey, serialized);
+    return { written: true, key: storageKey };
+  }
+
+  saveRaw(key, value, options = {}) {
+    return this.save(key, value, { ...options, raw: true });
+  }
+
+  remove(key) {
+    const storageKey = this.resolveKey(key);
+    this.adapter.remove(storageKey);
+  }
+
+  exists(key) {
+    const storageKey = this.resolveKey(key);
+    return this.adapter.has(storageKey);
+  }
+
+  listKeys() {
+    return this.adapter.keys(this.prefix);
+  }
+
+  exportAll() {
+    const all = {};
+    for (const key of this.listKeys()) {
+      const value = this.adapter.getRaw(key);
+      if (typeof value === "string") all[key] = value;
+    }
+    return all;
+  }
+
+  importAll(rawMap) {
+    if (!rawMap || typeof rawMap !== "object" || Array.isArray(rawMap)) {
+      throw buildStorageError("STORAGE_IMPORT_INVALID", "importAll", "*", "Le contenu à importer est invalide.");
+    }
+    for (const [key, raw] of Object.entries(rawMap)) {
+      if (!String(key).startsWith(this.prefix)) continue;
+      this.adapter.setRaw(key, raw);
+    }
+  }
+
+  transaction(callback) {
+    if (typeof callback !== "function") return undefined;
+    return callback(this);
+  }
+}
+
+function createRepository(dataService, config) {
+  const fallbackFactory = typeof config.fallbackFactory === "function"
+    ? config.fallbackFactory
+    : () => config.fallbackValue;
+  const normalize = typeof config.normalize === "function" ? config.normalize : (value => value);
+  return {
+    key: config.key,
+    load(defaultValue) {
+      const fallback = defaultValue !== undefined ? defaultValue : fallbackFactory();
+      const value = dataService.load(config.key, fallback);
+      return normalize(value);
+    },
+    save(value, options = {}) {
+      return dataService.save(config.key, value, options);
+    },
+    remove() {
+      dataService.remove(config.key);
+    },
+    exists() {
+      return dataService.exists(config.key);
+    }
+  };
+}
+
+const localStorageAdapter = new BrowserStorageAdapter(localStorage, "localStorage");
+const sessionStorageAdapter = new BrowserStorageAdapter(sessionStorage, "sessionStorage");
+const deosDataService = new DeosDataService(localStorageAdapter, DEOS_STORAGE_KEYS, { prefix: DEOS_STORAGE_PREFIX });
+const deosSessionService = new DeosDataService(sessionStorageAdapter, DEOS_STORAGE_KEYS, { prefix: DEOS_STORAGE_PREFIX });
+
+const entityRepositories = Object.fromEntries(entities.map(name => [
+  name,
+  createRepository(deosDataService, {
+    key: name,
+    fallbackFactory: () => [],
+    normalize: value => normalizeCollection(name, value)
+  })
+]));
+
+const identityRepository = createRepository(deosDataService, {
+  key: "identity",
+  fallbackFactory: () => ({ ...identityDefaults }),
+  normalize: value => normalizeIdentity(value)
+});
+
+const settingsRepository = createRepository(deosDataService, {
+  key: "settings",
+  fallbackFactory: () => ({}),
+  normalize: value => ensureSettings(value || {})
+});
+
+const externalEventsRepository = createRepository(deosDataService, {
+  key: "external_events",
+  fallbackFactory: () => [],
+  normalize: value => ensureArray(value)
+});
+
+const externalEventEnrichmentsRepository = createRepository(deosDataService, {
+  key: "external_event_enrichments",
+  fallbackFactory: () => ({}),
+  normalize: value => (value && typeof value === "object" && !Array.isArray(value) ? value : {})
+});
+
+function getEntityRepository(name) {
+  return entityRepositories[name] || null;
+}
+
 let agendaEditId = "";
 let agendaFilter = "today";
 let agendaModalOpen = false;
@@ -252,12 +554,20 @@ async function loadIdentityDefaults() {
 }
 
 function saved(name, fallback) {
-  const v = localStorage.getItem(`deos_${name}`);
-  return v ? JSON.parse(v) : fallback;
+  const repo = getEntityRepository(name);
+  if (repo) {
+    return repo.load(fallback);
+  }
+  return deosDataService.load(name, fallback);
 }
 
 function persist(name) {
-  localStorage.setItem(`deos_${name}`, JSON.stringify(state[name]));
+  const repo = getEntityRepository(name);
+  if (repo) {
+    repo.save(state[name]);
+    return;
+  }
+  deosDataService.save(name, state[name]);
 }
 
 function normalizeIdentity(value = {}) {
@@ -281,12 +591,11 @@ function normalizeIdentity(value = {}) {
 }
 
 function savedIdentity(fallback) {
-  const v = localStorage.getItem("deos_identity");
-  return normalizeIdentity(v ? JSON.parse(v) : fallback);
+  return identityRepository.load(fallback);
 }
 
 function persistIdentity() {
-  localStorage.setItem("deos_identity", JSON.stringify(identity));
+  identityRepository.save(identity);
 }
 
 function identityName() {
@@ -358,7 +667,7 @@ function isTechnicalBackupKey(key) {
 }
 
 function deosKeys() {
-  return Object.keys(localStorage).filter(key => typeof key === "string" && key.startsWith("deos_"));
+  return deosDataService.listKeys();
 }
 
 function deosBackupKeys(payload) {
@@ -370,14 +679,7 @@ function deosBackupKeys(payload) {
 }
 
 function localStorageBackupPayload() {
-  const data = {};
-  for (const key of deosKeys()) {
-    const value = localStorage.getItem(key);
-    if (typeof value === "string") {
-      data[key] = value;
-    }
-  }
-  return data;
+  return deosDataService.exportAll();
 }
 
 function backupFileName(date = new Date()) {
@@ -401,12 +703,12 @@ function buildBackupPayload() {
 
 function saveBackupMetadata(type, date, categoryCount) {
   if (type === "export") {
-    localStorage.setItem("deos_backup_last_export", date);
+    deosDataService.saveRaw("backupLastExport", date, { skipIfUnchanged: false });
   } else if (type === "restore") {
-    localStorage.setItem("deos_backup_last_restore", date);
+    deosDataService.saveRaw("backupLastRestore", date, { skipIfUnchanged: false });
   }
   if (typeof categoryCount === "number") {
-    localStorage.setItem("deos_backup_category_count", String(categoryCount));
+    deosDataService.saveRaw("backupCategoryCount", String(categoryCount), { skipIfUnchanged: false });
   }
 }
 
@@ -420,9 +722,9 @@ function renderBackupMessage(message, type = "green") {
 
 function getBackupMetadata() {
   return {
-    lastExport: localStorage.getItem("deos_backup_last_export") || "Aucune exportation enregistrée",
-    lastRestore: localStorage.getItem("deos_backup_last_restore") || "Aucune restauration enregistrée",
-    categoryCount: Number(localStorage.getItem("deos_backup_category_count") || "0")
+    lastExport: deosDataService.loadRaw("backupLastExport", "") || "Aucune exportation enregistrée",
+    lastRestore: deosDataService.loadRaw("backupLastRestore", "") || "Aucune restauration enregistrée",
+    categoryCount: Number(deosDataService.loadRaw("backupCategoryCount", "0") || "0")
   };
 }
 
@@ -584,16 +886,11 @@ function closeBackupPreview() {
 
 function applyBackupPayload(payload) {
   const currentSnapshot = localStorageBackupPayload();
-  const backupKeys = deosBackupKeys(payload);
   try {
-    for (const key of backupKeys) {
-      localStorage.setItem(key, payload.localStorage[key]);
-    }
+    deosDataService.importAll(payload.localStorage || {});
     return { success: true };
   } catch (error) {
-    for (const [key, value] of Object.entries(currentSnapshot)) {
-      localStorage.setItem(key, value);
-    }
+    deosDataService.importAll(currentSnapshot);
     return { success: false, error: `La restauration a échoué : ${error.message || String(error)}` };
   }
 }
@@ -619,7 +916,7 @@ function confirmRestoreBackup() {
   }
   backupSafetySnapshot = null;
   saveBackupMetadata("restore", new Date().toISOString(), backupCategoryCount(backupPreviewPayload));
-  localStorage.setItem("deos_restore_success", "Restauration réussie.");
+  deosDataService.saveRaw("restoreSuccessMessage", "Restauration réussie.", { skipIfUnchanged: false });
   location.reload();
 }
 
@@ -810,6 +1107,49 @@ function meetingFollowUpSummaryHtml(value, options = {}) {
 function sameId(a, b) {
   return String(a) === String(b);
 }
+
+function buildDataParitySnapshot() {
+  const entitySummary = Object.fromEntries(entities.map(name => {
+    const rows = Array.isArray(state[name]) ? state[name] : [];
+    const ids = rows.map(row => String(row?.id || "")).filter(Boolean).sort();
+    return [name, { count: rows.length, ids }];
+  }));
+  return {
+    entities: entitySummary,
+    settingsKeys: Object.keys(state.settings || {}).sort(),
+    externalEventsCount: ensureArray(state.externalCalendarEvents).length,
+    externalEventEnrichmentsCount: Object.keys(state.externalEventEnrichments || {}).length,
+    storageKeys: deosDataService.listKeys().slice().sort()
+  };
+}
+
+function compareDataParitySnapshots(beforeSnapshot, afterSnapshot) {
+  const before = beforeSnapshot || {};
+  const after = afterSnapshot || {};
+  const diffs = [];
+  for (const name of entities) {
+    const beforeEntity = before.entities?.[name] || { count: 0, ids: [] };
+    const afterEntity = after.entities?.[name] || { count: 0, ids: [] };
+    if (beforeEntity.count !== afterEntity.count) {
+      diffs.push(`${name}: count ${beforeEntity.count} -> ${afterEntity.count}`);
+    }
+    if (beforeEntity.ids.join("|") !== afterEntity.ids.join("|")) {
+      diffs.push(`${name}: ids changed`);
+    }
+  }
+  if ((before.storageKeys || []).join("|") !== (after.storageKeys || []).join("|")) {
+    diffs.push("storageKeys changed");
+  }
+  return {
+    equal: diffs.length === 0,
+    differences: diffs
+  };
+}
+
+window.__deosParity = {
+  build: buildDataParitySnapshot,
+  compare: compareDataParitySnapshots
+};
 
 function ensureTimeline(value) {
   return ensureArray(value).map(item => typeof item === "string" ? { id: newId("event"), date: today(), title: item, detail: "" } : { id: item.id || newId("event"), date: item.date || today(), title: item.title || "Événement", detail: item.detail || "" });
@@ -1012,23 +1352,23 @@ async function init() {
   persistIdentity();
   applyIdentity();
   for (const name of entities) {
-    state[name] = normalizeCollection(name, saved(name, await loadJson(name)));
+    state[name] = saved(name, await loadJson(name));
     persist(name);
   }
-  state.settings = ensureSettings(saved("settings", {}));
+  state.settings = settingsRepository.load({});
   // V5.5 — Charger les événements externes (Google Calendar)
-  state.externalCalendarEvents = saved("external_events", []);
+  state.externalCalendarEvents = externalEventsRepository.load([]);
   // V5.7 — Charger les enrichissements locaux des événements Google
-  state.externalEventEnrichments = saved("external_event_enrichments", {});
+  state.externalEventEnrichments = externalEventEnrichmentsRepository.load({});
   ensureExternalEventEnrichments();
   // [DEOS STATE TRACE] After loadState
   console.log("[DEOS STATE TRACE] after loadState:", state.externalCalendarEvents.length);
   // Restaurer la session Google si disponible (token sessionStorage seulement)
-  const _gcToken = sessionStorage.getItem("deos_gc_token");
+  const _gcToken = deosSessionService.loadRaw("gcToken", "");
   if (_gcToken) {
     googleAccessToken = _gcToken;
     googleConnectionStatus = "connected";
-    googleConnectedEmail = sessionStorage.getItem("deos_gc_email") || "";
+    googleConnectedEmail = deosSessionService.loadRaw("gcEmail", "") || "";
   } else if (getCalendarConnectionSettings().provider === "google") {
     googleConnectionStatus = "connection_required";
   }
@@ -1044,10 +1384,10 @@ async function init() {
     }
     startGoogleCalendarAutoSync();
   }
-  const restoreMessage = localStorage.getItem("deos_restore_success");
+  const restoreMessage = deosDataService.loadRaw("restoreSuccessMessage", "");
   if (restoreMessage) {
     restoreSuccessMessage = restoreMessage;
-    localStorage.removeItem("deos_restore_success");
+    deosDataService.remove("restoreSuccessMessage");
   }
   document.getElementById("today").textContent = cockpitDateLabel(new Date());
   document.querySelectorAll(".nav").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
@@ -5975,7 +6315,7 @@ function sanitizeMeetingPreparationFolderLinks(prep, folderId) {
 }
 
 function persistExternalEventEnrichmentsOnly() {
-  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
+  externalEventEnrichmentsRepository.save(state.externalEventEnrichments || {});
 }
 
 function deleteFolderSafely(folderId, options = {}) {
@@ -9787,8 +10127,8 @@ function performancePrivacyAuditForSensitiveData() {
   };
   const perfLeak = scan(state.performance || []);
   const importsLeak = scan(state.performance_imports || []);
-  const localPerf = localStorage.getItem("deos_performance") || "";
-  const localImports = localStorage.getItem("deos_performance_imports") || "";
+  const localPerf = deosDataService.loadRaw("performance", "") || "";
+  const localImports = deosDataService.loadRaw("performance_imports", "") || "";
   const localLeak = patterns.some(regex => regex.test(localPerf) || regex.test(localImports));
   return {
     checkedAt: new Date().toISOString(),
@@ -12821,7 +13161,7 @@ function getCalendarConnectionSettings() {
 }
 
 function persistSettings() {
-  localStorage.setItem("deos_settings", JSON.stringify(state.settings));
+  settingsRepository.save(state.settings);
 }
 
 function settingsCalendarConnectionCard() {
@@ -12994,17 +13334,17 @@ function getGoogleOAuthClientId() {
 function setGoogleAccessToken(token) {
   googleAccessToken = token || null;
   if (token) {
-    sessionStorage.setItem("deos_gc_token", token);
+    deosSessionService.saveRaw("gcToken", token, { skipIfUnchanged: false });
   } else {
-    sessionStorage.removeItem("deos_gc_token");
-    sessionStorage.removeItem("deos_gc_email");
+    deosSessionService.remove("gcToken");
+    deosSessionService.remove("gcEmail");
     googleConnectedEmail = "";
   }
 }
 
 function getGoogleAccessToken() {
   if (googleAccessToken) return googleAccessToken;
-  const stored = sessionStorage.getItem("deos_gc_token");
+  const stored = deosSessionService.loadRaw("gcToken", "");
   if (stored) {
     googleAccessToken = stored;
     return stored;
@@ -13030,7 +13370,7 @@ async function fetchGoogleUserInfo() {
     if (resp.ok) {
       const data = await resp.json();
       googleConnectedEmail = data.email || "";
-      if (googleConnectedEmail) sessionStorage.setItem("deos_gc_email", googleConnectedEmail);
+      if (googleConnectedEmail) deosSessionService.saveRaw("gcEmail", googleConnectedEmail, { skipIfUnchanged: false });
     }
   } catch (e) {
     console.error("[DEOS] fetchGoogleUserInfo:", e);
@@ -13095,7 +13435,7 @@ function disconnectGoogleCalendar() {
   googleNextSyncAt = null;
   updateGoogleConnectionStatus("not_configured");
   state.externalCalendarEvents = [];
-  localStorage.removeItem("deos_external_events");
+  externalEventsRepository.remove();
   if (state.settings && state.settings.calendarConnection) {
     state.settings.calendarConnection.googleCalendarId = "";
     state.settings.calendarConnection.googleCalendarName = "";
@@ -13445,8 +13785,8 @@ function onClickSyncGoogleNow() {
 }
 
 function persistExternalEvents() {
-  localStorage.setItem("deos_external_events", JSON.stringify(state.externalCalendarEvents || []));
-  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
+  externalEventsRepository.save(state.externalCalendarEvents || []);
+  externalEventEnrichmentsRepository.save(state.externalEventEnrichments || {});
 }
 
 function googleConnectionStatusLabel() {
