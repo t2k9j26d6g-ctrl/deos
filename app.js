@@ -15108,45 +15108,55 @@ function documentFormBody(doc) {
   const managerIds = normalizeLinkedManagerIds(ensureArray(doc.managerIds || doc.linkedManagers));
   const previous = managerIds[0] ? findPreviousInterviewForManager(managerIds[0], doc.id) : null;
   const meetingOptions = state.agenda.map(meeting => `<option value="${esc(meeting.id)}" ${ensureArray(doc.linkedMeetingIds).includes(meeting.id) ? "selected" : ""}>${esc(meeting.date || "")} · ${esc(meeting.title || "Rendez-vous")}</option>`).join("");
+  const hasInterviewTemplate = Boolean(interviewTemplate);
+  const modelLabel = interviewTemplateLabel(interviewTemplate);
+  const hasExistingRelations = normalizeLinkedIdArray(doc.linkedFolders).length
+    || normalizeLinkedIdArray(doc.linkedProjects).length
+    || normalizeLinkedIdArray(doc.linkedActions).length
+    || normalizeLinkedIdArray(doc.linkedDecisions).length;
 
   const common = `
-    <div class="form-grid">
-      <input id="idocTitle" class="full" value="${esc(doc.title || "")}" placeholder="Titre *">
-      <input id="idocDate" type="date" value="${esc(doc.date || isoToday())}" placeholder="Date *">
-      <input id="idocStartTime" type="time" value="${esc(doc.startTime || "")}" placeholder="Heure de début">
-      <input id="idocEndTime" type="time" value="${esc(doc.endTime || "")}" placeholder="Heure de fin">
-      <input id="idocDuration" value="${esc(doc.duration || content.info?.duration || "")}" placeholder="Durée (min)">
-      <input id="idocPeriod" value="${esc(doc.period || content.info?.examinedPeriod || content.general?.examinedPeriod || "")}" placeholder="Période examinée">
-      <input id="idocLocation" value="${esc(doc.location || "")}" placeholder="Lieu">
-      <input id="idocParticipants" class="full" value="${esc(doc.participants || "")}" placeholder="Participants">
-      <input id="idocOwner" value="${esc(doc.owner || identityName())}" placeholder="Auteur / propriétaire">
-      <input id="idocTags" value="${esc(ensureArray(doc.tags).join(", "))}" placeholder="Tags">
-      <select id="idocConfidentiality">
-        ${Object.entries(interviewConfidentialityLabels).map(([key, label]) => `<option value="${esc(key)}" ${normalizeInterviewConfidentiality(doc.confidentiality || "normal") === key ? "selected" : ""}>${esc(label)}</option>`).join("")}
-      </select>
-      ${interviewTemplate
-        ? `<select id="idocStatus">${Object.entries(interviewStatusLabels).map(([key, label]) => `<option value="${esc(key)}" ${normalizeInterviewStatus(doc.status || "draft") === key ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`
-        : `<input id="idocLegacyStatus" value="${esc(doc.status || "Brouillon")}" placeholder="Statut">`
-      }
-      <input id="idocType" value="${esc(doc.type || "Compte rendu")}" placeholder="Type">
-      <input id="idocCategory" value="${esc(doc.category || interviewTemplateLabel(interviewTemplate) || "Document")}" placeholder="Catégorie">
-      <input id="idocDocumentType" value="${esc(doc.documentType || (interviewTemplate ? "interview_report" : "document"))}" placeholder="Document type">
-      <input id="idocNextInterviewDate" type="date" value="${esc(doc.nextInterviewDate || documentNextInterviewDate(doc) || "")}" placeholder="Prochain entretien prévu">
-      <input id="idocSummary" class="full" value="${esc(doc.summary || "")}" placeholder="Objet / synthèse minimale *">
-      <select id="idocInterviewTemplate">
-        <option value="">Sans modèle d'entretien</option>
-        ${interviewTemplateCatalog.map(item => `<option value="${esc(item.key)}" ${interviewTemplate === item.key ? "selected" : ""}>${esc(item.title)}</option>`).join("")}
-      </select>
-      <select id="idocMeeting"><option value="">Rendez-vous Agenda lié</option>${meetingOptions}</select>
+    ${hasInterviewTemplate ? `<div class="card"><h3>Compte-rendu d'entretien</h3><p><span class="badge">${esc(modelLabel)}</span></p></div>` : ""}
+    <div class="card">
+      <div class="form-grid">
+        <input id="idocTitle" class="full" value="${esc(doc.title || "")}" placeholder="Titre du compte-rendu *">
+        <input id="idocDate" type="date" value="${esc(doc.date || isoToday())}" placeholder="Date de l'entretien *">
+        <div class="full"><label>Manager concerné</label>${checkboxList("idocManagers", state.managers, managerIds, manager => `${manager.name} · ${manager.role || ""}`)}</div>
+        <div class="full"><label>Rendez-vous Agenda lié</label><select id="idocMeeting"><option value="">Rendez-vous Agenda lié</option>${meetingOptions}</select></div>
+        <select id="idocConfidentiality">
+          ${Object.entries(interviewConfidentialityLabels).map(([key, label]) => `<option value="${esc(key)}" ${normalizeInterviewConfidentiality(doc.confidentiality || "normal") === key ? "selected" : ""}>${esc(label)}</option>`).join("")}
+        </select>
+        ${hasInterviewTemplate
+          ? `<select id="idocStatus">${Object.entries(interviewStatusLabels).map(([key, label]) => `<option value="${esc(key)}" ${normalizeInterviewStatus(doc.status || "draft") === key ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`
+          : `<input id="idocLegacyStatus" value="${esc(doc.status || "Brouillon")}" placeholder="Statut">`
+        }
+        <input id="idocSummary" class="full" value="${esc(doc.summary || "")}" placeholder="Objet / synthèse minimale *">
+        ${hasInterviewTemplate
+          ? `<input id="idocType" type="hidden" value="${esc(doc.type || "Compte rendu")}"><input id="idocCategory" type="hidden" value="${esc(interviewTemplateLabel(interviewTemplate) || "Compte-rendu d'entretien")}"><input id="idocDocumentType" type="hidden" value="${esc(doc.documentType || "interview_report")}"><input id="idocInterviewTemplate" type="hidden" value="${esc(interviewTemplate)}">`
+          : `<input id="idocType" value="${esc(doc.type || "Compte rendu")}" placeholder="Type"><input id="idocCategory" value="${esc(doc.category || interviewTemplateLabel(interviewTemplate) || "Document")}" placeholder="Catégorie"><input id="idocDocumentType" value="${esc(doc.documentType || "document")}" placeholder="Type de document"><select id="idocInterviewTemplate"><option value="">Sans modèle d'entretien</option>${interviewTemplateCatalog.map(item => `<option value="${esc(item.key)}" ${interviewTemplate === item.key ? "selected" : ""}>${esc(item.title)}</option>`).join("")}</select>`
+        }
+      </div>
     </div>
-    <div class="grid two manager-links">
-      <div><label>Managers liés</label>${checkboxList("idocManagers", state.managers, managerIds, manager => `${manager.name} · ${manager.role || ""}`)}</div>
-      <div><label>Dossiers liés</label>${folderSelect("idocFolders", normalizeLinkedIdArray(doc.linkedFolders))}</div>
-      <div><label>Projets liés</label>${checkboxList("idocProjects", state.projects, normalizeLinkedIdArray(doc.linkedProjects), project => project.name)}</div>
-      <div><label>Actions liées</label>${checkboxList("idocActions", state.actions, normalizeLinkedIdArray(doc.linkedActions), action => action.title)}</div>
-      <div><label>Décisions liées</label>${checkboxList("idocDecisions", state.decisions, normalizeLinkedIdArray(doc.linkedDecisions), decision => decision.title)}</div>
-      <div><label>Période performance</label><input value="${esc(doc.period || "")}" disabled></div>
-    </div>
+    <details class="card" ${hasExistingRelations ? "open" : ""}>
+      <summary><strong>Informations complémentaires</strong></summary>
+      <div class="form-grid" style="margin-top:10px">
+        <input id="idocOwner" value="${esc(doc.owner || identityName())}" placeholder="Auteur / propriétaire">
+        <input id="idocTags" value="${esc(ensureArray(doc.tags).join(", "))}" placeholder="Tags">
+        <input id="idocStartTime" type="time" value="${esc(doc.startTime || "")}" placeholder="Heure de début">
+        <input id="idocEndTime" type="time" value="${esc(doc.endTime || "")}" placeholder="Heure de fin">
+        <input id="idocDuration" value="${esc(doc.duration || content.info?.duration || "")}" placeholder="Durée (min)">
+        <input id="idocPeriod" value="${esc(doc.period || content.info?.examinedPeriod || content.general?.examinedPeriod || "")}" placeholder="Période examinée">
+        <input id="idocLocation" value="${esc(doc.location || "")}" placeholder="Lieu">
+        <input id="idocParticipants" class="full" value="${esc(doc.participants || "")}" placeholder="Participants">
+        <input id="idocNextInterviewDate" type="date" value="${esc(doc.nextInterviewDate || documentNextInterviewDate(doc) || "")}" placeholder="Prochain entretien prévu">
+      </div>
+      <div class="grid two manager-links" style="margin-top:10px">
+        <div><label>Dossiers liés</label>${folderSelect("idocFolders", normalizeLinkedIdArray(doc.linkedFolders))}</div>
+        <div><label>Projets liés</label>${checkboxList("idocProjects", state.projects, normalizeLinkedIdArray(doc.linkedProjects), project => project.name)}</div>
+        <div><label>Actions liées</label>${checkboxList("idocActions", state.actions, normalizeLinkedIdArray(doc.linkedActions), action => action.title)}</div>
+        <div><label>Décisions liées</label>${checkboxList("idocDecisions", state.decisions, normalizeLinkedIdArray(doc.linkedDecisions), decision => decision.title)}</div>
+      </div>
+    </details>
     ${ensureArray(doc.linkedMeetingIds).length ? `<div class="card"><h3>Rendez-vous lié</h3>${ensureArray(doc.linkedMeetingIds).map(id => {
       const meeting = byId("agenda", id);
       if (!meeting) return "";
