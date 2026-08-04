@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.20";
+const DEOS_VERSION = "V5.20.2";
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
