@@ -1,6 +1,6 @@
 const DEOS_VERSION = "V5.20";
 const DEOS_BACKUP_VERSION = 1;
-const DEOS_TECHNICAL_BACKUP_KEYS = ["deos_backup_last_export", "deos_backup_last_restore", "deos_backup_category_count", "deos_restore_success"];
+let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
 // -- Google Calendar V5.6 ------------------------------------------------------
 // Méthode OAuth : Google Identity Services (GIS) — initTokenClient (Implicit Grant)
@@ -71,6 +71,281 @@ const state = Object.fromEntries(entities.map(name => [name, []]));
 state.settings = {};
 state.externalCalendarEvents = []; // Événements Google Calendar importés (V5.5)
 state.externalEventEnrichments = {}; // Enrichissements locaux des événements Google (V5.7)
+
+const DEOS_STORAGE_KEYS = Object.freeze({
+  actions: "deos_actions",
+  managers: "deos_managers",
+  projects: "deos_projects",
+  decisions: "deos_decisions",
+  priorities: "deos_priorities",
+  activity: "deos_activity",
+  journal: "deos_journal",
+  documents: "deos_documents",
+  agenda: "deos_agenda",
+  folders: "deos_folders",
+  performance: "deos_performance",
+  meetingPreparations: "deos_meetingPreparations",
+  links: "deos_links",
+  performance_imports: "deos_performance_imports",
+  settings: "deos_settings",
+  identity: "deos_identity",
+  external_events: "deos_external_events",
+  external_event_enrichments: "deos_external_event_enrichments",
+  backup_last_export: "deos_backup_last_export",
+  backup_last_restore: "deos_backup_last_restore",
+  backup_category_count: "deos_backup_category_count",
+  restore_success: "deos_restore_success",
+  gc_token: "deos_gc_token",
+  gc_email: "deos_gc_email"
+});
+
+DEOS_TECHNICAL_BACKUP_KEYS = [
+  DEOS_STORAGE_KEYS.backup_last_export,
+  DEOS_STORAGE_KEYS.backup_last_restore,
+  DEOS_STORAGE_KEYS.backup_category_count,
+  DEOS_STORAGE_KEYS.restore_success
+];
+
+const DEOS_STORAGE_PREFIX = "deos_";
+const DEOS_STORAGE_DEBUG = false;
+
+function buildStorageError(code, operation, key, message, originalError = null) {
+  return { code, operation, key, message, originalError };
+}
+
+function looksLikeStorageQuotaError(error) {
+  if (!error) return false;
+  return error.name === "QuotaExceededError" || error.code === 22 || error.code === 1014;
+}
+
+function logStorageOperation(scope, operation, key, startedAt, success, extra = "") {
+  if (!DEOS_STORAGE_DEBUG) return;
+  const duration = Math.max(0, Date.now() - startedAt);
+  const suffix = extra ? ` · ${extra}` : "";
+  console.info(`[DEOS Storage] ${scope} ${operation} ${key} · ${success ? "ok" : "error"} · ${duration}ms${suffix}`);
+}
+
+class BrowserStorageAdapter {
+  constructor(storageArea, scopeLabel) {
+    this.storageArea = storageArea;
+    this.scopeLabel = scopeLabel;
+  }
+
+  getRaw(key) {
+    const startedAt = Date.now();
+    try {
+      const value = this.storageArea.getItem(key);
+      logStorageOperation(this.scopeLabel, "getRaw", key, startedAt, true, `size=${value ? value.length : 0}`);
+      return value;
+    } catch (error) {
+      logStorageOperation(this.scopeLabel, "getRaw", key, startedAt, false);
+      throw buildStorageError("STORAGE_READ_FAILED", "getRaw", key, "Lecture du stockage impossible.", error);
+    }
+  }
+
+  setRaw(key, value) {
+    const startedAt = Date.now();
+    const rawValue = String(value ?? "");
+    try {
+      this.storageArea.setItem(key, rawValue);
+      logStorageOperation(this.scopeLabel, "setRaw", key, startedAt, true, `size=${rawValue.length}`);
+    } catch (error) {
+      const code = looksLikeStorageQuotaError(error) ? "STORAGE_QUOTA_EXCEEDED" : "STORAGE_WRITE_FAILED";
+      const message = looksLikeStorageQuotaError(error) ? "Le quota de stockage est dépassé." : "Écriture du stockage impossible.";
+      logStorageOperation(this.scopeLabel, "setRaw", key, startedAt, false);
+      throw buildStorageError(code, "setRaw", key, message, error);
+    }
+  }
+
+  remove(key) {
+    const startedAt = Date.now();
+    try {
+      this.storageArea.removeItem(key);
+      logStorageOperation(this.scopeLabel, "remove", key, startedAt, true);
+    } catch (error) {
+      logStorageOperation(this.scopeLabel, "remove", key, startedAt, false);
+      throw buildStorageError("STORAGE_REMOVE_FAILED", "remove", key, "Suppression du stockage impossible.", error);
+    }
+  }
+
+  has(key) {
+    return this.getRaw(key) !== null;
+  }
+
+  keys(prefix = "") {
+    const startedAt = Date.now();
+    try {
+      const all = Object.keys(this.storageArea);
+      const filtered = prefix ? all.filter(key => key.startsWith(prefix)) : all;
+      logStorageOperation(this.scopeLabel, "keys", prefix || "*", startedAt, true, `count=${filtered.length}`);
+      return filtered;
+    } catch (error) {
+      logStorageOperation(this.scopeLabel, "keys", prefix || "*", startedAt, false);
+      throw buildStorageError("STORAGE_KEYS_FAILED", "keys", prefix, "Listing des clés de stockage impossible.", error);
+    }
+  }
+
+  get(key) {
+    const raw = this.getRaw(key);
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      throw buildStorageError("STORAGE_JSON_INVALID", "get", key, "La donnée stockée n'est pas un JSON valide.", error);
+    }
+  }
+
+  set(key, value) {
+    let serialized;
+    try {
+      serialized = JSON.stringify(value);
+    } catch (error) {
+      throw buildStorageError("STORAGE_SERIALIZE_FAILED", "set", key, "La donnée ne peut pas être sérialisée en JSON.", error);
+    }
+    this.setRaw(key, serialized);
+    return serialized;
+  }
+}
+
+class DeosDataService {
+  constructor(adapter, keyMap, options = {}) {
+    this.adapter = adapter;
+    this.keyMap = keyMap || {};
+    this.prefix = options.prefix || "";
+  }
+
+  resolveKey(key) {
+    if (this.keyMap[key]) return this.keyMap[key];
+    if (typeof key === "string" && key.startsWith(this.prefix)) return key;
+    return `${this.prefix}${key}`;
+  }
+
+  load(key, defaultValue, options = {}) {
+    const storageKey = this.resolveKey(key);
+    const raw = this.adapter.getRaw(storageKey);
+    if (raw === null) return defaultValue;
+    if (options.raw) return raw;
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      if (options.safe) return defaultValue;
+      throw buildStorageError("STORAGE_JSON_INVALID", "load", storageKey, "La donnée stockée est invalide.", error);
+    }
+  }
+
+  loadRaw(key, defaultValue = null) {
+    return this.load(key, defaultValue, { raw: true });
+  }
+
+  save(key, value, options = {}) {
+    const storageKey = this.resolveKey(key);
+    const raw = options.raw === true ? String(value ?? "") : JSON.stringify(value);
+    if (options.skipIfUnchanged !== false && this.adapter.getRaw(storageKey) === raw) {
+      return { written: false, key: storageKey };
+    }
+    this.adapter.setRaw(storageKey, raw);
+    return { written: true, key: storageKey };
+  }
+
+  saveRaw(key, value, options = {}) {
+    return this.save(key, value, { ...options, raw: true });
+  }
+
+  remove(key) {
+    this.adapter.remove(this.resolveKey(key));
+  }
+
+  exists(key) {
+    return this.adapter.has(this.resolveKey(key));
+  }
+
+  listKeys() {
+    return this.adapter.keys(this.prefix);
+  }
+
+  exportAll() {
+    const output = {};
+    for (const key of this.listKeys()) {
+      const value = this.adapter.getRaw(key);
+      if (typeof value === "string") output[key] = value;
+    }
+    return output;
+  }
+
+  importAll(rawMap) {
+    if (!rawMap || typeof rawMap !== "object" || Array.isArray(rawMap)) {
+      throw buildStorageError("STORAGE_IMPORT_INVALID", "importAll", "*", "Le contenu à importer est invalide.");
+    }
+    for (const [key, value] of Object.entries(rawMap)) {
+      if (!String(key).startsWith(this.prefix)) continue;
+      this.adapter.setRaw(key, String(value ?? ""));
+    }
+  }
+
+  transaction(callback) {
+    if (typeof callback !== "function") return undefined;
+    return callback(this);
+  }
+}
+
+function createRepository(dataService, config) {
+  const normalize = typeof config.normalize === "function" ? config.normalize : value => value;
+  const fallbackFactory = typeof config.fallbackFactory === "function" ? config.fallbackFactory : () => config.fallbackValue;
+  return {
+    key: config.key,
+    load(defaultValue) {
+      return normalize(dataService.load(config.key, defaultValue !== undefined ? defaultValue : fallbackFactory()));
+    },
+    save(value, options = {}) {
+      return dataService.save(config.key, value, options);
+    },
+    remove() {
+      return dataService.remove(config.key);
+    },
+    exists() {
+      return dataService.exists(config.key);
+    }
+  };
+}
+
+const localStorageAdapter = new BrowserStorageAdapter(localStorage, "localStorage");
+const sessionStorageAdapter = new BrowserStorageAdapter(sessionStorage, "sessionStorage");
+const deosDataService = new DeosDataService(localStorageAdapter, DEOS_STORAGE_KEYS, { prefix: DEOS_STORAGE_PREFIX });
+const deosSessionService = new DeosDataService(sessionStorageAdapter, DEOS_STORAGE_KEYS, { prefix: DEOS_STORAGE_PREFIX });
+
+const entityRepositories = Object.fromEntries(entities.map(name => [name, createRepository(deosDataService, {
+  key: name,
+  fallbackFactory: () => [],
+  normalize: value => normalizeCollection(name, value)
+})]));
+
+const identityRepository = createRepository(deosDataService, {
+  key: "identity",
+  fallbackFactory: () => ({ ...identityDefaults }),
+  normalize: value => normalizeIdentity(value)
+});
+
+const settingsRepository = createRepository(deosDataService, {
+  key: "settings",
+  fallbackFactory: () => ({}),
+  normalize: value => ensureSettings(value || {})
+});
+
+const externalEventsRepository = createRepository(deosDataService, {
+  key: "external_events",
+  fallbackFactory: () => [],
+  normalize: value => ensureArray(value)
+});
+
+const externalEventEnrichmentsRepository = createRepository(deosDataService, {
+  key: "external_event_enrichments",
+  fallbackFactory: () => ({}),
+  normalize: value => (value && typeof value === "object" && !Array.isArray(value) ? value : {})
+});
+
+function getEntityRepository(name) {
+  return entityRepositories[name] || null;
+}
 let agendaEditId = "";
 let agendaFilter = "today";
 let agendaModalOpen = false;
@@ -279,12 +554,18 @@ async function loadIdentityDefaults() {
 }
 
 function saved(name, fallback) {
-  const v = localStorage.getItem(`deos_${name}`);
-  return v ? JSON.parse(v) : fallback;
+  const repository = getEntityRepository(name);
+  if (repository) return repository.load(fallback);
+  return deosDataService.load(name, fallback);
 }
 
 function persist(name) {
-  localStorage.setItem(`deos_${name}`, JSON.stringify(state[name]));
+  const repository = getEntityRepository(name);
+  if (repository) {
+    repository.save(state[name]);
+    return;
+  }
+  deosDataService.save(name, state[name]);
 }
 
 function normalizeIdentity(value = {}) {
@@ -308,12 +589,11 @@ function normalizeIdentity(value = {}) {
 }
 
 function savedIdentity(fallback) {
-  const v = localStorage.getItem("deos_identity");
-  return normalizeIdentity(v ? JSON.parse(v) : fallback);
+  return identityRepository.load(fallback);
 }
 
 function persistIdentity() {
-  localStorage.setItem("deos_identity", JSON.stringify(identity));
+  identityRepository.save(identity);
 }
 
 function identityName() {
@@ -386,7 +666,7 @@ function isTechnicalBackupKey(key) {
 }
 
 function deosKeys() {
-  return Object.keys(localStorage).filter(key => typeof key === "string" && key.startsWith("deos_"));
+  return deosDataService.listKeys();
 }
 
 function deosBackupKeys(payload) {
@@ -398,14 +678,7 @@ function deosBackupKeys(payload) {
 }
 
 function localStorageBackupPayload() {
-  const data = {};
-  for (const key of deosKeys()) {
-    const value = localStorage.getItem(key);
-    if (typeof value === "string") {
-      data[key] = value;
-    }
-  }
-  return data;
+  return deosDataService.exportAll();
 }
 
 function backupFileName(date = new Date()) {
@@ -429,12 +702,12 @@ function buildBackupPayload() {
 
 function saveBackupMetadata(type, date, categoryCount) {
   if (type === "export") {
-    localStorage.setItem("deos_backup_last_export", date);
+    deosDataService.saveRaw("backup_last_export", date, { skipIfUnchanged: false });
   } else if (type === "restore") {
-    localStorage.setItem("deos_backup_last_restore", date);
+    deosDataService.saveRaw("backup_last_restore", date, { skipIfUnchanged: false });
   }
   if (typeof categoryCount === "number") {
-    localStorage.setItem("deos_backup_category_count", String(categoryCount));
+    deosDataService.saveRaw("backup_category_count", String(categoryCount), { skipIfUnchanged: false });
   }
 }
 
@@ -448,9 +721,9 @@ function renderBackupMessage(message, type = "green") {
 
 function getBackupMetadata() {
   return {
-    lastExport: localStorage.getItem("deos_backup_last_export") || "Aucune exportation enregistrée",
-    lastRestore: localStorage.getItem("deos_backup_last_restore") || "Aucune restauration enregistrée",
-    categoryCount: Number(localStorage.getItem("deos_backup_category_count") || "0")
+    lastExport: deosDataService.loadRaw("backup_last_export", "") || "Aucune exportation enregistrée",
+    lastRestore: deosDataService.loadRaw("backup_last_restore", "") || "Aucune restauration enregistrée",
+    categoryCount: Number(deosDataService.loadRaw("backup_category_count", "0") || "0")
   };
 }
 
@@ -612,16 +885,11 @@ function closeBackupPreview() {
 
 function applyBackupPayload(payload) {
   const currentSnapshot = localStorageBackupPayload();
-  const backupKeys = deosBackupKeys(payload);
   try {
-    for (const key of backupKeys) {
-      localStorage.setItem(key, payload.localStorage[key]);
-    }
+    deosDataService.importAll(payload.localStorage || {});
     return { success: true };
   } catch (error) {
-    for (const [key, value] of Object.entries(currentSnapshot)) {
-      localStorage.setItem(key, value);
-    }
+    deosDataService.importAll(currentSnapshot);
     return { success: false, error: `La restauration a échoué : ${error.message || String(error)}` };
   }
 }
@@ -647,7 +915,7 @@ function confirmRestoreBackup() {
   }
   backupSafetySnapshot = null;
   saveBackupMetadata("restore", new Date().toISOString(), backupCategoryCount(backupPreviewPayload));
-  localStorage.setItem("deos_restore_success", "Restauration réussie.");
+  deosDataService.saveRaw("restore_success", "Restauration réussie.", { skipIfUnchanged: false });
   location.reload();
 }
 
@@ -838,6 +1106,62 @@ function meetingFollowUpSummaryHtml(value, options = {}) {
 function sameId(a, b) {
   return String(a) === String(b);
 }
+
+function buildDataParitySnapshot() {
+  const entitiesSnapshot = Object.fromEntries(entities.map(name => {
+    const rows = Array.isArray(state[name]) ? state[name] : [];
+    return [name, {
+      count: rows.length,
+      ids: rows.map(item => String(item?.id || "")).filter(Boolean).sort(),
+      relations: rows.map(item => {
+        const payload = item && typeof item === "object" ? item : {};
+        return {
+          id: String(payload.id || ""),
+          linkedManagers: ensureArray(payload.linkedManagers || payload.managerIds || []),
+          linkedProjects: ensureArray(payload.linkedProjects || []),
+          linkedActions: ensureArray(payload.linkedActions || []),
+          linkedDecisions: ensureArray(payload.linkedDecisions || []),
+          linkedFolders: ensureArray(payload.linkedFolders || []),
+          linkedDocuments: ensureArray(payload.linkedDocuments || []),
+          linkedMeetingIds: ensureArray(payload.linkedMeetingIds || [])
+        };
+      })
+    }];
+  }));
+  return {
+    entities: entitiesSnapshot,
+    settingsKeys: Object.keys(state.settings || {}).sort(),
+    storageKeys: deosDataService.listKeys().slice().sort(),
+    externalCalendarEventsCount: ensureArray(state.externalCalendarEvents).length,
+    externalEventEnrichmentsCount: Object.keys(state.externalEventEnrichments || {}).length
+  };
+}
+
+function compareDataParitySnapshots(beforeSnapshot, afterSnapshot) {
+  const before = beforeSnapshot || {};
+  const after = afterSnapshot || {};
+  const differences = [];
+  for (const name of entities) {
+    const beforeEntity = before.entities?.[name] || { count: 0, ids: [], relations: [] };
+    const afterEntity = after.entities?.[name] || { count: 0, ids: [], relations: [] };
+    if (beforeEntity.count !== afterEntity.count) differences.push(`${name}: count ${beforeEntity.count} -> ${afterEntity.count}`);
+    if (beforeEntity.ids.join("|") !== afterEntity.ids.join("|")) differences.push(`${name}: ids changed`);
+    if (JSON.stringify(beforeEntity.relations) !== JSON.stringify(afterEntity.relations)) differences.push(`${name}: relations changed`);
+  }
+  if ((before.settingsKeys || []).join("|") !== (after.settingsKeys || []).join("|")) differences.push("settingsKeys changed");
+  if ((before.storageKeys || []).join("|") !== (after.storageKeys || []).join("|")) differences.push("storageKeys changed");
+  if ((before.externalCalendarEventsCount || 0) !== (after.externalCalendarEventsCount || 0)) differences.push("externalCalendarEventsCount changed");
+  if ((before.externalEventEnrichmentsCount || 0) !== (after.externalEventEnrichmentsCount || 0)) differences.push("externalEventEnrichmentsCount changed");
+  return {
+    equal: differences.length === 0,
+    differences
+  };
+}
+
+window.__deosParity = {
+  build: buildDataParitySnapshot,
+  compare: compareDataParitySnapshots
+};
 
 function ensureTimeline(value) {
   return ensureArray(value).map(item => typeof item === "string" ? { id: newId("event"), date: today(), title: item, detail: "" } : { id: item.id || newId("event"), date: item.date || today(), title: item.title || "Événement", detail: item.detail || "" });
@@ -1152,7 +1476,7 @@ async function init() {
   actionTitleMigrationMode = true;
   actionTitleMigrationStats = { corrected: 0, examples: [] };
   for (const name of entities) {
-    state[name] = normalizeCollection(name, saved(name, await loadJson(name)));
+    state[name] = saved(name, await loadJson(name));
     persist(name);
   }
   actionTitleMigrationMode = false;
@@ -1162,20 +1486,20 @@ async function init() {
       examples: actionTitleMigrationStats.examples
     });
   }
-  state.settings = ensureSettings(saved("settings", {}));
+  state.settings = settingsRepository.load({});
   // V5.5 — Charger les événements externes (Google Calendar)
-  state.externalCalendarEvents = saved("external_events", []);
+  state.externalCalendarEvents = externalEventsRepository.load([]);
   // V5.7 — Charger les enrichissements locaux des événements Google
-  state.externalEventEnrichments = saved("external_event_enrichments", {});
+  state.externalEventEnrichments = externalEventEnrichmentsRepository.load({});
   ensureExternalEventEnrichments();
   // [DEOS STATE TRACE] After loadState
   console.log("[DEOS STATE TRACE] after loadState:", state.externalCalendarEvents.length);
   // Restaurer la session Google si disponible (token sessionStorage seulement)
-  const _gcToken = sessionStorage.getItem("deos_gc_token");
+  const _gcToken = deosSessionService.loadRaw("gc_token", "");
   if (_gcToken) {
     googleAccessToken = _gcToken;
     googleConnectionStatus = "connected";
-    googleConnectedEmail = sessionStorage.getItem("deos_gc_email") || "";
+    googleConnectedEmail = deosSessionService.loadRaw("gc_email", "") || "";
   } else if (getCalendarConnectionSettings().provider === "google") {
     googleConnectionStatus = "connection_required";
   }
@@ -1191,10 +1515,10 @@ async function init() {
     }
     startGoogleCalendarAutoSync();
   }
-  const restoreMessage = localStorage.getItem("deos_restore_success");
+  const restoreMessage = deosDataService.loadRaw("restore_success", "");
   if (restoreMessage) {
     restoreSuccessMessage = restoreMessage;
-    localStorage.removeItem("deos_restore_success");
+    deosDataService.remove("restore_success");
   }
   document.getElementById("today").textContent = cockpitDateLabel(new Date());
   document.querySelectorAll(".nav").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
@@ -6142,7 +6466,7 @@ function sanitizeMeetingPreparationFolderLinks(prep, folderId) {
 }
 
 function persistExternalEventEnrichmentsOnly() {
-  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
+  externalEventEnrichmentsRepository.save(state.externalEventEnrichments || {});
 }
 
 function deleteFolderSafely(folderId, options = {}) {
@@ -10506,8 +10830,8 @@ function performancePrivacyAuditForSensitiveData() {
   };
   const perfLeak = scan(state.performance || []);
   const importsLeak = scan(state.performance_imports || []);
-  const localPerf = localStorage.getItem("deos_performance") || "";
-  const localImports = localStorage.getItem("deos_performance_imports") || "";
+  const localPerf = deosDataService.loadRaw("performance", "") || "";
+  const localImports = deosDataService.loadRaw("performance_imports", "") || "";
   const localLeak = patterns.some(regex => regex.test(localPerf) || regex.test(localImports));
   return {
     checkedAt: new Date().toISOString(),
@@ -13418,7 +13742,8 @@ function interviewTemplateContent(templateKey) {
         expectedResult: "",
         nextMeeting: "",
         preparationItems: ""
-      }
+      },
+      topics: []
     };
   }
   return {
@@ -13438,6 +13763,459 @@ function interviewTemplateContent(templateKey) {
   };
 }
 
+const managerialTopicNatureOptions = [
+  "Performance",
+  "Organisation",
+  "Management",
+  "Ressources humaines",
+  "Sécurité",
+  "Qualité",
+  "Projet",
+  "Développement professionnel",
+  "Difficulté rencontrée",
+  "Décision à prendre",
+  "Autre"
+];
+
+const managerialTopicStatusOptions = ["Ouvert", "En cours", "Traité", "À reprendre", "Clos"];
+
+function normalizeManagerialTopicStatus(value = "Ouvert") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized.includes("clos")) return "Clos";
+  if (normalized.includes("reprend")) return "À reprendre";
+  if (normalized.includes("cours")) return "En cours";
+  if (normalized.includes("trait")) return "Traité";
+  if (normalized.includes("ouver")) return "Ouvert";
+  return managerialTopicStatusOptions.includes(value) ? value : "Ouvert";
+}
+
+function managerialTopicCarryForwardLabel(value) {
+  return value ? "À reprendre" : "";
+}
+
+function normalizeManagerialTopic(value = {}, order = 0, previousTopicId = "") {
+  const source = value && typeof value === "object" ? value : {};
+  const linkedActionIds = normalizeLinkedIdArray(source.linkedActionIds || source.linkedActions || []);
+  const linkedDecisionIds = normalizeLinkedIdArray(source.linkedDecisionIds || source.linkedDecisions || []);
+  const linkedProjectIds = normalizeLinkedIdArray(source.linkedProjectIds || source.linkedProjects || []);
+  const linkedFolderIds = normalizeLinkedIdArray(source.linkedFolderIds || source.linkedFolders || []);
+  return {
+    id: String(source.id || newId("topic")),
+    title: String(source.title || source.subject || source.object || source.theme || `Sujet ${order + 1}`),
+    category: String(source.category || "Autre"),
+    object: String(source.object || source.subject || ""),
+    context: String(source.context || ""),
+    facts: String(source.facts || source.keyFacts || source.review || ""),
+    managerExpression: String(source.managerExpression || source.managerComment || ""),
+    sharedAnalysis: String(source.sharedAnalysis || source.sharedSummary || ""),
+    agreements: String(source.agreements || source.pointsOfAgreement || ""),
+    disagreements: String(source.disagreements || source.pointsOfDisagreement || ""),
+    decision: String(source.decision || source.decidedAction || ""),
+    directorSupport: String(source.directorSupport || source.expectedSupport || ""),
+    status: normalizeManagerialTopicStatus(source.status || "Ouvert"),
+    carryForward: Boolean(source.carryForward || source.reprise || false),
+    linkedActionIds,
+    linkedDecisionIds,
+    linkedProjectIds,
+    linkedFolderIds,
+    order: Number.isFinite(Number(source.order)) ? Number(source.order) : order,
+    previousTopicId: String(source.previousTopicId || previousTopicId || ""),
+    createdAt: String(source.createdAt || isoToday()),
+    updatedAt: String(source.updatedAt || isoToday()),
+    quickActionTitle: String(source.quickActionTitle || ""),
+    quickActionOwner: String(source.quickActionOwner || ""),
+    quickActionDue: String(source.quickActionDue || ""),
+    quickActionPriority: String(source.quickActionPriority || "Moyenne"),
+    quickDecisionTitle: String(source.quickDecisionTitle || ""),
+    quickDecisionOwner: String(source.quickDecisionOwner || ""),
+    quickDecisionDue: String(source.quickDecisionDue || ""),
+    quickDecisionPriority: String(source.quickDecisionPriority || "Moyenne")
+  };
+}
+
+function createLegacyManagerialTopicFromContent(content = {}, order = 0) {
+  return normalizeManagerialTopic({
+    title: content.objectContext?.subject || `Sujet ${order + 1}`,
+    category: "Autre",
+    object: content.objectContext?.subject || "",
+    context: content.objectContext?.context || "",
+    facts: content.review?.keyFacts || "",
+    managerExpression: content.managerExpression?.analysis || "",
+    sharedAnalysis: content.sharedAnalysis?.worksWell || "",
+    agreements: content.review?.successes || "",
+    disagreements: content.review?.difficulties || "",
+    decision: content.conclusion?.keyTakeaway || "",
+    directorSupport: content.expectedSupport?.arbitration || "",
+    status: "Ouvert",
+    carryForward: false,
+    linkedActionIds: normalizeLinkedIdArray(content.linkedActionIds || []),
+    linkedDecisionIds: normalizeLinkedIdArray(content.linkedDecisionIds || []),
+    linkedProjectIds: normalizeLinkedIdArray(content.linkedProjectIds || []),
+    linkedFolderIds: normalizeLinkedIdArray(content.linkedFolderIds || []),
+    order
+  }, order);
+}
+
+function normalizeManagerialTopics(content = {}) {
+  const sourceTopics = Array.isArray(content.topics) ? content.topics : [];
+  const normalized = sourceTopics.map((topic, index) => normalizeManagerialTopic(topic, index, topic?.previousTopicId || ""));
+  if (!normalized.length) {
+    const hasLegacyTopic = String(content.objectContext?.subject || "").trim() || String(content.objectContext?.context || "").trim();
+    if (hasLegacyTopic) normalized.push(createLegacyManagerialTopicFromContent(content, 0));
+  }
+  return normalized.map((topic, index) => ({ ...topic, order: index }));
+}
+
+function managerialTopicStatusBadge(topic) {
+  const status = normalizeManagerialTopicStatus(topic.status);
+  const css = status === "Clos" ? "green" : status === "À reprendre" ? "orange" : status === "Traité" ? "green" : status === "En cours" ? "orange" : "red";
+  return `<span class="badge ${css}">${esc(status)}</span>`;
+}
+
+function managerialTopicNatureBadge(topic) {
+  return `<span class="badge">${esc(topic.category || "Autre")}</span>`;
+}
+
+function managerialTopicLinkedBadge(label, ids) {
+  const count = normalizeLinkedIdArray(ids).length;
+  return count ? `<span class="badge">${esc(label)} ${count}</span>` : "";
+}
+
+function renderManagerialTopicCard(topic, index) {
+  const carryLabel = topic.carryForward ? `<span class="badge orange">À reprendre</span>` : "";
+  const actionLinked = managerialTopicLinkedBadge("Actions", topic.linkedActionIds);
+  const decisionLinked = managerialTopicLinkedBadge("Décisions", topic.linkedDecisionIds);
+  const projectLinked = managerialTopicLinkedBadge("Projets", topic.linkedProjectIds);
+  const folderLinked = managerialTopicLinkedBadge("Dossiers", topic.linkedFolderIds);
+  return `
+    <article class="card interview-topic-card" data-topic-id="${esc(topic.id)}" data-topic-index="${index}">
+      <div class="interview-topic-head">
+        <div class="interview-topic-title-wrap">
+          <span class="interview-topic-order">Sujet ${index + 1}</span>
+          <input class="interview-topic-title" data-field="title" value="${esc(topic.title || "")}" placeholder="Intitulé du sujet">
+          <div class="interview-topic-badges">${managerialTopicNatureBadge(topic)}${managerialTopicStatusBadge(topic)}${carryLabel}${actionLinked}${decisionLinked}${projectLinked}${folderLinked}</div>
+        </div>
+        <div class="interview-topic-actions no-print">
+          <button class="secondary" type="button" onclick="toggleManagerialTopicCard(this)">Replier</button>
+          <button class="secondary" type="button" onclick="moveManagerialTopicCard(this,-1)">Monter</button>
+          <button class="secondary" type="button" onclick="moveManagerialTopicCard(this,1)">Descendre</button>
+          <button class="secondary" type="button" onclick="duplicateManagerialTopicCard(this)">Dupliquer</button>
+          <button class="secondary" type="button" onclick="createActionFromManagerialTopic(this)">Créer une Action</button>
+          <button class="secondary" type="button" onclick="createDecisionFromManagerialTopic(this)">Créer une Décision</button>
+          <button class="danger" type="button" onclick="removeManagerialTopicCard(this)">Supprimer</button>
+        </div>
+      </div>
+      <div class="interview-topic-body">
+        <div class="form-grid interview-topic-grid">
+          <select data-field="category">
+            ${managerialTopicNatureOptions.map(label => `<option value="${esc(label)}" ${String(topic.category || "Autre") === label ? "selected" : ""}>${esc(label)}</option>`).join("")}
+          </select>
+          <select data-field="status">
+            ${managerialTopicStatusOptions.map(label => `<option value="${esc(label)}" ${normalizeManagerialTopicStatus(topic.status) === label ? "selected" : ""}>${esc(label)}</option>`).join("")}
+          </select>
+          <textarea class="full" data-field="object" placeholder="Objet">${esc(topic.object || "")}</textarea>
+          <textarea class="full" data-field="context" placeholder="Contexte">${esc(topic.context || "")}</textarea>
+          <textarea class="full" data-field="facts" placeholder="Faits ou constats">${esc(topic.facts || "")}</textarea>
+          <textarea class="full" data-field="managerExpression" placeholder="Expression du manager">${esc(topic.managerExpression || "")}</textarea>
+          <textarea class="full" data-field="sharedAnalysis" placeholder="Analyse partagée">${esc(topic.sharedAnalysis || "")}</textarea>
+          <textarea class="full" data-field="agreements" placeholder="Points d'accord">${esc(topic.agreements || "")}</textarea>
+          <textarea class="full" data-field="disagreements" placeholder="Points de désaccord ou éléments restant à clarifier">${esc(topic.disagreements || "")}</textarea>
+          <textarea class="full" data-field="decision" placeholder="Décision prise">${esc(topic.decision || "")}</textarea>
+          <textarea class="full" data-field="directorSupport" placeholder="Soutien attendu du Directeur">${esc(topic.directorSupport || "")}</textarea>
+          <label class="check-row interview-topic-carry"><input type="checkbox" data-field="carryForward" ${topic.carryForward ? "checked" : ""}><span>À reprendre au prochain entretien</span></label>
+          <input data-field="quickActionTitle" value="${esc(topic.quickActionTitle || topic.title || "")}" placeholder="Titre d'action rapide">
+          <input data-field="quickActionOwner" value="${esc(topic.quickActionOwner || "")}" placeholder="Responsable action">
+          <input data-field="quickActionDue" type="date" value="${esc(topic.quickActionDue || "")}" placeholder="Échéance action">
+          <select data-field="quickActionPriority">
+            ${["Haute", "Moyenne", "Basse"].map(label => `<option value="${esc(label)}" ${String(topic.quickActionPriority || "Moyenne") === label ? "selected" : ""}>${esc(label)}</option>`).join("")}
+          </select>
+          <input data-field="quickDecisionTitle" class="full" value="${esc(topic.quickDecisionTitle || topic.title || "")}" placeholder="Titre de décision rapide">
+          <input data-field="quickDecisionOwner" value="${esc(topic.quickDecisionOwner || "")}" placeholder="Responsable décision">
+          <input data-field="quickDecisionDue" type="date" value="${esc(topic.quickDecisionDue || "")}" placeholder="Échéance décision">
+          <select data-field="quickDecisionPriority">
+            ${["Haute", "Moyenne", "Basse"].map(label => `<option value="${esc(label)}" ${String(topic.quickDecisionPriority || "Moyenne") === label ? "selected" : ""}>${esc(label)}</option>`).join("")}
+          </select>
+          <input type="hidden" data-field="linkedActionIds" value="${esc(normalizeLinkedIdArray(topic.linkedActionIds).join(","))}">
+          <input type="hidden" data-field="linkedDecisionIds" value="${esc(normalizeLinkedIdArray(topic.linkedDecisionIds).join(","))}">
+          <input type="hidden" data-field="linkedProjectIds" value="${esc(normalizeLinkedIdArray(topic.linkedProjectIds).join(","))}">
+          <input type="hidden" data-field="linkedFolderIds" value="${esc(normalizeLinkedIdArray(topic.linkedFolderIds).join(","))}">
+          <input type="hidden" data-field="previousTopicId" value="${esc(topic.previousTopicId || "")}">
+          <input type="hidden" data-field="createdAt" value="${esc(topic.createdAt || isoToday())}">
+          <input type="hidden" data-field="updatedAt" value="${esc(topic.updatedAt || isoToday())}">
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderManagerialTopicsEditor(doc, content) {
+  const topics = normalizeManagerialTopics(content);
+  const cards = topics.map((topic, index) => renderManagerialTopicCard(topic, index)).join("");
+  return `
+    <div class="card interview-topics-card">
+      <div class="row interview-topics-head">
+        <div>
+          <h3>SUJETS ABORDÉS</h3>
+          <p class="muted">Chaque sujet peut être replié, dupliqué, déplacé et relié à des actions ou décisions.</p>
+        </div>
+        <div class="row-actions no-print">
+          <button class="secondary" type="button" onclick="addManagerialTopicCard()">+ Ajouter un sujet</button>
+        </div>
+      </div>
+      <div id="idocManagerialTopics" class="interview-topics-list">${cards}</div>
+    </div>
+  `;
+}
+
+function getManagerialTopicCard(button) {
+  return button?.closest(".interview-topic-card") || null;
+}
+
+function refreshManagerialTopicOrderLabels() {
+  document.querySelectorAll("#idocManagerialTopics .interview-topic-card").forEach((card, index) => {
+    const order = card.querySelector(".interview-topic-order");
+    if (order) order.textContent = `Sujet ${index + 1}`;
+    card.dataset.topicIndex = String(index);
+  });
+}
+
+function addManagerialTopicCard(seed = {}) {
+  const container = document.getElementById("idocManagerialTopics");
+  if (!container) return;
+  const index = container.querySelectorAll(".interview-topic-card").length;
+  const topic = normalizeManagerialTopic(seed, index, seed.previousTopicId || "");
+  container.insertAdjacentHTML("beforeend", renderManagerialTopicCard(topic, index));
+  refreshManagerialTopicOrderLabels();
+}
+
+function toggleManagerialTopicCard(button) {
+  const card = getManagerialTopicCard(button);
+  if (!card) return;
+  card.classList.toggle("collapsed");
+  button.textContent = card.classList.contains("collapsed") ? "Déplier" : "Replier";
+}
+
+function moveManagerialTopicCard(button, delta) {
+  const card = getManagerialTopicCard(button);
+  if (!card || !card.parentElement) return;
+  const target = delta < 0 ? card.previousElementSibling : card.nextElementSibling;
+  if (!target || !target.classList.contains("interview-topic-card")) return;
+  if (delta < 0) {
+    card.parentElement.insertBefore(card, target);
+  } else {
+    card.parentElement.insertBefore(target, card);
+  }
+  refreshManagerialTopicOrderLabels();
+}
+
+function duplicateManagerialTopicCard(button) {
+  const card = getManagerialTopicCard(button);
+  if (!card) return;
+  const topic = collectManagerialTopicFromCard(card);
+  if (!topic) return;
+  const duplicate = {
+    ...topic,
+    id: newId("topic"),
+    title: topic.title,
+    decision: "",
+    quickActionTitle: topic.quickActionTitle || topic.title,
+    quickDecisionTitle: topic.quickDecisionTitle || topic.title,
+    linkedActionIds: [],
+    linkedDecisionIds: [],
+    previousTopicId: topic.id,
+    updatedAt: isoToday(),
+    createdAt: isoToday()
+  };
+  card.insertAdjacentHTML("afterend", renderManagerialTopicCard(duplicate, Number(card.dataset.topicIndex || 0) + 1));
+  refreshManagerialTopicOrderLabels();
+}
+
+function removeManagerialTopicCard(button) {
+  const card = getManagerialTopicCard(button);
+  if (!card) return;
+  const title = card.querySelector('[data-field="title"]')?.value.trim() || "ce sujet";
+  if (!confirm(`Supprimer ${title} ?`)) return;
+  card.remove();
+  refreshManagerialTopicOrderLabels();
+}
+
+function collectManagerialTopicFromCard(card) {
+  if (!card) return null;
+  const value = field => card.querySelector(`[data-field="${field}"]`);
+  return normalizeManagerialTopic({
+    id: card.dataset.topicId || newId("topic"),
+    title: value("title")?.value.trim() || "",
+    category: value("category")?.value || "Autre",
+    object: value("object")?.value.trim() || "",
+    context: value("context")?.value.trim() || "",
+    facts: value("facts")?.value.trim() || "",
+    managerExpression: value("managerExpression")?.value.trim() || "",
+    sharedAnalysis: value("sharedAnalysis")?.value.trim() || "",
+    agreements: value("agreements")?.value.trim() || "",
+    disagreements: value("disagreements")?.value.trim() || "",
+    decision: value("decision")?.value.trim() || "",
+    directorSupport: value("directorSupport")?.value.trim() || "",
+    status: value("status")?.value || "Ouvert",
+    carryForward: Boolean(value("carryForward")?.checked),
+    linkedActionIds: normalizeLinkedIdArray(String(value("linkedActionIds")?.value || "").split(",")),
+    linkedDecisionIds: normalizeLinkedIdArray(String(value("linkedDecisionIds")?.value || "").split(",")),
+    linkedProjectIds: normalizeLinkedIdArray(String(value("linkedProjectIds")?.value || "").split(",")),
+    linkedFolderIds: normalizeLinkedIdArray(String(value("linkedFolderIds")?.value || "").split(",")),
+    previousTopicId: String(value("previousTopicId")?.value || "").trim(),
+    createdAt: String(value("createdAt")?.value || isoToday()),
+    updatedAt: isoToday(),
+    quickActionTitle: value("quickActionTitle")?.value.trim() || "",
+    quickActionOwner: value("quickActionOwner")?.value.trim() || "",
+    quickActionDue: value("quickActionDue")?.value || "",
+    quickActionPriority: value("quickActionPriority")?.value || "Moyenne",
+    quickDecisionTitle: value("quickDecisionTitle")?.value.trim() || "",
+    quickDecisionOwner: value("quickDecisionOwner")?.value.trim() || "",
+    quickDecisionDue: value("quickDecisionDue")?.value || "",
+    quickDecisionPriority: value("quickDecisionPriority")?.value || "Moyenne"
+  }, Number(card.dataset.topicIndex || 0), String(value("previousTopicId")?.value || ""));
+}
+
+function collectManagerialTopicsFromModal() {
+  return [...document.querySelectorAll("#idocManagerialTopics .interview-topic-card")].map((card, index) => {
+    const topic = collectManagerialTopicFromCard(card);
+    if (topic) topic.order = index;
+    return topic;
+  }).filter(Boolean);
+}
+
+function topicPriorityToActionLevel(priority = "Moyenne") {
+  const value = String(priority || "").trim().toLowerCase();
+  if (value === "haute") return "red";
+  if (value === "basse") return "green";
+  return "orange";
+}
+
+function createActionFromManagerialTopic(button) {
+  const card = getManagerialTopicCard(button);
+  if (!card) return;
+  const topic = collectManagerialTopicFromCard(card);
+  if (!topic) return;
+  const title = topic.quickActionTitle || topic.title || topic.object || "Action issue d'entretien";
+  const owner = topic.quickActionOwner || document.getElementById("idocOwner")?.value.trim() || identityName();
+  const due = topic.quickActionDue || document.getElementById("idocNextInterviewDate")?.value || document.getElementById("idocDate")?.value || "";
+  const priority = topic.quickActionPriority || "Moyenne";
+  const duplicate = state.actions.find(action => String(action.title || "").trim().toLowerCase() === String(title).trim().toLowerCase()
+    && String(action.owner || "").trim().toLowerCase() === String(owner).trim().toLowerCase()
+    && String(action.due || "") === String(due || "")
+    && String(action.level || "") === topicPriorityToActionLevel(priority)
+    && ensureArray(action.linkedDocuments || []).includes(documentEditDialog.documentId || documentDraftFromDialog()?.id || ""));
+  if (duplicate) {
+    let linked = normalizeLinkedIdArray(card.querySelector('[data-field="linkedActionIds"]')?.value.split(","));
+    if (!linked.includes(duplicate.id)) linked.push(duplicate.id);
+    const hidden = card.querySelector('[data-field="linkedActionIds"]');
+    if (hidden) hidden.value = linked.join(",");
+    return duplicate;
+  }
+  const doc = documentDraftFromDialog();
+  const action = normalizeEntity("actions", {
+    id: newId("action"),
+    title,
+    owner,
+    due,
+    level: topicPriorityToActionLevel(priority),
+    done: false,
+    link: doc?.title || "Entretien managérial",
+    linkedDocuments: normalizeLinkedIdArray([doc?.id || documentEditDialog.documentId || ""]),
+    linkedManagers: normalizeLinkedIdArray(checkedValues("idocManagers")),
+    linkedProjects: normalizeLinkedIdArray(topic.linkedProjectIds),
+    linkedFolders: normalizeLinkedIdArray(topic.linkedFolderIds),
+    linkedDecisions: normalizeLinkedIdArray(topic.linkedDecisionIds),
+    sourceDocumentId: doc?.id || documentEditDialog.documentId || "",
+    sourceTopicId: topic.id
+  });
+  state.actions.unshift(action);
+  persist("actions");
+  addActivity("Action", action.title, "Créée depuis un sujet d'entretien", action.id);
+  const hidden = card.querySelector('[data-field="linkedActionIds"]');
+  if (hidden) hidden.value = normalizeLinkedIdArray([...(String(hidden.value || "").split(",")), action.id]).join(",");
+  return action;
+}
+
+function createDecisionFromManagerialTopic(button) {
+  const card = getManagerialTopicCard(button);
+  if (!card) return;
+  const topic = collectManagerialTopicFromCard(card);
+  if (!topic) return;
+  const title = topic.quickDecisionTitle || topic.decision || topic.title || "Décision issue d'entretien";
+  const owner = topic.quickDecisionOwner || document.getElementById("idocOwner")?.value.trim() || identityName();
+  const due = topic.quickDecisionDue || document.getElementById("idocNextInterviewDate")?.value || document.getElementById("idocDate")?.value || isoToday();
+  const priority = topic.quickDecisionPriority || "Moyenne";
+  const duplicate = state.decisions.find(decision => String(decision.title || decision.decision || "").trim().toLowerCase() === String(title).trim().toLowerCase()
+    && String(decision.owner || "").trim().toLowerCase() === String(owner).trim().toLowerCase()
+    && String(decision.reviewDate || decision.date || "") === String(due || "")
+    && ensureArray(decision.linkedDocuments || []).includes(documentEditDialog.documentId || documentDraftFromDialog()?.id || ""));
+  if (duplicate) {
+    let linked = normalizeLinkedIdArray(card.querySelector('[data-field="linkedDecisionIds"]')?.value.split(","));
+    if (!linked.includes(duplicate.id)) linked.push(duplicate.id);
+    const hidden = card.querySelector('[data-field="linkedDecisionIds"]');
+    if (hidden) hidden.value = linked.join(",");
+    return duplicate;
+  }
+  const doc = documentDraftFromDialog();
+  const decision = normalizeEntity("decisions", {
+    id: newId("decision"),
+    title,
+    decision: title,
+    date: due,
+    status: "decided",
+    importance: topicPriorityToActionLevel(priority),
+    context: doc?.title ? `Issue de l'entretien ${doc.title}` : "Issue d'un entretien managérial",
+    problem: topic.object || topic.context || "",
+    rationale: topic.sharedAnalysis || topic.managerExpression || "",
+    alternatives: "",
+    impacts: "",
+    risks: "",
+    owner,
+    linkedDocuments: normalizeLinkedIdArray([doc?.id || documentEditDialog.documentId || ""]),
+    linkedManagers: normalizeLinkedIdArray(checkedValues("idocManagers")),
+    linkedProjects: normalizeLinkedIdArray(topic.linkedProjectIds),
+    linkedFolders: normalizeLinkedIdArray(topic.linkedFolderIds),
+    linkedActions: normalizeLinkedIdArray(topic.linkedActionIds),
+    sourceDocumentId: doc?.id || documentEditDialog.documentId || "",
+    sourceTopicId: topic.id,
+    reviewDate: due,
+    events: [],
+    directorNotes: [],
+    nextStep: topic.directorSupport || "",
+    tags: ["Entretien managérial", "Sujet"]
+  });
+  state.decisions.unshift(decision);
+  persist("decisions");
+  addActivity("Décision", decision.title, "Créée depuis un sujet d'entretien", decision.id);
+  const hidden = card.querySelector('[data-field="linkedDecisionIds"]');
+  if (hidden) hidden.value = normalizeLinkedIdArray([...(String(hidden.value || "").split(",")), decision.id]).join(",");
+  return decision;
+}
+
+function managerialTopicNextInterviewClone(topic) {
+  const sourceStatus = normalizeManagerialTopicStatus(topic.status);
+  const keep = ["Ouvert", "En cours", "À reprendre"].includes(sourceStatus) || topic.carryForward;
+  if (!keep) return null;
+  return normalizeManagerialTopic({
+    ...topic,
+    id: newId("topic"),
+    previousTopicId: topic.id,
+    decision: "",
+    status: topic.carryForward ? "À reprendre" : sourceStatus,
+    carryForward: Boolean(topic.carryForward || sourceStatus === "À reprendre"),
+    linkedActionIds: normalizeLinkedIdArray(topic.linkedActionIds),
+    linkedDecisionIds: normalizeLinkedIdArray(topic.linkedDecisionIds),
+    linkedProjectIds: normalizeLinkedIdArray(topic.linkedProjectIds),
+    linkedFolderIds: normalizeLinkedIdArray(topic.linkedFolderIds),
+    createdAt: isoToday(),
+    updatedAt: isoToday()
+  }, topic.order);
+}
+
+function duplicateManagerialTopicsForNextInterview(content = {}) {
+  return normalizeManagerialTopics(content).map(topic => managerialTopicNextInterviewClone(topic)).filter(Boolean).map((topic, index) => ({ ...topic, order: index }));
+}
+
 function normalizeDocumentStructuredContent(documentItem, interviewTemplate) {
   const current = documentItem?.content;
   if (!interviewTemplate) {
@@ -13446,6 +14224,25 @@ function normalizeDocumentStructuredContent(documentItem, interviewTemplate) {
   }
   const base = interviewTemplateContent(interviewTemplate);
   if (!current || typeof current !== "object" || Array.isArray(current)) return base;
+  if (interviewTemplate === "managerial_full") {
+    const merged = {
+      ...base,
+      ...current,
+      general: { ...(base.general || {}), ...(current.general || {}) },
+      objectContext: { ...(base.objectContext || {}), ...(current.objectContext || {}) },
+      review: { ...(base.review || {}), ...(current.review || {}) },
+      commitments: Array.isArray(current.commitments) ? current.commitments : (base.commitments || []),
+      keyResults: Array.isArray(current.keyResults) ? current.keyResults : (base.keyResults || []),
+      sharedAnalysis: { ...(base.sharedAnalysis || {}), ...(current.sharedAnalysis || {}) },
+      managerExpression: { ...(base.managerExpression || {}), ...(current.managerExpression || {}) },
+      managerialAssessment: { ...(base.managerialAssessment || {}), ...(current.managerialAssessment || {}) },
+      expectedSupport: { ...(base.expectedSupport || {}), ...(current.expectedSupport || {}) },
+      conclusion: { ...(base.conclusion || {}), ...(current.conclusion || {}) },
+      actionPlan: Array.isArray(current.actionPlan) ? current.actionPlan : (base.actionPlan || [])
+    };
+    merged.topics = normalizeManagerialTopics(merged);
+    return merged;
+  }
   return {
     ...base,
     ...current,
@@ -13488,7 +14285,8 @@ function documentSummaryPreview(doc) {
     return [content.synthesis?.mainSuccess, content.synthesis?.mainDifficulty, content.conclusion?.expectedNextResult].filter(Boolean).join(" · ") || "Compte-rendu d'entretien";
   }
   if (doc.interviewTemplate === "managerial_full") {
-    return [content.objectContext?.subject, content.managerialAssessment?.globalAssessment, content.conclusion?.priority].filter(Boolean).join(" · ") || "Entretien managérial";
+    const firstTopic = normalizeManagerialTopics(content)[0];
+    return [firstTopic?.title || content.objectContext?.subject, firstTopic?.status || content.managerialAssessment?.globalAssessment, content.conclusion?.priority].filter(Boolean).join(" · ") || "Entretien managérial";
   }
   return [content.free?.subject, content.free?.nextStep].filter(Boolean).join(" · ") || "Compte-rendu libre";
 }
@@ -13882,6 +14680,29 @@ function collectDocumentFromModal() {
         nextMeeting: document.getElementById("idocNextInterviewDate")?.value || "",
         preparationItems: document.getElementById("idocConclusionPrep")?.value.trim() || ""
       };
+      const topicCards = [...document.querySelectorAll("#idocManagerialTopics .interview-topic-card")];
+      const invalidTopicIndex = topicCards.findIndex(card => {
+        const rawTitle = card.querySelector('[data-field="title"]')?.value.trim() || "";
+        const rawObject = card.querySelector('[data-field="object"]')?.value.trim() || "";
+        return !rawTitle && !rawObject;
+      });
+      if (invalidTopicIndex >= 0) {
+        const topicNumber = invalidTopicIndex + 1;
+        setTimeout(() => {
+          const cards = document.querySelectorAll("#idocManagerialTopics .interview-topic-card");
+          const card = cards[invalidTopicIndex];
+          if (!card) return;
+          card.classList.remove("collapsed");
+          const toggleButton = card.querySelector(".interview-topic-actions button");
+          if (toggleButton) toggleButton.textContent = "Replier";
+          card.scrollIntoView({ behavior: "smooth", block: "center" });
+          const titleInput = card.querySelector('[data-field="title"]');
+          if (titleInput) titleInput.focus();
+        }, 0);
+        return { error: `Le sujet ${topicNumber} doit contenir au moins un intitulé ou un objet.` };
+      }
+      const topics = collectManagerialTopicsFromModal();
+      content.topics = topics;
     } else {
       content.free = {
         ...(content.free || {}),
@@ -14155,6 +14976,7 @@ function duplicateInterviewDocumentForNext(id) {
       preparationItems: ""
     };
     cloned.content.commitments = ensureArray(cloned.content.commitments).filter(item => !["Réalisé", "Abandonné"].includes(item.status || ""));
+    cloned.content.topics = duplicateManagerialTopicsForNextInterview(cloned.content || {});
   }
 
   if (cloned.interviewTemplate === "biweekly_performance") {
@@ -14355,6 +15177,7 @@ function documentFormBody(doc) {
     return `
       ${common}
       <div class="card"><h3>Informations générales</h3><div class="form-grid"><select id="idocGeneralType"><option ${content.general?.interviewType === "Performance" ? "selected" : ""}>Performance</option><option ${content.general?.interviewType === "Managérial" ? "selected" : ""}>Managérial</option><option ${content.general?.interviewType === "Suivi d'objectifs" ? "selected" : ""}>Suivi d'objectifs</option><option ${content.general?.interviewType === "Accompagnement" ? "selected" : ""}>Accompagnement</option><option ${content.general?.interviewType === "Recadrage" ? "selected" : ""}>Recadrage</option><option ${content.general?.interviewType === "Développement / carrière" ? "selected" : ""}>Développement / carrière</option><option ${content.general?.interviewType === "Autre" ? "selected" : ""}>Autre</option></select><input id="idocInfoPrevious" value="${esc(content.general?.previousInterview || "")}" placeholder="Entretien précédent"><input id="idocInfoPeriod" value="${esc(content.general?.examinedPeriod || "")}" placeholder="Période examinée"></div>${previous ? `<p class="muted">Dernier entretien identifié: ${esc(previous.title)} (${esc(previous.date || "")})</p>` : `<p class="muted">Aucun entretien précédent identifié.</p>`}<label class="check-row"><input id="idocResumeCommitments" type="checkbox" ${previous ? "" : "disabled"}><span>Reprendre les engagements du dernier entretien</span></label><button class="secondary" type="button" onclick="loadPreviousInterviewForManager()" ${previous ? "" : "disabled"}>Charger maintenant</button></div>
+      ${renderManagerialTopicsEditor(doc, content)}
       <div class="card"><h3>Objet et contexte</h3><div class="form-grid"><textarea id="idocCtxSubject" placeholder="Objet de l'entretien">${esc(content.objectContext?.subject || "")}</textarea><textarea id="idocCtxContext" placeholder="Contexte">${esc(content.objectContext?.context || "")}</textarea><textarea id="idocCtxExpected" placeholder="Résultat attendu de l'échange">${esc(content.objectContext?.expectedExchangeResult || "")}</textarea></div></div>
       <div class="card"><h3>Bilan depuis le dernier entretien</h3><div class="form-grid"><textarea id="idocReviewFacts" placeholder="Faits marquants">${esc(content.review?.keyFacts || "")}</textarea><textarea id="idocReviewSuccess" placeholder="Réussites">${esc(content.review?.successes || "")}</textarea><textarea id="idocReviewDifficulties" placeholder="Difficultés">${esc(content.review?.difficulties || "")}</textarea><textarea id="idocReviewChanges" placeholder="Changements intervenus">${esc(content.review?.changes || "")}</textarea></div></div>
       <div class="card"><h3>Engagements précédents</h3><div class="doc-row doc-row-head"><span>Engagement</span><span>Responsable</span><span>Échéance</span><span>Statut</span><span>Commentaire</span><span></span></div><div id="idocCommitmentsRows" class="doc-rows">${commitmentRows}</div><button class="secondary" type="button" onclick="addInterviewCommitmentRow()">Ajouter un engagement</button></div>
@@ -14454,19 +15277,26 @@ function printInterviewDocument(id, format = "A4") {
   const confLabel = documentConfidentialityLabelV520(doc);
   const actionRows = ensureArray(content.actionPlan).map(row => `<tr><td>${esc(row.action || "")}</td><td>${esc(row.owner || "")}</td><td>${esc(row.due || "")}</td><td>${esc(row.priority || "")}</td><td>${esc(row.successIndicator || "")}</td></tr>`).join("") || `<tr><td colspan="5">Aucune action</td></tr>`;
   const resultRows = ensureArray(content.keyResults).map(row => `<tr><td>${esc(row.indicator || "")}</td><td>${esc(row.result || "")}</td><td>${esc(row.objective || "")}</td><td>${esc(row.gap || "")}</td><td>${esc(row.trend || "")}</td><td>${esc(row.comment || "")}</td></tr>`).join("") || `<tr><td colspan="6">Aucun indicateur</td></tr>`;
+  const topicRows = normalizeManagerialTopics(content).map(topic => {
+    const linkedActionLabels = normalizeLinkedIdArray(topic.linkedActionIds || []).map(actionId => byId("actions", actionId)?.title || actionId).filter(Boolean);
+    return `<tr><td>${esc(topic.title || "")}</td><td>${esc(topic.category || "")}</td><td>${esc(topic.object || "")}</td><td>${esc(topic.context || "")}</td><td>${esc(topic.facts || "")}</td><td>${esc(topic.managerExpression || "")}</td><td>${esc(topic.sharedAnalysis || "")}</td><td>${esc(topic.agreements || "")}</td><td>${esc(topic.disagreements || "")}</td><td>${esc(topic.decision || "")}</td><td>${esc(topic.directorSupport || "")}</td><td>${esc(topic.status || "")}</td><td>${esc(linkedActionLabels.join(", ") || "")}</td><td>${topic.carryForward ? "Oui" : "Non"}</td></tr>`;
+  }).join("") || `<tr><td colspan="14">Aucun sujet</td></tr>`;
   const a4Sections = `
     <section><h3>Informations</h3><p><strong>Date:</strong> ${esc(doc.date || "")}${doc.startTime ? ` · ${esc(doc.startTime)}` : ""}${doc.endTime ? ` - ${esc(doc.endTime)}` : ""}</p><p><strong>Manager:</strong> ${esc(managerLabel)}</p><p><strong>Période:</strong> ${esc(doc.period || "")}</p><p><strong>Participants:</strong> ${esc(doc.participants || "")}</p><p><strong>Confidentialité:</strong> ${esc(confLabel)}</p></section>
     <section><h3>Synthèse</h3><p>${esc(doc.summary || documentSummaryPreview(doc) || "")}</p></section>
+    ${doc.interviewTemplate === "managerial_full" ? `<section><h3>Sujets abordés</h3><table><thead><tr><th>Titre</th><th>Nature</th><th>Objet</th><th>Contexte</th><th>Faits</th><th>Expression du manager</th><th>Analyse partagée</th><th>Accord</th><th>Désaccord</th><th>Décision</th><th>Soutien Directeur</th><th>Statut</th><th>Actions liées</th><th>À reprendre</th></tr></thead><tbody>${topicRows}</tbody></table></section>` : ""}
     <section><h3>Résultats clés</h3><table><thead><tr><th>Indicateur</th><th>Résultat</th><th>Objectif</th><th>Écart</th><th>Tendance</th><th>Commentaire</th></tr></thead><tbody>${resultRows}</tbody></table></section>
     <section><h3>Plan d'action</h3><table><thead><tr><th>Action</th><th>Responsable</th><th>Échéance</th><th>Priorité</th><th>Indicateur de réussite</th></tr></thead><tbody>${actionRows}</tbody></table></section>
   `;
   const a5Blocks = `
+    ${doc.interviewTemplate === "managerial_full" ? `<section><h3>Sujets</h3><p>${esc(normalizeManagerialTopics(content).slice(0, 5).map(topic => `${topic.title || "Sujet"} · ${topic.decision || topic.status || ""}`).join(" · ") || "À compléter")}</p></section>` : ""}
     <section><h3>Résultats clés</h3><p>${esc((ensureArray(content.keyResults).slice(0, 4).map(row => `${row.indicator || "Indicateur"}: ${row.result || ""}`).join(" · ")) || "À compléter")}</p></section>
     <section><h3>Réussite</h3><p>${esc(content.synthesis?.mainSuccess || content.review?.successes || "À compléter")}</p></section>
     <section><h3>Difficulté</h3><p>${esc(content.synthesis?.mainDifficulty || content.review?.difficulties || "À compléter")}</p></section>
     <section><h3>Décisions</h3><p>${esc(content.free?.decisionsTaken || "À compléter")}</p></section>
     <section><h3>Actions</h3><p>${esc((ensureArray(content.actionPlan).slice(0, 4).map(row => `${row.action || "Action"} (${row.owner || ""})`).join(" · ")) || "À compléter")}</p></section>
     <section><h3>Priorité / prochain point</h3><p>${esc(content.synthesis?.nextPriority || content.conclusion?.priority || content.conclusion?.expectedNextResult || "À compléter")}</p><p>${esc(documentNextInterviewDate(doc) || "")}</p></section>
+    <section><h3>Prochaine étape</h3><p>${esc(content.free?.nextStep || content.conclusion?.expectedResult || content.conclusion?.preparationItems || content.expectedSupport?.pendingDecision || "À compléter")}</p></section>
   `;
 
   const html = `
@@ -14747,7 +15577,7 @@ function getCalendarConnectionSettings() {
 }
 
 function persistSettings() {
-  localStorage.setItem("deos_settings", JSON.stringify(state.settings));
+  settingsRepository.save(state.settings);
 }
 
 function settingsCalendarConnectionCard() {
@@ -14920,17 +15750,17 @@ function getGoogleOAuthClientId() {
 function setGoogleAccessToken(token) {
   googleAccessToken = token || null;
   if (token) {
-    sessionStorage.setItem("deos_gc_token", token);
+    deosSessionService.saveRaw("gc_token", token, { skipIfUnchanged: false });
   } else {
-    sessionStorage.removeItem("deos_gc_token");
-    sessionStorage.removeItem("deos_gc_email");
+    deosSessionService.remove("gc_token");
+    deosSessionService.remove("gc_email");
     googleConnectedEmail = "";
   }
 }
 
 function getGoogleAccessToken() {
   if (googleAccessToken) return googleAccessToken;
-  const stored = sessionStorage.getItem("deos_gc_token");
+  const stored = deosSessionService.loadRaw("gc_token", "");
   if (stored) {
     googleAccessToken = stored;
     return stored;
@@ -14956,7 +15786,7 @@ async function fetchGoogleUserInfo() {
     if (resp.ok) {
       const data = await resp.json();
       googleConnectedEmail = data.email || "";
-      if (googleConnectedEmail) sessionStorage.setItem("deos_gc_email", googleConnectedEmail);
+      if (googleConnectedEmail) deosSessionService.saveRaw("gc_email", googleConnectedEmail, { skipIfUnchanged: false });
     }
   } catch (e) {
     console.error("[DEOS] fetchGoogleUserInfo:", e);
@@ -15021,7 +15851,7 @@ function disconnectGoogleCalendar() {
   googleNextSyncAt = null;
   updateGoogleConnectionStatus("not_configured");
   state.externalCalendarEvents = [];
-  localStorage.removeItem("deos_external_events");
+  externalEventsRepository.remove();
   if (state.settings && state.settings.calendarConnection) {
     state.settings.calendarConnection.googleCalendarId = "";
     state.settings.calendarConnection.googleCalendarName = "";
@@ -15371,8 +16201,8 @@ function onClickSyncGoogleNow() {
 }
 
 function persistExternalEvents() {
-  localStorage.setItem("deos_external_events", JSON.stringify(state.externalCalendarEvents || []));
-  localStorage.setItem("deos_external_event_enrichments", JSON.stringify(state.externalEventEnrichments || {}));
+  externalEventsRepository.save(state.externalCalendarEvents || []);
+  externalEventEnrichmentsRepository.save(state.externalEventEnrichments || {});
 }
 
 function googleConnectionStatusLabel() {

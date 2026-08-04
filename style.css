@@ -245,6 +245,30 @@ textarea{min-height:92px}
 	.deos-graph-svg{height:540px}
 }
 
+.interview-topics-card{background:linear-gradient(135deg,#fff,#f8fbff);border-color:#cfe0ff}
+.interview-topics-head{align-items:flex-start;margin-bottom:10px}
+.interview-topics-list{display:grid;gap:12px}
+.interview-topic-card{border:1px solid #dbe3f1;border-radius:18px;background:#ffffff;padding:14px}
+.interview-topic-card.collapsed .interview-topic-body{display:none}
+.interview-topic-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.interview-topic-title-wrap{min-width:0;flex:1}
+.interview-topic-order{display:inline-block;font-size:12px;font-weight:800;color:#2563eb;margin-bottom:6px}
+.interview-topic-title{margin:0 0 10px 0}
+.interview-topic-badges{display:flex;flex-wrap:wrap;gap:6px}
+.interview-topic-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}
+.interview-topic-actions .secondary,.interview-topic-actions .danger{margin:0;padding:8px 10px;font-size:12px}
+.interview-topic-grid{margin-top:12px}
+.interview-topic-grid textarea{min-height:88px}
+.interview-topic-carry{margin-top:4px}
+.interview-topic-carry input{margin-top:2px}
+.interview-topic-card .badge{margin-top:0}
+
+@media(max-width:900px){
+	.interview-topic-head{flex-direction:column}
+	.interview-topic-actions{justify-content:flex-start}
+	.interview-topic-grid{grid-template-columns:1fr}
+}
+
 @media(max-width:1200px){
 	.cockpit-metrics-row{grid-template-columns:repeat(3,minmax(0,1fr))}
 	.cockpit-workspace{grid-template-columns:1fr 1fr;grid-template-areas:"today alerts" "agenda agenda" "priorities projects"}
