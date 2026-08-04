@@ -343,6 +343,27 @@ const externalEventEnrichmentsRepository = createRepository(deosDataService, {
   normalize: value => (value && typeof value === "object" && !Array.isArray(value) ? value : {})
 });
 
+const DEOS_REMOTE_TEST_RECORD_TEMPLATES = Object.freeze([
+  { label: "Test de connexion", payload: { scenario: "connectivity", device: "Navigateur principal", note: "Validation du canal distant de test.", status: "draft", client: "DEOS V5.21C" } },
+  { label: "Test PC", payload: { scenario: "pc", device: "PC", note: "Validation multi-appareils sur poste principal.", status: "draft", client: "DEOS V5.21C" } },
+  { label: "Test iPad", payload: { scenario: "ipad", device: "iPad", note: "Validation lecture/ecriture sur tablette.", status: "draft", client: "DEOS V5.21C" } },
+  { label: "Test conflit", payload: { scenario: "conflict", device: "Navigateur secondaire", note: "Preparation du test de conflit de version.", status: "draft", client: "DEOS V5.21C" } }
+]);
+
+let deosRemoteAuthService = null;
+let deosRemoteAdapter = null;
+let deosRemoteAuthSubscription = null;
+let deosRemoteRuntime = createRemoteRuntimeState();
+let deosRemoteAuthDialog = {
+  open: false,
+  busy: false,
+  mode: "password",
+  email: "",
+  password: "",
+  error: "",
+  message: ""
+};
+
 function getEntityRepository(name) {
   return entityRepositories[name] || null;
 }
@@ -646,11 +667,13 @@ function appHtml(html) {
     ? `<div class="card graph-return-banner"><div><strong>Vue graphique</strong><p class="muted">Contexte conservé (filtres, zoom, sélection).</p></div><div class="row-actions"><button class="secondary" onclick="returnToGraph()">Retour à la vue graphique</button></div></div>`
     : "";
   document.getElementById("app").innerHTML = hideVisibleTechnicalIds(`${graphReturnBanner}${html}`);
+  applyRemoteEnvironmentBadge();
   injectA5SummaryButtons();
   renderA5SummaryOverlay();
   renderActionModalOverlays();
   renderDecisionModalOverlays();
   renderDocumentModalOverlays();
+  renderRemoteAuthOverlay();
 }
 
 function badge(status) {
@@ -1486,7 +1509,8 @@ async function init() {
       examples: actionTitleMigrationStats.examples
     });
   }
-  state.settings = settingsRepository.load({});
+  state.settings = ensureSettings(settingsRepository.load({}));
+  await initializeRemoteServices({ silent: true });
   // V5.5 — Charger les événements externes (Google Calendar)
   state.externalCalendarEvents = externalEventsRepository.load([]);
   // V5.7 — Charger les enrichissements locaux des événements Google
@@ -1524,6 +1548,7 @@ async function init() {
   document.querySelectorAll(".nav").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
   document.addEventListener("change", onAgendaFormSelectionChange);
   document.getElementById("searchInput").oninput = e => runSearch(e.target.value);
+  applyRemoteEnvironmentBadge();
   if (restoreSuccessMessage) {
     setView("settings");
   } else {
@@ -15407,7 +15432,7 @@ function linkCard(link) {
   const url = linkUrl(link.url);
   const domain = linkDomain(link.url);
   const disabled = !url;
-  return `<div class="card link-card link-tile ${link.status === "archivé" ? "link-archived" : ""}"><button class="link-tile-main" onclick="${disabled ? "" : `openExternalLink('${esc(link.id)}')`}" aria-label="Ouvrir ${esc(link.name || "lien")}"><span class="link-icon" aria-hidden="true">${esc(link.icon || suggestLinkIcon(`${link.name} ${link.url}`))}</span><span class="link-tile-text"><strong>${esc(link.name || "Lien")}</strong><small>${esc(link.category || "Autre")}${domain ? " · " + esc(domain) : ""}</small></span></button><p>${esc(link.description || "Ressource professionnelle")}</p><div class="link-tile-footer"><div>${linkStatusBadge(link.status)}${link.favorite ? `<span class="badge orange">? Favori</span>` : ""}</div><button class="icon-button ${link.favorite ? "is-favorite" : ""}" onclick="toggleLinkFavorite('${esc(link.id)}')" title="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-label="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}">${link.favorite ? "?" : "?"}</button></div><div class="link-actions"><a class="action link-action" href="${esc(url || "#")}" target="_blank" rel="noopener noreferrer" aria-disabled="${disabled}">Ouvrir</a><button class="secondary" onclick="editLink('${esc(link.id)}')">Modifier</button><button class="secondary" onclick="archiveLink('${esc(link.id)}')">${link.status === "archivé" ? "Réactiver" : "Archiver"}</button><button class="secondary" onclick="moveLink('${esc(link.id)}',-1)">Monter</button><button class="secondary" onclick="moveLink('${esc(link.id)}',1)">Descendre</button><button class="danger" onclick="deleteLink('${esc(link.id)}')">Supprimer</button></div></div>`;
+  return `<div class="card link-card link-tile ${link.status === "archivé" ? "link-archived" : ""}"><button class="link-tile-main" onclick="${disabled ? "" : `openExternalLink('${esc(link.id)}')`}" aria-label="Ouvrir ${esc(link.name || "lien")}"><span class="link-icon" aria-hidden="true">${esc(link.icon || suggestLinkIcon(`${link.name} ${link.url}`))}</span><span class="link-tile-text"><strong>${esc(link.name || "Lien")}</strong><small>${esc(link.category || "Autre")}${domain ? " · " + esc(domain) : ""}</small></span></button><p>${esc(link.description || "Ressource professionnelle")}</p><div class="link-tile-footer"><div>${linkStatusBadge(link.status)}${link.favorite ? `<span class="badge orange">★ Favori</span>` : ""}</div><button class="icon-button ${link.favorite ? "is-favorite" : ""}" onclick="toggleLinkFavorite('${esc(link.id)}')" title="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-label="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}">${link.favorite ? "★" : "☆"}</button></div><div class="link-actions"><a class="action link-action" href="${esc(url || "#")}" target="_blank" rel="noopener noreferrer" aria-disabled="${disabled}">Ouvrir</a><button class="secondary" onclick="editLink('${esc(link.id)}')">Modifier</button><button class="secondary" onclick="archiveLink('${esc(link.id)}')">${link.status === "archivé" ? "Réactiver" : "Archiver"}</button><button class="secondary" onclick="moveLink('${esc(link.id)}',-1)">Monter</button><button class="secondary" onclick="moveLink('${esc(link.id)}',1)">Descendre</button><button class="danger" onclick="deleteLink('${esc(link.id)}')">Supprimer</button></div></div>`;
 }
 
 function renderLinks() {
@@ -15418,7 +15443,7 @@ function renderLinks() {
   const categories = ["all", ...linkCategoryOptions()];
   const activeCategories = categories.filter(c => c === "all" || state.links.some(l => l.category === c));
   const grouped = activeCategories.filter(c => c !== "all").map(c => ({ category: c, count: state.links.filter(l => l.category === c).length }));
-  appHtml(`<div class="card hero links-hero"><div class="row"><div><h2>🔗 Liens utiles</h2><p class="muted">Lanceur visuel des ressources professionnelles du quotidien.</p></div><button class="action" onclick="newLink()">+ Nouveau lien</button></div></div>${linkEditId !== "" ? linkForm(linkEditId ? byId("links", linkEditId) : {}) : ""}<div class="links-layout"><aside class="card link-categories"><button class="secondary ${linkCategoryFilter === "all" && !linkFavoriteFilter ? "active-filter" : ""}" onclick="setLinkCategoryFilter('all')">Tous les liens</button><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">⭐ Favoris</button>${grouped.map(g => `<button class="secondary ${linkCategoryFilter === g.category ? "active-filter" : ""}" onclick="setLinkCategoryFilter('${esc(g.category)}')"><span>${linkCategoryIcon(g.category)}</span>${esc(g.category)} <small>${g.count}</small></button>`).join("")}</aside><section><div class="card link-toolbar"><input value="${esc(linkSearch)}" placeholder="Rechercher un lien, une catégorie ou un domaine" oninput="setLinkSearch(this.value)"><select onchange="setLinkCategoryFilter(this.value)">${categories.map(c => `<option value="${esc(c)}" ${linkCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">Favoris</button></div><div class="card links-favorites"><div class="row"><h2>Favoris</h2><span class="muted">${favorites.length} lien(s)</span></div><div class="links-grid links-grid-compact">${favorites.map(linkCard).join("") || `<div class="empty">Aucun favori — ajoutez-en avec l'étoile sur une tuile.</div>`}</div></div><div class="card links-results-head"><div><h2>Catalogue</h2><p class="muted">${items.length} ressource(s) affichée(s)</p></div></div><div id="linkResults" class="links-grid">${items.map(linkCard).join("") || `<div class="card empty">Aucun lien ne correspond aux filtres.<br><button class="secondary" onclick="newLink()">+ Ajouter mon premier lien</button></div>`}</div></section></div>`);
+  appHtml(`<div class="card hero links-hero"><div class="row"><div><h2>🔗 Liens utiles</h2><p class="muted">Lanceur visuel des ressources professionnelles du quotidien.</p></div><button class="action" onclick="newLink()">+ Nouveau lien</button></div></div>${linkEditId !== "" ? linkForm(linkEditId ? byId("links", linkEditId) : {}) : ""}<div class="links-layout"><aside class="card link-categories"><button class="secondary ${linkCategoryFilter === "all" && !linkFavoriteFilter ? "active-filter" : ""}" onclick="setLinkCategoryFilter('all')">Tous les liens</button><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">⭐ Favoris</button>${grouped.map(g => `<button class="secondary ${linkCategoryFilter === g.category ? "active-filter" : ""}" onclick="setLinkCategoryFilter('${esc(g.category)}')"><span>${linkCategoryIcon(g.category)}</span>${esc(g.category)} <small>${g.count}</small></button>`).join("")}</aside><section><div class="card link-toolbar"><input value="${esc(linkSearch)}" placeholder="Rechercher un lien, une catégorie ou un domaine" oninput="setLinkSearch(this.value)"><select onchange="setLinkCategoryFilter(this.value)">${categories.map(c => `<option value="${esc(c)}" ${linkCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">Favoris</button></div><div class="card links-favorites"><div class="row"><h2>Favoris</h2><span class="muted">${favorites.length} lien(s)</span></div><div class="links-grid links-grid-compact">${favorites.map(linkCard).join("") || `<div class="empty">Aucun favori — ajoutez-en avec l'étoile sur une tuile.</div>`}</div></div><div class="card links-results-head"><div><h2>Catalogue</h2><p class="muted">${items.length} ressource(s) affichée(s)</p><p class="muted">Le catalogue contient toutes les ressources, y compris les favoris.</p></div></div><div id="linkResults" class="links-grid">${items.map(linkCard).join("") || `<div class="card empty">Aucun lien ne correspond aux filtres.<br><button class="secondary" onclick="newLink()">+ Ajouter mon premier lien</button></div>`}</div></section></div>`);
 }
 
 function newLink() {
@@ -15575,6 +15600,10 @@ function ensureSettings(raw = {}) {
       ...getDefaultCalendarConnectionSettings(),
       ...(raw.calendarConnection || {})
     },
+    remoteSync: {
+      ...getDefaultRemoteSyncSettings(),
+      ...(raw.remoteSync || {})
+    },
     performanceImport: {
       mappings: {},
       ...(raw.performanceImport || {})
@@ -15588,6 +15617,570 @@ function getCalendarConnectionSettings() {
 
 function persistSettings() {
   settingsRepository.save(state.settings);
+}
+
+function createRemoteRuntimeState(overrides = {}) {
+  return {
+    enabled: false,
+    provider: "supabase",
+    environment: "test",
+    mode: "local",
+    configurationStatus: "disabled",
+    connectionStatus: "local_only",
+    initialized: false,
+    available: Boolean(window.DeosSupabase && window.DeosSupabaseRemote),
+    user: null,
+    workspace: null,
+    site: null,
+    role: "",
+    testRecords: [],
+    lastOperation: "Aucune operation distante.",
+    lastOperationAt: "",
+    lastError: "",
+    lastErrorCode: "",
+    lastAuthEvent: "",
+    lastConnectionTestAt: "",
+    lastConnectionTestResult: "",
+    ...overrides
+  };
+}
+
+function defaultRemoteAuthRedirectUrl() {
+  if (!["http:", "https:"].includes(window.location.protocol)) return "";
+  return `${window.location.origin}${window.location.pathname}`;
+}
+
+function getDefaultRemoteSyncSettings() {
+  const remoteApi = window.DeosSupabase;
+  const base = remoteApi?.normalizeRemoteConfig
+    ? remoteApi.normalizeRemoteConfig(window.DEOS_REMOTE_CONFIG || {})
+    : {
+      enabled: false,
+      provider: "supabase",
+      supabaseUrl: "",
+      supabasePublishableKey: "",
+      environment: "test",
+      authRedirectUrl: "",
+      debug: false
+    };
+  return {
+    enabled: Boolean(base.enabled),
+    provider: String(base.provider || "supabase").trim().toLowerCase() || "supabase",
+    supabaseUrl: String(base.supabaseUrl || "").trim(),
+    supabasePublishableKey: String(base.supabasePublishableKey || "").trim(),
+    environment: String(base.environment || "test").trim().toLowerCase() || "test",
+    authRedirectUrl: String(base.authRedirectUrl || defaultRemoteAuthRedirectUrl()).trim(),
+    debug: Boolean(base.debug)
+  };
+}
+
+function normalizeRemoteSyncSettings(value = {}) {
+  const merged = { ...getDefaultRemoteSyncSettings(), ...(value || {}) };
+  return {
+    enabled: Boolean(merged.enabled),
+    provider: String(merged.provider || "supabase").trim().toLowerCase() || "supabase",
+    supabaseUrl: String(merged.supabaseUrl || "").trim(),
+    supabasePublishableKey: String(merged.supabasePublishableKey || "").trim(),
+    environment: String(merged.environment || "test").trim().toLowerCase() || "test",
+    authRedirectUrl: String(merged.authRedirectUrl || defaultRemoteAuthRedirectUrl()).trim(),
+    debug: Boolean(merged.debug)
+  };
+}
+
+function getRemoteSyncSettings() {
+  if (!state.settings || typeof state.settings !== "object") state.settings = ensureSettings({});
+  state.settings.remoteSync = normalizeRemoteSyncSettings(state.settings.remoteSync || {});
+  return state.settings.remoteSync;
+}
+
+function resolvedRemoteConfig() {
+  const remoteApi = window.DeosSupabase;
+  const base = getDefaultRemoteSyncSettings();
+  const override = getRemoteSyncSettings();
+  return remoteApi?.mergeRemoteConfig
+    ? remoteApi.mergeRemoteConfig(base, override)
+    : normalizeRemoteSyncSettings({ ...base, ...override });
+}
+
+function remoteModeKey(config = resolvedRemoteConfig()) {
+  if (!config.enabled) return "local";
+  return config.environment === "production" ? "production" : "test";
+}
+
+function remoteModeLabel(mode = remoteModeKey()) {
+  return ({ local: "Local", test: "Test", production: "Production" })[mode] || "Local";
+}
+
+function remoteModeClass(mode = remoteModeKey()) {
+  return ({ local: "green", test: "orange", production: "red" })[mode] || "green";
+}
+
+function remoteConfigurationStatus(config = resolvedRemoteConfig()) {
+  if (!config.enabled) return "disabled";
+  if (config.provider !== "supabase") return "provider_unsupported";
+  if (config.environment === "production") return "production_locked";
+  if (window.location.protocol === "file:") return "file_protocol_unsupported";
+  if (!config.supabaseUrl || !config.supabasePublishableKey) return "missing_public_config";
+  return "ready";
+}
+
+function remoteConfigurationLabel(status = deosRemoteRuntime.configurationStatus) {
+  return ({
+    disabled: "Supabase desactive",
+    provider_unsupported: "Fournisseur non pris en charge",
+    production_locked: "Mode Production bloque",
+    file_protocol_unsupported: "Mode distant bloque sous file://",
+    missing_public_config: "Configuration publique incomplete",
+    ready: "Configuration prete"
+  })[status] || "Etat inconnu";
+}
+
+function remoteConnectionLabel(status = deosRemoteRuntime.connectionStatus) {
+  return ({
+    local_only: "Mode local uniquement",
+    pending: "Initialisation distante en cours",
+    not_configured: "Configuration distante manquante",
+    signed_out: "Non connecte",
+    authenticated: "Connecte",
+    session_expired: "Session expiree",
+    error: "Erreur distante"
+  })[status] || "Etat inconnu";
+}
+
+function remoteRoleLabel(role = "") {
+  const normalized = String(role || "").trim().toLowerCase();
+  return ({ owner: "owner", admin: "admin", contributor: "contributor", reader: "reader" })[normalized] || "--";
+}
+
+function remoteSafeEmail(value) {
+  const remoteApi = window.DeosSupabase;
+  return remoteApi?.maskEmailAddress ? remoteApi.maskEmailAddress(value) : String(value || "");
+}
+
+function remoteShortValue(value) {
+  const remoteApi = window.DeosSupabase;
+  return remoteApi?.truncatePublicValue ? remoteApi.truncatePublicValue(value) : String(value || "");
+}
+
+function applyRemoteEnvironmentBadge() {
+  const node = document.getElementById("brandEnvironment");
+  if (!node) return;
+  const mode = remoteModeKey();
+  node.hidden = false;
+  node.className = `environment-chip ${remoteModeClass(mode)}`;
+  node.textContent = `Mode ${remoteModeLabel(mode)}`;
+}
+
+function updateRemoteRuntime(summary = {}) {
+  const config = resolvedRemoteConfig();
+  deosRemoteRuntime = {
+    ...deosRemoteRuntime,
+    enabled: Boolean(config.enabled),
+    provider: config.provider,
+    environment: config.environment,
+    mode: remoteModeKey(config),
+    configurationStatus: remoteConfigurationStatus(config),
+    available: Boolean(window.DeosSupabase && window.DeosSupabaseRemote),
+    initialized: Boolean(summary.initialized || deosRemoteRuntime.initialized),
+    connectionStatus: summary.connectionStatus || deosRemoteRuntime.connectionStatus,
+    user: summary.user === undefined ? deosRemoteRuntime.user : summary.user,
+    workspace: summary.workspace === undefined ? deosRemoteRuntime.workspace : summary.workspace,
+    site: summary.site === undefined ? deosRemoteRuntime.site : summary.site,
+    role: summary.role === undefined ? deosRemoteRuntime.role : summary.role,
+    lastError: summary.lastError ? summary.lastError.message || String(summary.lastError) : (summary.lastError === null ? "" : deosRemoteRuntime.lastError),
+    lastErrorCode: summary.lastError ? summary.lastError.code || "REMOTE_ERROR" : (summary.lastError === null ? "" : deosRemoteRuntime.lastErrorCode),
+    lastAuthEvent: summary.lastAuthEvent || deosRemoteRuntime.lastAuthEvent
+  };
+  applyRemoteEnvironmentBadge();
+}
+
+function setRemoteLastOperation(label, code = "") {
+  deosRemoteRuntime.lastOperation = label;
+  deosRemoteRuntime.lastOperationAt = new Date().toLocaleString("fr-FR");
+  deosRemoteRuntime.lastErrorCode = code || deosRemoteRuntime.lastErrorCode;
+}
+
+async function disposeRemoteServices() {
+  if (deosRemoteAuthSubscription && typeof deosRemoteAuthSubscription.unsubscribe === "function") {
+    deosRemoteAuthSubscription.unsubscribe();
+  }
+  deosRemoteAuthSubscription = null;
+  if (deosRemoteAuthService && typeof deosRemoteAuthService.dispose === "function") {
+    await deosRemoteAuthService.dispose();
+  }
+  deosRemoteAuthService = null;
+  deosRemoteAdapter = null;
+}
+
+async function initializeRemoteServices(options = {}) {
+  await disposeRemoteServices();
+  const config = resolvedRemoteConfig();
+  deosRemoteRuntime = createRemoteRuntimeState({
+    enabled: Boolean(config.enabled),
+    provider: config.provider,
+    environment: config.environment,
+    mode: remoteModeKey(config),
+    configurationStatus: remoteConfigurationStatus(config),
+    connectionStatus: config.enabled ? "pending" : "local_only",
+    available: Boolean(window.DeosSupabase && window.DeosSupabaseRemote),
+    lastOperation: config.enabled ? "Mode distant de test prepare." : "Mode local actif. Aucun backend contacte.",
+    lastError: "",
+    lastErrorCode: ""
+  });
+  applyRemoteEnvironmentBadge();
+
+  if (deosRemoteRuntime.configurationStatus !== "ready") {
+    deosRemoteRuntime.connectionStatus = deosRemoteRuntime.configurationStatus === "disabled" ? "local_only" : "not_configured";
+    if (deosRemoteRuntime.configurationStatus !== "disabled") {
+      deosRemoteRuntime.lastError = remoteConfigurationLabel(deosRemoteRuntime.configurationStatus);
+      deosRemoteRuntime.lastErrorCode = deosRemoteRuntime.configurationStatus.toUpperCase();
+    }
+    if (!options.silent && currentView === "settings") renderSettings();
+    return deosRemoteRuntime;
+  }
+
+  try {
+    if (!window.DeosSupabase?.DeosAuthService || !window.DeosSupabaseRemote?.SupabaseRemoteAdapter) {
+      throw { code: "REMOTE_MODULE_MISSING", message: "Modules Supabase de test indisponibles." };
+    }
+    deosRemoteAuthService = new window.DeosSupabase.DeosAuthService(config, {
+      debug: config.debug,
+      storageKey: "sb-deos-test-auth"
+    });
+    const summary = await deosRemoteAuthService.initialize();
+    deosRemoteAdapter = new window.DeosSupabaseRemote.SupabaseRemoteAdapter(deosRemoteAuthService, {
+      debug: config.debug
+    });
+    updateRemoteRuntime(summary);
+    deosRemoteAuthSubscription = deosRemoteAuthService.onAuthStateChange(async (_event, _session, snapshot) => {
+      updateRemoteRuntime(snapshot);
+      if (snapshot && snapshot.authenticated) {
+        await refreshRemoteTestRecords({ silent: true });
+      } else {
+        deosRemoteRuntime.testRecords = [];
+      }
+      if (currentView === "settings") renderSettings();
+    });
+    if (deosRemoteAuthService.isAuthenticated()) {
+      await refreshRemoteTestRecords({ silent: true });
+      setRemoteLastOperation("Session distante restauree.");
+    }
+  } catch (error) {
+    deosRemoteRuntime.connectionStatus = "error";
+    deosRemoteRuntime.lastError = error.message || String(error);
+    deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_INIT_FAILED";
+    setRemoteLastOperation("Initialisation distante en echec.", deosRemoteRuntime.lastErrorCode);
+  }
+
+  if (!options.silent && currentView === "settings") renderSettings();
+  return deosRemoteRuntime;
+}
+
+function readRemoteSettingsForm() {
+  return normalizeRemoteSyncSettings({
+    enabled: document.getElementById("remoteEnabled")?.checked,
+    provider: document.getElementById("remoteProvider")?.value || "supabase",
+    supabaseUrl: document.getElementById("remoteSupabaseUrl")?.value || "",
+    supabasePublishableKey: document.getElementById("remoteSupabasePublishableKey")?.value || "",
+    environment: document.getElementById("remoteEnvironment")?.value || "test",
+    authRedirectUrl: document.getElementById("remoteAuthRedirectUrl")?.value || "",
+    debug: document.getElementById("remoteDebug")?.checked
+  });
+}
+
+async function saveRemoteSettings() {
+  state.settings.remoteSync = readRemoteSettingsForm();
+  persistSettings();
+  await initializeRemoteServices({ silent: true });
+  setRemoteLastOperation("Configuration Supabase de test enregistree.");
+  renderSettings("Configuration Supabase de test enregistree.");
+}
+
+async function disableRemoteMode() {
+  const current = getRemoteSyncSettings();
+  state.settings.remoteSync = normalizeRemoteSyncSettings({ ...current, enabled: false });
+  persistSettings();
+  await disposeRemoteServices();
+  deosRemoteRuntime = createRemoteRuntimeState({
+    enabled: false,
+    provider: current.provider,
+    environment: current.environment || "test",
+    mode: "local",
+    configurationStatus: "disabled",
+    connectionStatus: "local_only",
+    lastOperation: "Mode distant desactive. DEOS reste en local.",
+    testRecords: []
+  });
+  applyRemoteEnvironmentBadge();
+  renderSettings("Mode distant desactive. Les donnees metier DEOS restent locales.");
+}
+
+function openRemoteAuthDialog(mode = "password") {
+  deosRemoteAuthDialog = {
+    ...deosRemoteAuthDialog,
+    open: true,
+    busy: false,
+    mode,
+    error: "",
+    message: ""
+  };
+  renderSettings();
+}
+
+function closeRemoteAuthDialog() {
+  deosRemoteAuthDialog = {
+    ...deosRemoteAuthDialog,
+    open: false,
+    busy: false,
+    error: "",
+    message: "",
+    password: ""
+  };
+  if (currentView === "settings") renderSettings();
+}
+
+function readRemoteAuthDialogValues() {
+  deosRemoteAuthDialog.email = document.getElementById("remoteAuthEmail")?.value.trim() || deosRemoteAuthDialog.email || "";
+  deosRemoteAuthDialog.password = document.getElementById("remoteAuthPassword")?.value || deosRemoteAuthDialog.password || "";
+}
+
+async function submitRemotePasswordSignIn() {
+  readRemoteAuthDialogValues();
+  if (!deosRemoteAuthDialog.email || !deosRemoteAuthDialog.password) {
+    deosRemoteAuthDialog.error = "Email et mot de passe requis.";
+    renderSettings();
+    return;
+  }
+  if (!deosRemoteAuthService) {
+    deosRemoteAuthDialog.error = "Service d'authentification indisponible. Verifiez la configuration Supabase.";
+    renderSettings();
+    return;
+  }
+  deosRemoteAuthDialog.busy = true;
+  deosRemoteAuthDialog.error = "";
+  deosRemoteAuthDialog.message = "";
+  renderSettings();
+  try {
+    await deosRemoteAuthService.signInWithPassword(deosRemoteAuthDialog.email, deosRemoteAuthDialog.password);
+    await refreshRemoteTestRecords({ silent: true });
+    setRemoteLastOperation(`Connexion distante reussie (${remoteSafeEmail(deosRemoteAuthDialog.email)}).`);
+    closeRemoteAuthDialog();
+    renderSettings("Connexion distante reussie.");
+  } catch (error) {
+    deosRemoteAuthDialog.busy = false;
+    deosRemoteAuthDialog.error = error.message || "Connexion impossible.";
+    renderSettings();
+  }
+}
+
+async function sendRemoteMagicLink() {
+  readRemoteAuthDialogValues();
+  if (!deosRemoteAuthDialog.email) {
+    deosRemoteAuthDialog.error = "Email requis pour le lien magique.";
+    renderSettings();
+    return;
+  }
+  if (!deosRemoteAuthService) {
+    deosRemoteAuthDialog.error = "Service d'authentification indisponible. Verifiez la configuration Supabase.";
+    renderSettings();
+    return;
+  }
+  deosRemoteAuthDialog.busy = true;
+  deosRemoteAuthDialog.error = "";
+  renderSettings();
+  try {
+    await deosRemoteAuthService.signInWithMagicLink(deosRemoteAuthDialog.email);
+    deosRemoteAuthDialog.busy = false;
+    deosRemoteAuthDialog.message = "Lien de connexion envoye.";
+    deosRemoteAuthDialog.password = "";
+    setRemoteLastOperation(`Lien magique envoye (${remoteSafeEmail(deosRemoteAuthDialog.email)}).`);
+    renderSettings();
+  } catch (error) {
+    deosRemoteAuthDialog.busy = false;
+    deosRemoteAuthDialog.error = error.message || "Envoi du lien magique impossible.";
+    renderSettings();
+  }
+}
+
+async function requestRemotePasswordReset() {
+  readRemoteAuthDialogValues();
+  if (!deosRemoteAuthDialog.email) {
+    deosRemoteAuthDialog.error = "Email requis pour la recuperation.";
+    renderSettings();
+    return;
+  }
+  if (!deosRemoteAuthService) {
+    deosRemoteAuthDialog.error = "Service d'authentification indisponible. Verifiez la configuration Supabase.";
+    renderSettings();
+    return;
+  }
+  deosRemoteAuthDialog.busy = true;
+  deosRemoteAuthDialog.error = "";
+  renderSettings();
+  try {
+    await deosRemoteAuthService.resetPassword(deosRemoteAuthDialog.email);
+    deosRemoteAuthDialog.busy = false;
+    deosRemoteAuthDialog.message = "Email de recuperation envoye.";
+    setRemoteLastOperation(`Email de recuperation envoye (${remoteSafeEmail(deosRemoteAuthDialog.email)}).`);
+    renderSettings();
+  } catch (error) {
+    deosRemoteAuthDialog.busy = false;
+    deosRemoteAuthDialog.error = error.message || "Recuperation impossible.";
+    renderSettings();
+  }
+}
+
+async function remoteSignOut() {
+  if (!deosRemoteAuthService) return;
+  try {
+    await deosRemoteAuthService.signOut();
+    deosRemoteRuntime.testRecords = [];
+    setRemoteLastOperation("Deconnexion distante reussie.");
+    renderSettings("Deconnexion distante reussie.");
+  } catch (error) {
+    deosRemoteRuntime.lastError = error.message || "Deconnexion impossible.";
+    deosRemoteRuntime.lastErrorCode = error.code || "AUTH_SIGN_OUT_FAILED";
+    renderSettings(deosRemoteRuntime.lastError);
+  }
+}
+
+async function testRemoteConnection() {
+  try {
+    if (!deosRemoteAuthService) await initializeRemoteServices({ silent: true });
+    if (!deosRemoteAuthService) throw { code: "REMOTE_NOT_READY", message: "Service distant indisponible." };
+    await deosRemoteAuthService.testConnection();
+    deosRemoteRuntime.lastConnectionTestAt = new Date().toLocaleString("fr-FR");
+    deosRemoteRuntime.lastConnectionTestResult = "OK";
+    setRemoteLastOperation("Test de connexion distant reussi.");
+    renderSettings("Test de connexion distant reussi.");
+  } catch (error) {
+    deosRemoteRuntime.lastConnectionTestAt = new Date().toLocaleString("fr-FR");
+    deosRemoteRuntime.lastConnectionTestResult = error.code || "ECHEC";
+    deosRemoteRuntime.lastError = error.message || "Test de connexion distant impossible.";
+    deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_CONNECTION_TEST_FAILED";
+    setRemoteLastOperation("Test de connexion distant en echec.", deosRemoteRuntime.lastErrorCode);
+    renderSettings(deosRemoteRuntime.lastError);
+  }
+}
+
+async function refreshRemoteTestRecords(options = {}) {
+  if (!deosRemoteAdapter) {
+    deosRemoteRuntime.testRecords = [];
+    if (!options.silent && currentView === "settings") renderSettings();
+    return [];
+  }
+  try {
+    const rows = await deosRemoteAdapter.listTestRecords();
+    deosRemoteRuntime.testRecords = rows;
+    updateRemoteRuntime(deosRemoteAuthService ? deosRemoteAuthService.getStateSnapshot() : {});
+    setRemoteLastOperation(`Tests distants actualises (${rows.length}).`);
+    if (!options.silent && currentView === "settings") renderSettings("Tests distants actualises.");
+    return rows;
+  } catch (error) {
+    deosRemoteRuntime.lastError = error.message || "Lecture distante impossible.";
+    deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_LIST_FAILED";
+    setRemoteLastOperation("Lecture distante en echec.", deosRemoteRuntime.lastErrorCode);
+    if (!options.silent && currentView === "settings") renderSettings(deosRemoteRuntime.lastError);
+    return [];
+  }
+}
+
+function nextRemoteTestRecordTemplate() {
+  const count = ensureArray(deosRemoteRuntime.testRecords).length;
+  const template = DEOS_REMOTE_TEST_RECORD_TEMPLATES[count % DEOS_REMOTE_TEST_RECORD_TEMPLATES.length] || DEOS_REMOTE_TEST_RECORD_TEMPLATES[0];
+  return {
+    label: template.label,
+    payload: {
+      ...template.payload,
+      timestamp: new Date().toISOString(),
+      conflictToken: newId("rtest")
+    }
+  };
+}
+
+async function createRemoteTestRecord() {
+  if (!deosRemoteAdapter) {
+    renderSettings("Connexion distante requise avant de creer un enregistrement de test.");
+    return;
+  }
+  try {
+    const template = nextRemoteTestRecordTemplate();
+    const created = await deosRemoteAdapter.createTestRecord(template);
+    await refreshRemoteTestRecords({ silent: true });
+    setRemoteLastOperation(`Record de test cree (${remoteShortValue(created.id)}).`);
+    renderSettings("Enregistrement de test cree.");
+  } catch (error) {
+    deosRemoteRuntime.lastError = error.message || "Creation distante impossible.";
+    deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_CREATE_FAILED";
+    setRemoteLastOperation("Creation distante en echec.", deosRemoteRuntime.lastErrorCode);
+    renderSettings(deosRemoteRuntime.lastError);
+  }
+}
+
+async function softDeleteRemoteTestRecord(id, version) {
+  if (!deosRemoteAdapter) return;
+  try {
+    await deosRemoteAdapter.softDeleteTestRecord(id, Number(version));
+    await refreshRemoteTestRecords({ silent: true });
+    setRemoteLastOperation(`Record de test supprime logiquement (${remoteShortValue(id)}).`);
+    renderSettings("Enregistrement de test supprime logiquement.");
+  } catch (error) {
+    deosRemoteRuntime.lastError = error.message || "Suppression logique impossible.";
+    deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_DELETE_FAILED";
+    setRemoteLastOperation("Suppression logique distante en echec.", deosRemoteRuntime.lastErrorCode);
+    renderSettings(deosRemoteRuntime.lastError);
+  }
+}
+
+function remoteConfigSourceNotice() {
+  const config = resolvedRemoteConfig();
+  if (!config.enabled) return "Supabase est desactive. DEOS reste 100% local.";
+  if (deosRemoteRuntime.configurationStatus === "file_protocol_unsupported") return "Le mode distant est bloque sous file://. Utilisez Live Server ou GitHub Pages pour les tests d'authentification.";
+  if (deosRemoteRuntime.configurationStatus === "missing_public_config") return "Renseignez uniquement SUPABASE_URL et SUPABASE_PUBLISHABLE_KEY. Aucun secret n'est autorise dans ce depot.";
+  if (deosRemoteRuntime.configurationStatus === "production_locked") return "Le mode Production est reserve a une version ulterieure et reste bloque ici.";
+  return "Seules des donnees fictives transitent dans le backend de test. Les donnees metier DEOS restent locales.";
+}
+
+function remoteCanWrite() {
+  return ["owner", "admin", "contributor"].includes(String(deosRemoteRuntime.role || "").toLowerCase());
+}
+
+function renderRemoteTestRecordsHtml() {
+  if (!deosRemoteAuthService || !deosRemoteAuthService.isAuthenticated()) {
+    return `<div class="empty">Authentifiez-vous pour voir les enregistrements distants de test.</div>`;
+  }
+  const rows = ensureArray(deosRemoteRuntime.testRecords);
+  if (!rows.length) return `<div class="empty">Aucun enregistrement de test distant pour le workspace actif.</div>`;
+  return rows.map(row => `<div class="item remote-test-item"><div><strong>${esc(row.label || "Test distant")}</strong><span class="muted">Version ${esc(String(row.version || 1))} · ${esc(row.updated_at || row.created_at || "")}</span><span class="meta">ID ${esc(remoteShortValue(row.id || ""))} · owner ${esc(remoteShortValue(row.owner_id || ""))}</span></div>${remoteCanWrite() ? `<div class="row-actions"><button class="secondary" type="button" onclick="softDeleteRemoteTestRecord('${esc(row.id)}', ${Number(row.version || 1)})">Suppression logique</button></div>` : ""}</div>`).join("");
+}
+
+function renderRemoteSettingsCardHtml() {
+  const config = getRemoteSyncSettings();
+  const signedIn = Boolean(deosRemoteAuthService && deosRemoteAuthService.isAuthenticated && deosRemoteAuthService.isAuthenticated());
+  const workspaceName = deosRemoteRuntime.workspace?.name || "--";
+  const siteName = deosRemoteRuntime.site?.name || "--";
+  const lastConnection = deosRemoteRuntime.lastConnectionTestAt
+    ? `${deosRemoteRuntime.lastConnectionTestAt} · ${deosRemoteRuntime.lastConnectionTestResult || "OK"}`
+    : "Aucun test realise";
+  return `<div id="remoteSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation multi-appareils - Test</h2><p class="muted">Preparation du backend Supabase de test et de l'authentification, sans migration des donnees metier DEOS.</p></div><span class="remote-mode-badge ${remoteModeClass(deosRemoteRuntime.mode)}">${esc(remoteModeLabel(deosRemoteRuntime.mode))}</span></div><div class="settings-warning-box"><strong>Attention</strong><p>Les donnees metier DEOS ne sont pas encore synchronisees dans cette version.</p></div><div class="settings-info-box">${esc(remoteConfigSourceNotice())}</div><div class="settings-card-grid"><section class="settings-card-block"><h3>Configuration publique</h3><div class="settings-card-control settings-inline-check"><label><input id="remoteEnabled" type="checkbox" ${config.enabled ? "checked" : ""}> Activer le mode distant de test</label></div><div class="settings-card-control"><label for="remoteProvider">Fournisseur</label><select id="remoteProvider"><option value="supabase" selected>Supabase</option></select></div><div class="settings-card-control"><label for="remoteEnvironment">Environnement</label><select id="remoteEnvironment"><option value="test" ${config.environment === "test" ? "selected" : ""}>Test</option><option value="production" ${config.environment === "production" ? "selected" : ""}>Production (bloque)</option></select></div><div class="settings-card-control"><label for="remoteSupabaseUrl">SUPABASE_URL</label><input id="remoteSupabaseUrl" value="${esc(config.supabaseUrl)}" placeholder="https://xxxx.supabase.co"></div><div class="settings-card-control"><label for="remoteSupabasePublishableKey">SUPABASE_PUBLISHABLE_KEY</label><input id="remoteSupabasePublishableKey" value="${esc(config.supabasePublishableKey)}" placeholder="eyJ... cle publique publishable"></div><div class="settings-card-control"><label for="remoteAuthRedirectUrl">URL de redirection Auth</label><input id="remoteAuthRedirectUrl" value="${esc(config.authRedirectUrl)}" placeholder="http://127.0.0.1:5500/index.html"></div><div class="settings-card-control settings-inline-check"><label><input id="remoteDebug" type="checkbox" ${config.debug ? "checked" : ""}> Debug distant (desactive par defaut)</label></div><div class="row-actions"><button class="action" type="button" onclick="saveRemoteSettings()">Enregistrer la configuration de test</button><button class="secondary" type="button" onclick="disableRemoteMode()">Desactiver le mode distant</button></div></section><section class="settings-card-block"><h3>Etat distant</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Mode actuel</strong><span>${esc(remoteModeLabel(deosRemoteRuntime.mode))}</span></div><div class="settings-calendar-summary-item"><strong>Fournisseur</strong><span>${esc((deosRemoteRuntime.provider || "supabase").toUpperCase())}</span></div><div class="settings-calendar-summary-item"><strong>Etat de configuration</strong><span>${esc(remoteConfigurationLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Etat de connexion</strong><span>${esc(remoteConnectionLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Email utilisateur</strong><span>${esc(signedIn ? (deosRemoteRuntime.user?.email || "") : "--")}</span></div><div class="settings-calendar-summary-item"><strong>Workspace actif</strong><span>${esc(workspaceName)}</span></div><div class="settings-calendar-summary-item"><strong>Site actif</strong><span>${esc(siteName)}</span></div><div class="settings-calendar-summary-item"><strong>Role actif</strong><span>${esc(remoteRoleLabel(deosRemoteRuntime.role))}</span></div><div class="settings-calendar-summary-item"><strong>Derniere operation distante</strong><span>${esc(deosRemoteRuntime.lastOperation || "Aucune operation distante.")}</span></div><div class="settings-calendar-summary-item"><strong>Test de connexion</strong><span>${esc(lastConnection)}</span></div></div>${deosRemoteRuntime.lastError ? `<p class="remote-error-box">${esc(deosRemoteRuntime.lastError)}</p>` : ""}<div class="row-actions"><button class="action" type="button" onclick="openRemoteAuthDialog()" ${deosRemoteRuntime.configurationStatus === "ready" ? "" : "disabled"}>Se connecter</button><button class="secondary" type="button" onclick="remoteSignOut()" ${signedIn ? "" : "disabled"}>Se deconnecter</button><button class="secondary" type="button" onclick="testRemoteConnection()" ${config.enabled ? "" : "disabled"}>Tester la connexion</button><button class="secondary" type="button" onclick="createRemoteTestRecord()" ${signedIn && remoteCanWrite() ? "" : "disabled"}>Creer un enregistrement test</button><button class="secondary" type="button" onclick="refreshRemoteTestRecords()" ${signedIn ? "" : "disabled"}>Actualiser les tests</button></div></section></div><div class="card settings-card remote-records-card"><h3>Enregistrements distants de test</h3>${renderRemoteTestRecordsHtml()}</div></div>`;
+}
+
+function mountRemoteSettingsCard() {
+  if (currentView !== "settings") return;
+  const root = document.getElementById("app");
+  if (!root || document.getElementById("remoteSyncSettingsCard")) return;
+  root.insertAdjacentHTML("beforeend", renderRemoteSettingsCardHtml());
+  renderRemoteAuthOverlay();
+}
+
+function renderRemoteAuthOverlay() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  const existing = document.getElementById("remoteAuthOverlay");
+  if (existing) existing.remove();
+  if (!deosRemoteAuthDialog.open) return;
+  const mode = remoteModeLabel(deosRemoteRuntime.mode);
+  root.insertAdjacentHTML("beforeend", `<div id="remoteAuthOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>Connexion DEOS - ${esc(mode)}</h2><button class="icon-close" type="button" onclick="closeRemoteAuthDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">Aucune donnee metier distante n'est exposee avant authentification. Seuls les tests Supabase passent par cet ecran.</p><div class="remote-auth-chip-row"><span class="remote-mode-badge ${remoteModeClass(deosRemoteRuntime.mode)}">${esc(mode)}</span><span class="remote-provider-chip">${esc((deosRemoteRuntime.provider || "supabase").toUpperCase())}</span></div><input id="remoteAuthEmail" type="email" value="${esc(deosRemoteAuthDialog.email || "")}" placeholder="Email de test"><input id="remoteAuthPassword" type="password" value="${esc(deosRemoteAuthDialog.password || "")}" placeholder="Mot de passe">${deosRemoteAuthDialog.error ? `<p class="remote-error-box">${esc(deosRemoteAuthDialog.error)}</p>` : ""}${deosRemoteAuthDialog.message ? `<p class="settings-confirm">${esc(deosRemoteAuthDialog.message)}</p>` : ""}<div class="row-actions"><button class="action" type="button" onclick="submitRemotePasswordSignIn()" ${deosRemoteAuthDialog.busy ? "disabled" : ""}>Se connecter</button><button class="secondary" type="button" onclick="requestRemotePasswordReset()" ${deosRemoteAuthDialog.busy ? "disabled" : ""}>Mot de passe oublie</button><button class="secondary" type="button" onclick="sendRemoteMagicLink()" ${deosRemoteAuthDialog.busy ? "disabled" : ""}>Recevoir un lien de connexion</button></div></div></div></div>`);
 }
 
 function settingsCalendarConnectionCard() {
@@ -15647,6 +16240,12 @@ function renderSettings(message = "") {
   restoreSuccessMessage = "";
   appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(DEOS_VERSION)}" placeholder="Version" readonly><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button id="backupExportBtn" class="action" onclick="exportBackup()">Exporter toutes les données</button><button id="backupImportBtn" class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button><input id="backupFileInput" type="file" accept=".json,application/json" style="display:none" onchange="onBackupFileInputChange(event)"></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
+
+const renderSettingsBase = renderSettings;
+renderSettings = function renderSettingsWithRemote(message = "") {
+  renderSettingsBase(message);
+  mountRemoteSettingsCard();
+};
 
 function readSettingsForm() {
   return normalizeIdentity({
