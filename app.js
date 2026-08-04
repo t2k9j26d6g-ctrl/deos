@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.20.4";
+const DEOS_VERSION = "V5.20.5";
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
@@ -5535,7 +5535,7 @@ function prepAgendaDuration(p, a) {
   }
   const end = a.startTime && minutes ? theoreticalEndTime(a.startTime, minutes) : "";
   const alert = available > 0 && minutes > available ? `<span class="prep-alert">Durée prévue supérieure au rendez-vous</span>` : "";
-  return `<div class="prep-kpis"><span>${minutes}<small>min prévues</small></span><span>${end || "À calculer"}<small>fin théorique</small></span><span>${available || "?"}<small>min disponibles</small></span></div>${alert}`;
+  return `<div class="prep-kpis"><span>${minutes}<small>min prévues</small></span><span>${end || "À calculer"}<small>fin théorique</small></span><span>${available || "N/D"}<small>min disponibles</small></span></div>${alert}`;
 }
 
 function theoreticalEndTime(start, minutes) {
