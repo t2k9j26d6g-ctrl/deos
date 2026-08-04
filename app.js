@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.20.3";
+const DEOS_VERSION = "V5.20.4";
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
@@ -1063,6 +1063,19 @@ function ensureArray(value) {
 
 function normalizeLinkedManagerIds(value) {
   return [...new Set((value || []).map(String).map(x => x.trim()).filter(Boolean))];
+}
+
+function getDocumentManagerIds(documentItem) {
+  const doc = documentItem && typeof documentItem === "object" ? documentItem : {};
+  const ids = [
+    ...ensureArray(doc.managerIds),
+    ...ensureArray(doc.linkedManagerIds),
+    ...ensureArray(doc.linkedManagers)
+  ];
+  if (doc.managerId !== undefined && doc.managerId !== null && String(doc.managerId).trim()) {
+    ids.push(doc.managerId);
+  }
+  return normalizeLinkedManagerIds(ids);
 }
 
 function normalizeLinkedIdArray(value) {
@@ -4998,7 +5011,7 @@ function agendaForm() {
       <input id="agLocation" value="${esc(a?.location || "")}" placeholder="Lieu">
       <textarea id="agNotes" class="full" placeholder="Notes">${esc(a?.notes || a?.detail || "")}</textarea>
     </div>
-    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, selectedManagerIds, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
+    <div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("agManagers", state.managers, selectedManagerIds, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("agProjects", state.projects, a?.linkedProjects || [], p => p.name)}</div><div><label>Dossiers liés</label>${folderSelect("agFolders", a?.linkedFolders || [])}</div></div>
     <div class="deos-link-summary"><strong>Objets DEOS sélectionnés</strong><div id="agLinkedSummary">${deosLinkBadgesHtml([])}</div></div>
     <div class="card" style="margin:10px 0 0 0;padding:14px;border-radius:14px">
       <h3 style="margin:0 0 10px 0">Suivi du rendez-vous</h3>
@@ -5109,7 +5122,7 @@ function externalEventModal() {
           ${enrichment.subjects && enrichment.subjects.length > 0 ? enrichment.subjects.map((s, idx) => `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:8px;font-size:13px;display:flex;gap:8px;align-items:center">
             <input type="checkbox" ${s.completed ? "checked" : ""} onchange="updateExternalEventSubject('${esc(googleExternalEventModalId)}', '${esc(s.id)}', '${esc(s.title)}', '', this.checked)" style="cursor:pointer">
             <span style="${s.completed ? "text-decoration:line-through;color:#94a3b8" : ""}">${esc(s.title)}</span>
-            <button class="icon-btn" onclick="deleteExternalEventSubject('${esc(googleExternalEventModalId)}', '${esc(s.id)}')" style="padding:2px 6px;font-size:11px;margin-left:auto">?</button>
+            <button class="icon-btn" type="button" onclick="deleteExternalEventSubject('${esc(googleExternalEventModalId)}', '${esc(s.id)}')" title="Supprimer le sujet" aria-label="Supprimer le sujet" style="padding:2px 6px;font-size:12px;margin-left:auto">×</button>
           </div>`).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucun sujet pour le moment</p>"}
         </div>
       </div>
@@ -5158,7 +5171,7 @@ function externalEventModal() {
         <div id="linksList" style="display:grid;gap:6px;max-height:100px;overflow-y:auto">
           ${enrichment.links && enrichment.links.length > 0 ? enrichment.links.map(l => `<div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
             <a href="${esc(l.url)}" target="_blank" style="color:#0284c7;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.url)}">${esc(l.name || l.url)}</a>
-            <button class="icon-btn" onclick="deleteExternalEventLink('${esc(googleExternalEventModalId)}', '${esc(l.id)}')" style="padding:2px 6px;font-size:11px">?</button>
+            <button class="icon-btn" type="button" onclick="deleteExternalEventLink('${esc(googleExternalEventModalId)}', '${esc(l.id)}')" title="Supprimer le lien" aria-label="Supprimer le lien" style="padding:2px 6px;font-size:12px">×</button>
           </div>`).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucun lien pour le moment</p>"}
         </div>
       </div>
@@ -5173,7 +5186,7 @@ function externalEventModal() {
             const action = byId("actions", actionId);
             return action ? `<div style="background:#ecfdf5;border:1px solid #d1fae5;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
               <a href="javascript:openActionModal('${esc(actionId)}')" style="color:#059669;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(action.title)}</a>
-              <button class="icon-btn" onclick="unlinkActionFromExternalEvent('${esc(googleExternalEventModalId)}', '${esc(actionId)}')" style="padding:2px 6px;font-size:11px">?</button>
+              <button class="icon-btn" type="button" onclick="unlinkActionFromExternalEvent('${esc(googleExternalEventModalId)}', '${esc(actionId)}')" title="Délier l'action" aria-label="Délier l'action" style="padding:2px 6px;font-size:12px">×</button>
             </div>` : "";
           }).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucune action liée</p>"}
         </div>
@@ -5189,7 +5202,7 @@ function externalEventModal() {
             const decision = byId("decisions", decisionId);
             return decision ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:8px;font-size:12px;display:flex;gap:8px;align-items:center;overflow:hidden">
               <a href="javascript:openDecisionModal('${esc(decisionId)}')" style="color:#b45309;text-decoration:none;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(decision.title)}</a>
-              <button class="icon-btn" onclick="unlinkDecisionFromExternalEvent('${esc(googleExternalEventModalId)}', '${esc(decisionId)}')" style="padding:2px 6px;font-size:11px">?</button>
+              <button class="icon-btn" type="button" onclick="unlinkDecisionFromExternalEvent('${esc(googleExternalEventModalId)}', '${esc(decisionId)}')" title="Délier la décision" aria-label="Délier la décision" style="padding:2px 6px;font-size:12px">×</button>
             </div>` : "";
           }).join("") : "<p style=\"color:#94a3b8;font-size:12px;margin:0\">Aucune décision liée</p>"}
         </div>
@@ -7184,8 +7197,31 @@ function managerJournalList(m) {
 }
 
 function managerDocumentsList(m) {
-  const linked = state.documents.filter(d => (d.linkedManagers || []).includes(m.id));
-  return linked.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")}${d.category ? " · " + esc(d.category) : ""}</span><span class="meta">ID ${esc(d.id)}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`;
+  const managerId = String(m?.id || "");
+  const linked = state.documents.filter(doc => getDocumentManagerIds(doc).some(id => sameId(id, managerId)));
+  const isInterviewDoc = doc => Boolean(normalizeInterviewTemplate(doc?.interviewTemplate || ""))
+    || normalizeText(doc?.documentType || "").includes("interview");
+  const sortByRecent = (a, b) => String(b.date || b.updatedAt || "").localeCompare(String(a.date || a.updatedAt || ""));
+  const interviews = linked.filter(isInterviewDoc).slice().sort(sortByRecent);
+  const classics = linked.filter(doc => !isInterviewDoc(doc)).slice().sort(sortByRecent);
+
+  const interviewRows = interviews.map(doc => {
+    const templateKey = normalizeInterviewTemplate(doc.interviewTemplate || "");
+    const modelLabel = templateKey
+      ? interviewTemplateLabel(templateKey)
+      : (doc.documentType || "Compte-rendu d'entretien");
+    const statusLabel = documentStatusLabelV520(doc);
+    const confidentialityLabel = documentConfidentialityLabelV520(doc);
+    const confidentiality = normalizeInterviewConfidentiality(doc.confidentiality || "normal");
+    const badgeClass = confidentiality === "confidential" ? "red" : confidentiality === "restricted" ? "orange" : "green";
+    const nextDate = documentNextInterviewDate(doc);
+    return `<div class="item row"><div class="clickable" onclick="editDocument('${esc(doc.id)}')"><strong>${esc(doc.title || "Compte-rendu")}</strong><span class="muted">${esc(doc.date || doc.updatedAt || "Sans date")} · ${esc(modelLabel)} · ${esc(statusLabel)}</span><span class="meta"><span class="badge ${badgeClass}">${esc(confidentialityLabel)}</span>${nextDate ? " · Prochain entretien " + esc(nextDate) : ""}</span></div><button class="secondary" onclick="editDocument('${esc(doc.id)}')">Ouvrir</button></div>`;
+  }).join("") || `<div class="empty">Aucun compte-rendu d'entretien lié.</div>`;
+
+  const classicRows = classics.map(doc => `<div class="item row"><div class="clickable" onclick="editDocument('${esc(doc.id)}')"><strong>${esc(doc.title || "Document")}</strong><span class="muted">${esc(doc.type || "Document")}${doc.category ? " · " + esc(doc.category) : ""}${doc.status ? " · " + esc(doc.status) : ""}</span><span class="meta">${esc(doc.date || doc.updatedAt || "Sans date")}</span></div><button class="secondary" onclick="editDocument('${esc(doc.id)}')">Ouvrir</button></div>`).join("") || `<div class="empty">Aucun document classique lié.</div>`;
+
+  if (!linked.length) return `<div class="empty">Aucun document lié.</div>`;
+  return `<div class="manager-doc-sections"><h3>Comptes-rendus d'entretien</h3>${interviewRows}<h3>Documents liés</h3>${classicRows}</div>`;
 }
 
 function renderManagers() {
@@ -14321,7 +14357,8 @@ function documentPeriodLabel(doc) {
 }
 
 function documentManagerNames(doc) {
-  return state.managers.filter(manager => ensureArray(doc.managerIds || doc.linkedManagers).includes(manager.id)).map(manager => manager.name).join(" · ");
+  const managerIds = getDocumentManagerIds(doc);
+  return state.managers.filter(manager => managerIds.some(id => sameId(id, manager.id))).map(manager => manager.name).join(" · ");
 }
 
 function setDocumentsFilter(field, value) {
@@ -14357,7 +14394,7 @@ function documentsFilteredItems() {
   const todayDate = isoToday();
   return state.documents.filter(doc => {
     if (documentsFilterState.type !== "all" && documentTypeFilterValue(doc) !== documentsFilterState.type) return false;
-    if (documentsFilterState.managerId !== "all" && !ensureArray(doc.managerIds || doc.linkedManagers).includes(documentsFilterState.managerId)) return false;
+    if (documentsFilterState.managerId !== "all" && !getDocumentManagerIds(doc).some(id => sameId(id, documentsFilterState.managerId))) return false;
     if (documentsFilterState.status !== "all" && documentStatusFilterValue(doc) !== documentsFilterState.status) return false;
     if (documentsFilterState.confidentiality !== "all" && normalizeInterviewConfidentiality(doc.confidentiality || "normal") !== documentsFilterState.confidentiality) return false;
     if (documentsFilterState.period !== "all" && String(doc.period || "") !== String(documentsFilterState.period || "")) return false;
@@ -14961,7 +14998,7 @@ function deleteDocument(id) {
 function findPreviousInterviewForManager(managerId, excludeId = "") {
   return state.documents
     .filter(doc => documentIsInterview(doc)
-      && ensureArray(doc.managerIds || doc.linkedManagers).includes(managerId)
+      && getDocumentManagerIds(doc).some(id => sameId(id, managerId))
       && (!excludeId || !sameId(doc.id, excludeId)))
     .slice()
     .sort((a, b) => String(b.date || b.updatedAt || "").localeCompare(String(a.date || a.updatedAt || "")))[0] || null;
@@ -15130,7 +15167,7 @@ function openLinkedMeetingFromDocument(meetingId) {
 function documentFormBody(doc) {
   const interviewTemplate = normalizeInterviewTemplate(doc.interviewTemplate || documentEditDialog.templateKey || "") || "";
   const content = normalizeDocumentStructuredContent(doc, interviewTemplate);
-  const managerIds = normalizeLinkedManagerIds(ensureArray(doc.managerIds || doc.linkedManagers));
+  const managerIds = getDocumentManagerIds(doc);
   const previous = managerIds[0] ? findPreviousInterviewForManager(managerIds[0], doc.id) : null;
   const meetingOptions = state.agenda.map(meeting => `<option value="${esc(meeting.id)}" ${ensureArray(doc.linkedMeetingIds).includes(meeting.id) ? "selected" : ""}>${esc(meeting.date || "")} · ${esc(meeting.title || "Rendez-vous")}</option>`).join("");
   const hasInterviewTemplate = Boolean(interviewTemplate);
