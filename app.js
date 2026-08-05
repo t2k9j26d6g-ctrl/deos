@@ -441,6 +441,18 @@ let deosRemoteWorkspaceDialog = {
   siteCode: "STG"
 };
 
+let deosRemoteStartupDialog = {
+  open: false,
+  busy: false,
+  email: "",
+  password: "",
+  error: "",
+  message: "",
+  workspaceId: "",
+  localTemporary: false,
+  linksPromptDismissed: false
+};
+
 function getEntityRepository(name) {
   return entityRepositories[name] || null;
 }
@@ -751,6 +763,8 @@ function appHtml(html) {
   renderDecisionModalOverlays();
   renderDocumentModalOverlays();
   renderRemoteAuthOverlay();
+  renderRemoteUserContext();
+  renderRemoteStartupOverlay();
 }
 
 function badge(status) {
@@ -15769,7 +15783,12 @@ function getCalendarConnectionSettings() {
 }
 
 function persistSettings() {
-  settingsRepository.save(state.settings);
+  const snapshot = JSON.parse(JSON.stringify(state.settings || {}));
+  if (snapshot.remoteSync && typeof snapshot.remoteSync === "object") {
+    delete snapshot.remoteSync.supabaseUrl;
+    delete snapshot.remoteSync.supabasePublishableKey;
+  }
+  settingsRepository.save(snapshot);
 }
 
 function createRemoteRuntimeState(overrides = {}) {
@@ -15783,9 +15802,12 @@ function createRemoteRuntimeState(overrides = {}) {
     initialized: false,
     available: Boolean(window.DeosSupabase && window.DeosSupabaseRemote),
     user: null,
+    profile: null,
     workspace: null,
     site: null,
     role: "",
+    availableWorkspaces: [],
+    requiresWorkspaceSelection: false,
     testRecords: [],
     lastOperation: "Aucune operation distante.",
     lastOperationAt: "",
@@ -15794,6 +15816,9 @@ function createRemoteRuntimeState(overrides = {}) {
     lastAuthEvent: "",
     lastConnectionTestAt: "",
     lastConnectionTestResult: "",
+    temporaryLocal: false,
+    startupStatus: "local",
+    startupMessage: "",
     ...overrides
   };
 }
@@ -15964,6 +15989,20 @@ function linksSyncCanUseRemote() {
   return Boolean(
     linksSyncIsEnabled()
     && navigator.onLine !== false
+    && !deosRemoteRuntime.temporaryLocal
+    && deosRemoteAuthService
+    && deosRemoteAuthService.isAuthenticated
+    && deosRemoteAuthService.isAuthenticated()
+    && deosRemoteRuntime.configurationStatus === "ready"
+    && deosRemoteRuntime.workspace
+    && deosRemoteAdapter
+  );
+}
+
+function linksSyncCanInspectRemote() {
+  return Boolean(
+    navigator.onLine !== false
+    && !deosRemoteRuntime.temporaryLocal
     && deosRemoteAuthService
     && deosRemoteAuthService.isAuthenticated
     && deosRemoteAuthService.isAuthenticated()
@@ -16183,7 +16222,7 @@ function buildLinksConflictEntry(clientId, localLink, remoteRow) {
 }
 
 async function analyzeLinksHybridState() {
-  const remoteRows = linksSyncCanUseRemote() ? await deosRemoteAdapter.listLinks() : [];
+  const remoteRows = linksSyncCanInspectRemote() ? await deosRemoteAdapter.listLinks() : [];
   const analysis = buildLinksRemotePreview(state.links, remoteRows);
   refreshLinksSyncRuntimeState({
     remoteCount: analysis.remoteCount,
@@ -16191,6 +16230,28 @@ async function analyzeLinksHybridState() {
     lastAnalysis: analysis,
     lastError: ""
   });
+  return analysis;
+}
+
+async function maybePromptRemoteLinksRecovery(options = {}) {
+  if (!linksSyncCanInspectRemote()) return null;
+  if (deosRemoteStartupDialog.linksPromptDismissed) return null;
+  const analysis = await analyzeLinksHybridState();
+  if ((state.links || []).length === 0 && analysis.remoteOnly.length > 0) {
+    deosLinksSyncPreviewDialog = {
+      open: true,
+      busy: false,
+      mode: "preview",
+      selectedClientIds: [],
+      error: "",
+      analysis,
+      message: `${analysis.remoteOnly.length} Lien synchronisé${analysis.remoteOnly.length > 1 ? "s sont" : " est"} disponible${analysis.remoteOnly.length > 1 ? "s" : ""} dans votre espace DEOS.`
+    };
+    if (!options.silent) {
+      if (currentView === "settings") renderSettings();
+      else setView(currentView || "cockpit");
+    }
+  }
   return analysis;
 }
 
@@ -16636,13 +16697,258 @@ function remoteShortValue(value) {
   return remoteApi?.truncatePublicValue ? remoteApi.truncatePublicValue(value) : String(value || "");
 }
 
+function remoteStartupModeKey() {
+  const config = resolvedRemoteConfig();
+  if (!config.enabled) return "local";
+  if (deosRemoteRuntime.temporaryLocal) return "test_local_temporary";
+  if (deosRemoteRuntime.connectionStatus === "authenticated" && deosRemoteRuntime.workspace && !deosRemoteRuntime.requiresWorkspaceSelection) return "test_connected";
+  return "test_signed_out";
+}
+
+function remoteStartupModeLabel(mode = remoteStartupModeKey()) {
+  return ({
+    local: "MODE LOCAL",
+    test_signed_out: "MODE TEST — NON CONNECTÉ",
+    test_connected: "MODE TEST — CONNECTÉ",
+    test_local_temporary: "TEST — LOCAL TEMPORAIRE"
+  })[mode] || "MODE LOCAL";
+}
+
+function remoteDisplayName() {
+  return String(deosRemoteRuntime.profile?.display_name || deosRemoteRuntime.user?.email || "").trim() || "Utilisateur DEOS";
+}
+
+function remoteCanInspectLinks() {
+  return Boolean(
+    navigator.onLine !== false
+    && !deosRemoteRuntime.temporaryLocal
+    && deosRemoteAuthService
+    && deosRemoteAuthService.isAuthenticated
+    && deosRemoteAuthService.isAuthenticated()
+    && deosRemoteAdapter
+    && deosRemoteRuntime.workspace
+  );
+}
+
+function shouldShowRemoteStartupOverlay() {
+  const config = resolvedRemoteConfig();
+  if (!config.enabled) return false;
+  if (deosRemoteRuntime.temporaryLocal) return false;
+  if (deosRemoteRuntime.configurationStatus !== "ready") return false;
+  if (navigator.onLine === false && !deosRemoteRuntime.user) return false;
+  if (deosRemoteRuntime.requiresWorkspaceSelection) return true;
+  return ["pending", "signed_out", "session_expired", "error"].includes(String(deosRemoteRuntime.connectionStatus || ""));
+}
+
+function updateRemoteStartupDialog(patch = {}) {
+  deosRemoteStartupDialog = {
+    ...deosRemoteStartupDialog,
+    ...patch
+  };
+}
+
+function closeRemoteStartupOverlay(options = {}) {
+  updateRemoteStartupDialog({
+    open: false,
+    busy: false,
+    error: options.keepError ? deosRemoteStartupDialog.error : "",
+    message: options.keepMessage ? deosRemoteStartupDialog.message : ""
+  });
+}
+
+function syncRemoteStartupOverlayState() {
+  const shouldOpen = shouldShowRemoteStartupOverlay();
+  updateRemoteStartupDialog({
+    open: shouldOpen,
+    workspaceId: deosRemoteRuntime.workspace?.id || deosRemoteStartupDialog.workspaceId || "",
+    localTemporary: Boolean(deosRemoteRuntime.temporaryLocal)
+  });
+}
+
+function readRemoteStartupDialogValues() {
+  deosRemoteStartupDialog.email = document.getElementById("remoteStartupEmail")?.value.trim() || deosRemoteStartupDialog.email || "";
+  deosRemoteStartupDialog.password = document.getElementById("remoteStartupPassword")?.value || deosRemoteStartupDialog.password || "";
+  deosRemoteStartupDialog.workspaceId = document.getElementById("remoteStartupWorkspace")?.value || deosRemoteStartupDialog.workspaceId || "";
+}
+
+function renderRemoteUserContext() {
+  const sidebar = document.querySelector(".sidebar");
+  if (!sidebar) return;
+  let root = document.getElementById("brandRemoteContext");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "brandRemoteContext";
+    root.className = "card";
+    const environment = document.getElementById("brandEnvironment");
+    if (environment && environment.parentNode === sidebar) {
+      environment.insertAdjacentElement("afterend", root);
+    } else {
+      sidebar.insertBefore(root, sidebar.querySelector("button.nav") || null);
+    }
+  }
+  const modeLabel = remoteStartupModeLabel();
+  const contextVisible = deosRemoteRuntime.user || deosRemoteRuntime.temporaryLocal || resolvedRemoteConfig().enabled;
+  root.hidden = !contextVisible;
+  if (!contextVisible) return;
+  root.innerHTML = `<div><strong>${esc(remoteDisplayName())}</strong><p class="muted">${esc(modeLabel)}</p>${deosRemoteRuntime.workspace ? `<p class="muted">${esc(deosRemoteRuntime.workspace.name || "")}</p>` : ""}${deosRemoteRuntime.site ? `<p class="muted">${esc(deosRemoteRuntime.site.name || "")}</p>` : ""}${deosRemoteRuntime.role ? `<p class="muted">${esc(remoteRoleLabel(deosRemoteRuntime.role))}</p>` : ""}</div><div class="row-actions"><button class="secondary" type="button" onclick="focusRemoteWorkspaceArea()">Mon espace</button><button class="secondary" type="button" onclick="setView('settings')">Paramètres</button>${deosRemoteAuthService && deosRemoteAuthService.isAuthenticated && deosRemoteAuthService.isAuthenticated() ? `<button class="secondary" type="button" onclick="remoteSignOut()">Se déconnecter</button>` : `<button class="secondary" type="button" onclick="reopenRemoteStartupOverlay()">Se connecter à l’espace DEOS</button>`}</div>`;
+}
+
+function focusRemoteWorkspaceArea() {
+  setView("settings");
+  setTimeout(() => document.getElementById("remoteWorkspaceSettingsCard")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+}
+
+function openRemoteWorkspaceDialogFromStartup() {
+  closeRemoteStartupOverlay();
+  setView("settings");
+  setTimeout(() => openRemoteWorkspaceDialog(), 0);
+}
+
+function reopenRemoteStartupOverlay() {
+  deosRemoteRuntime.temporaryLocal = false;
+  updateRemoteStartupDialog({ open: true, busy: false, error: "", message: "" });
+  if (currentView === "settings") renderSettings();
+  else setView(currentView || "cockpit");
+}
+
+function continueRemoteTemporarilyInLocalMode() {
+  if (resolvedRemoteConfig().environment !== "test") return;
+  deosRemoteRuntime.temporaryLocal = true;
+  deosRemoteRuntime.startupStatus = "test_local_temporary";
+  deosRemoteRuntime.startupMessage = "Les données locales restent disponibles, mais les fonctions multi-appareils sont désactivées tant que vous n’êtes pas connecté.";
+  updateRemoteStartupDialog({
+    open: false,
+    busy: false,
+    error: "",
+    message: deosRemoteRuntime.startupMessage,
+    localTemporary: true
+  });
+  renderRemoteUserContext();
+  if (currentView === "settings") renderSettings(deosRemoteRuntime.startupMessage);
+  else setView(currentView || "cockpit");
+}
+
+async function submitStartupPasswordSignIn() {
+  readRemoteStartupDialogValues();
+  if (!deosRemoteStartupDialog.email || !deosRemoteStartupDialog.password) {
+    updateRemoteStartupDialog({ error: "Email et mot de passe requis.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  if (!deosRemoteAuthService) {
+    updateRemoteStartupDialog({ error: "Service d'authentification indisponible. Vérifiez la configuration Supabase.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  updateRemoteStartupDialog({ busy: true, error: "", message: "" });
+  if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  try {
+    await deosRemoteAuthService.signInWithPassword(deosRemoteStartupDialog.email, deosRemoteStartupDialog.password);
+    deosRemoteRuntime.temporaryLocal = false;
+    updateRemoteStartupDialog({ linksPromptDismissed: false });
+    closeRemoteStartupOverlay();
+    renderRemoteUserContext();
+    if (currentView === "settings") renderSettings("Connexion distante reussie."); else setView(currentView || "cockpit");
+  } catch (error) {
+    updateRemoteStartupDialog({ busy: false, error: error.message || "Connexion impossible.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  }
+}
+
+async function sendStartupMagicLink() {
+  readRemoteStartupDialogValues();
+  if (!deosRemoteStartupDialog.email) {
+    updateRemoteStartupDialog({ error: "Email requis pour le lien de connexion.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  if (!deosRemoteAuthService) {
+    updateRemoteStartupDialog({ error: "Service d'authentification indisponible. Vérifiez la configuration Supabase.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  updateRemoteStartupDialog({ busy: true, error: "", message: "" });
+  if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  try {
+    await deosRemoteAuthService.signInWithMagicLink(deosRemoteStartupDialog.email);
+    updateRemoteStartupDialog({ busy: false, password: "", error: "", message: "Lien de connexion envoyé." });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  } catch (error) {
+    updateRemoteStartupDialog({ busy: false, error: error.message || "Envoi du lien impossible.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  }
+}
+
+async function requestStartupPasswordReset() {
+  readRemoteStartupDialogValues();
+  if (!deosRemoteStartupDialog.email) {
+    updateRemoteStartupDialog({ error: "Email requis pour la récupération.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  if (!deosRemoteAuthService) {
+    updateRemoteStartupDialog({ error: "Service d'authentification indisponible. Vérifiez la configuration Supabase.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  updateRemoteStartupDialog({ busy: true, error: "", message: "" });
+  if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  try {
+    await deosRemoteAuthService.resetPassword(deosRemoteStartupDialog.email);
+    updateRemoteStartupDialog({ busy: false, error: "", message: "Email de récupération envoyé." });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  } catch (error) {
+    updateRemoteStartupDialog({ busy: false, error: error.message || "Récupération impossible.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  }
+}
+
+async function selectStartupWorkspace() {
+  readRemoteStartupDialogValues();
+  if (!deosRemoteStartupDialog.workspaceId) {
+    updateRemoteStartupDialog({ error: "Sélectionnez un workspace avant de continuer." });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  if (!deosRemoteAuthService || !deosRemoteAuthService.selectWorkspace) {
+    updateRemoteStartupDialog({ error: "Sélection de workspace indisponible." });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+    return;
+  }
+  updateRemoteStartupDialog({ busy: true, error: "", message: "" });
+  if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  try {
+    const snapshot = await deosRemoteAuthService.selectWorkspace(deosRemoteStartupDialog.workspaceId);
+    updateRemoteRuntime(snapshot);
+    closeRemoteStartupOverlay();
+    if (currentView === "settings") renderSettings("Workspace chargé."); else setView(currentView || "cockpit");
+  } catch (error) {
+    updateRemoteStartupDialog({ busy: false, error: error.message || "Workspace inaccessible.", message: "" });
+    if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
+  }
+}
+
+function renderRemoteStartupOverlay() {
+  const existing = document.getElementById("remoteStartupOverlay");
+  if (existing) existing.remove();
+  syncRemoteStartupOverlayState();
+  if (!deosRemoteStartupDialog.open) return;
+  const root = document.body;
+  if (!root) return;
+  const requiresWorkspaceSelection = Boolean(deosRemoteRuntime.requiresWorkspaceSelection);
+  const hasWorkspace = Boolean(deosRemoteRuntime.workspace);
+  const canContinueLocal = resolvedRemoteConfig().environment === "test";
+  const workspaceOptions = ensureArray(deosRemoteRuntime.availableWorkspaces || []);
+  root.insertAdjacentHTML("beforeend", `<div id="remoteStartupOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>Connexion à DEOS</h2><button class="icon-close" type="button" onclick="continueRemoteTemporarilyInLocalMode()" aria-label="Fermer" ${canContinueLocal ? "" : "hidden"}>×</button></div><div class="remote-auth-body"><p class="muted">Retrouvez votre espace DEOS et les données synchronisées autorisées depuis cet appareil.</p><div class="remote-auth-chip-row"><span class="remote-mode-badge ${remoteModeClass(deosRemoteRuntime.mode)}">${esc(remoteModeLabel(deosRemoteRuntime.mode))}</span><span class="remote-provider-chip">${esc((deosRemoteRuntime.provider || "supabase").toUpperCase())}</span></div>${navigator.onLine === false ? `<p class="remote-error-box">Hors ligne — dernière session connue. Les fonctions distantes restent indisponibles tant que le réseau n'est pas revenu.</p>` : ""}${deosRemoteStartupDialog.error ? `<p class="remote-error-box">${esc(deosRemoteStartupDialog.error)}</p>` : ""}${deosRemoteStartupDialog.message ? `<p class="settings-confirm">${esc(deosRemoteStartupDialog.message)}</p>` : ""}${requiresWorkspaceSelection ? `<div class="settings-card-control"><label for="remoteStartupWorkspace">Workspace disponible</label><select id="remoteStartupWorkspace"><option value="">Choisir un workspace</option>${workspaceOptions.map(item => `<option value="${esc(item.workspaceId)}" ${deosRemoteStartupDialog.workspaceId === item.workspaceId ? "selected" : ""}>${esc(item.workspaceName)} · ${esc(item.siteName || "Sans site")} · ${esc(remoteRoleLabel(item.role))}</option>`).join("")}</select></div><div class="row-actions"><button class="action" type="button" onclick="selectStartupWorkspace()" ${deosRemoteStartupDialog.busy ? "disabled" : ""}>Charger cet espace</button></div>` : !hasWorkspace && deosRemoteRuntime.connectionStatus === "authenticated" ? `<p class="muted">Aucun workspace n'est encore rattaché à ce compte.</p><div class="row-actions"><button class="action" type="button" onclick="openRemoteWorkspaceDialogFromStartup()" ${deosRemoteStartupDialog.busy ? "disabled" : ""}>Créer mon espace de test</button></div>` : `<input id="remoteStartupEmail" type="email" value="${esc(deosRemoteStartupDialog.email || "")}" placeholder="Email de test"><input id="remoteStartupPassword" type="password" value="${esc(deosRemoteStartupDialog.password || "")}" placeholder="Mot de passe"><div class="row-actions"><button class="action" type="button" onclick="submitStartupPasswordSignIn()" ${deosRemoteStartupDialog.busy ? "disabled" : ""}>Se connecter</button><button class="secondary" type="button" onclick="sendStartupMagicLink()" ${deosRemoteStartupDialog.busy ? "disabled" : ""}>Recevoir un lien de connexion</button><button class="secondary" type="button" onclick="requestStartupPasswordReset()" ${deosRemoteStartupDialog.busy ? "disabled" : ""}>Mot de passe oublié</button></div>${canContinueLocal ? `<button class="secondary" type="button" onclick="continueRemoteTemporarilyInLocalMode()" ${deosRemoteStartupDialog.busy ? "disabled" : ""}>Continuer temporairement en mode local</button><p class="muted">Les données locales restent disponibles, mais les fonctions multi-appareils sont désactivées tant que vous n’êtes pas connecté.</p>` : ""}`}</div></div>`);
+}
+
 function applyRemoteEnvironmentBadge() {
   const node = document.getElementById("brandEnvironment");
   if (!node) return;
   const mode = remoteModeKey();
   node.hidden = false;
   node.className = `environment-chip ${remoteModeClass(mode)}`;
-  node.textContent = `Mode ${remoteModeLabel(mode)}`;
+  node.textContent = remoteStartupModeLabel();
 }
 
 function updateRemoteRuntime(summary = {}) {
@@ -16658,14 +16964,20 @@ function updateRemoteRuntime(summary = {}) {
     initialized: Boolean(summary.initialized || deosRemoteRuntime.initialized),
     connectionStatus: summary.connectionStatus || deosRemoteRuntime.connectionStatus,
     user: summary.user === undefined ? deosRemoteRuntime.user : summary.user,
+    profile: summary.profile === undefined ? deosRemoteRuntime.profile : summary.profile,
     workspace: summary.workspace === undefined ? deosRemoteRuntime.workspace : summary.workspace,
     site: summary.site === undefined ? deosRemoteRuntime.site : summary.site,
     role: summary.role === undefined ? deosRemoteRuntime.role : summary.role,
+    availableWorkspaces: summary.availableWorkspaces === undefined ? deosRemoteRuntime.availableWorkspaces : summary.availableWorkspaces,
+    requiresWorkspaceSelection: summary.requiresWorkspaceSelection === undefined ? deosRemoteRuntime.requiresWorkspaceSelection : Boolean(summary.requiresWorkspaceSelection),
     lastError: summary.lastError ? summary.lastError.message || String(summary.lastError) : (summary.lastError === null ? "" : deosRemoteRuntime.lastError),
     lastErrorCode: summary.lastError ? summary.lastError.code || "REMOTE_ERROR" : (summary.lastError === null ? "" : deosRemoteRuntime.lastErrorCode),
-    lastAuthEvent: summary.lastAuthEvent || deosRemoteRuntime.lastAuthEvent
+    lastAuthEvent: summary.lastAuthEvent || deosRemoteRuntime.lastAuthEvent,
+    startupStatus: remoteStartupModeKey(),
+    startupMessage: deosRemoteRuntime.startupMessage || ""
   };
   applyRemoteEnvironmentBadge();
+  renderRemoteUserContext();
 }
 
 function setRemoteLastOperation(label, code = "") {
@@ -16688,6 +17000,7 @@ async function disposeRemoteServices() {
 
 async function initializeRemoteServices(options = {}) {
   await disposeRemoteServices();
+  updateRemoteStartupDialog({ linksPromptDismissed: false });
   const config = resolvedRemoteConfig();
   deosRemoteRuntime = createRemoteRuntimeState({
     enabled: Boolean(config.enabled),
@@ -16699,9 +17012,13 @@ async function initializeRemoteServices(options = {}) {
     available: Boolean(window.DeosSupabase && window.DeosSupabaseRemote),
     lastOperation: config.enabled ? "Mode distant de test prepare." : "Mode local actif. Aucun backend contacte.",
     lastError: "",
-    lastErrorCode: ""
+    lastErrorCode: "",
+    temporaryLocal: false,
+    startupStatus: config.enabled ? "test_signed_out" : "local",
+    startupMessage: ""
   });
   applyRemoteEnvironmentBadge();
+  renderRemoteUserContext();
 
   if (deosRemoteRuntime.configurationStatus !== "ready") {
     deosRemoteRuntime.connectionStatus = deosRemoteRuntime.configurationStatus === "disabled" ? "local_only" : "not_configured";
@@ -16709,6 +17026,7 @@ async function initializeRemoteServices(options = {}) {
       deosRemoteRuntime.lastError = remoteConfigurationLabel(deosRemoteRuntime.configurationStatus);
       deosRemoteRuntime.lastErrorCode = deosRemoteRuntime.configurationStatus.toUpperCase();
     }
+    syncRemoteStartupOverlayState();
     if (!options.silent && currentView === "settings") renderSettings();
     return deosRemoteRuntime;
   }
@@ -16726,22 +17044,31 @@ async function initializeRemoteServices(options = {}) {
       debug: config.debug
     });
     updateRemoteRuntime(summary);
+    deosRemoteRuntime.temporaryLocal = false;
+    syncRemoteStartupOverlayState();
     deosRemoteAuthSubscription = deosRemoteAuthService.onAuthStateChange(async (_event, _session, snapshot) => {
       updateRemoteRuntime(snapshot);
       if (snapshot && snapshot.authenticated) {
+        deosRemoteRuntime.temporaryLocal = false;
+      }
+      if (snapshot && snapshot.authenticated) {
         await refreshRemoteTestRecords({ silent: true });
         initializeLinksHybridSync({ skipAutoSync: false });
+        await maybePromptRemoteLinksRecovery({ silent: true });
       } else {
         deosRemoteRuntime.testRecords = [];
         initializeLinksHybridSync({ skipAutoSync: true });
       }
+      syncRemoteStartupOverlayState();
       if (currentView === "settings") renderSettings();
       if (currentView === "links") renderLinks();
+      if (!["settings", "links"].includes(currentView)) setView(currentView || "cockpit");
     });
     if (deosRemoteAuthService.isAuthenticated()) {
       await refreshRemoteTestRecords({ silent: true });
       setRemoteLastOperation("Session distante restauree.");
       initializeLinksHybridSync({ skipAutoSync: false });
+      await maybePromptRemoteLinksRecovery({ silent: true });
     }
   } catch (error) {
     deosRemoteRuntime.connectionStatus = "error";
@@ -16749,6 +17076,8 @@ async function initializeRemoteServices(options = {}) {
     deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_INIT_FAILED";
     setRemoteLastOperation("Initialisation distante en echec.", deosRemoteRuntime.lastErrorCode);
   }
+
+  syncRemoteStartupOverlayState();
 
   if (!options.silent && currentView === "settings") renderSettings();
   return deosRemoteRuntime;
@@ -16789,9 +17118,13 @@ async function disableRemoteMode() {
     configurationStatus: "disabled",
     connectionStatus: "local_only",
     lastOperation: "Mode distant desactive. DEOS reste en local.",
-    testRecords: []
+    testRecords: [],
+    temporaryLocal: false,
+    startupStatus: "local",
+    startupMessage: ""
   });
   applyRemoteEnvironmentBadge();
+  renderRemoteUserContext();
   renderSettings("Mode distant desactive. Les donnees metier DEOS restent locales.");
 }
 
@@ -16985,9 +17318,14 @@ async function remoteSignOut() {
   if (!deosRemoteAuthService) return;
   try {
     await deosRemoteAuthService.signOut();
+    await initializeRemoteServices({ silent: true });
     deosRemoteRuntime.testRecords = [];
+    deosRemoteRuntime.temporaryLocal = false;
+    updateRemoteStartupDialog({ localTemporary: false, open: true, busy: false, password: "", message: "", error: "" });
     setRemoteLastOperation("Deconnexion distante reussie.");
-    renderSettings("Deconnexion distante reussie.");
+    syncRemoteStartupOverlayState();
+    if (currentView === "settings") renderSettings("Deconnexion distante reussie.");
+    else setView(currentView || "cockpit");
   } catch (error) {
     deosRemoteRuntime.lastError = error.message || "Deconnexion impossible.";
     deosRemoteRuntime.lastErrorCode = error.code || "AUTH_SIGN_OUT_FAILED";
@@ -17127,10 +17465,19 @@ function mountRemoteSettingsCard() {
   if (!document.getElementById("linksHybridSyncSettingsCard")) {
     root.insertAdjacentHTML("beforeend", renderLinksHybridSettingsCardHtml());
   }
+  applyRemoteTechnicalFieldPresentation();
   renderRemoteAuthOverlay();
   renderRemoteWorkspaceOverlay();
   renderLinksSyncPreviewOverlay();
   renderLinksSyncMergeOverlay();
+}
+
+function applyRemoteTechnicalFieldPresentation() {
+  const publishableInput = document.getElementById("remoteSupabasePublishableKey");
+  if (publishableInput) {
+    publishableInput.type = "password";
+    publishableInput.autocomplete = "off";
+  }
 }
 
 function renderRemoteWorkspaceInitCardHtml() {
@@ -17225,6 +17572,7 @@ async function openLinksSyncPreviewDialog() {
 }
 
 function closeLinksSyncPreviewDialog() {
+  updateRemoteStartupDialog({ linksPromptDismissed: true });
   deosLinksSyncPreviewDialog = {
     open: false,
     busy: false,
@@ -17348,6 +17696,7 @@ async function applyLinksSyncPreviewChoice(mode) {
   const analysis = deosLinksSyncPreviewDialog.analysis;
   if (!analysis) return;
   const selectedItems = selectedLinksPreviewItemsForMode(mode);
+  const requiresWriteSync = mode === "local_to_remote" || mode === "merge";
   if (!selectedItems.length && mode !== "cancel") {
     deosLinksSyncPreviewDialog = {
       ...deosLinksSyncPreviewDialog,
@@ -17360,10 +17709,10 @@ async function applyLinksSyncPreviewChoice(mode) {
     renderSettings();
     return;
   }
-  if (!linksSyncIsEnabled() && mode !== "cancel") {
+  if (!linksSyncIsEnabled() && requiresWriteSync) {
     deosLinksSyncPreviewDialog = {
       ...deosLinksSyncPreviewDialog,
-      error: "Activez d'abord la synchronisation pilote Liens avant de migrer une sélection."
+      error: "Activez d'abord la synchronisation pilote Liens avant d'envoyer ou fusionner une sélection locale."
     };
     renderSettings();
     return;

@@ -133,6 +133,7 @@
       this.config = normalizeRemoteConfig(config);
       this.options = options || {};
       this.debug = Boolean(this.config.debug || this.options.debug);
+      this.workspacePreferenceKey = String(this.options.workspacePreferenceKey || "deos_remote_workspace_preference");
       this.client = null;
       this.initialized = false;
       this.connectionStatus = this.config.enabled ? "pending" : "local_only";
@@ -142,6 +143,7 @@
       this.currentWorkspace = null;
       this.currentSite = null;
       this.currentRole = "";
+      this.availableWorkspaces = [];
       this.lastError = null;
       this.lastAuthEvent = "";
       this.listeners = new Set();
@@ -176,8 +178,40 @@
       return {
         workspace: this.currentWorkspace,
         site: this.currentSite,
-        role: this.currentRole
+        role: this.currentRole,
+        availableWorkspaces: this.availableWorkspaces.map(item => ({ ...item }))
       };
+    }
+
+    getWorkspacePreference() {
+      if (typeof window === "undefined" || !window.localStorage) return "";
+      try {
+        return String(window.localStorage.getItem(this.workspacePreferenceKey) || "").trim();
+      } catch {
+        return "";
+      }
+    }
+
+    setWorkspacePreference(workspaceId) {
+      if (typeof window === "undefined" || !window.localStorage) return;
+      try {
+        const value = String(workspaceId || "").trim();
+        if (!value) {
+          window.localStorage.removeItem(this.workspacePreferenceKey);
+          return;
+        }
+        window.localStorage.setItem(this.workspacePreferenceKey, value);
+      } catch {
+        // Ignore storage preference failures.
+      }
+    }
+
+    getAvailableWorkspaces() {
+      return this.availableWorkspaces.map(item => ({ ...item }));
+    }
+
+    requiresWorkspaceSelection() {
+      return this.isAuthenticated() && this.availableWorkspaces.length > 1 && !this.currentWorkspace;
     }
 
     getStateSnapshot() {
@@ -188,9 +222,12 @@
         connectionStatus: this.connectionStatus,
         authenticated: this.isAuthenticated(),
         user: this.user ? { id: this.user.id, email: this.user.email || "" } : null,
+        profile: this.profile ? { id: this.profile.id, display_name: this.profile.display_name || "" } : null,
         workspace: this.currentWorkspace ? { ...this.currentWorkspace } : null,
         site: this.currentSite ? { ...this.currentSite } : null,
         role: this.currentRole,
+        availableWorkspaces: this.getAvailableWorkspaces(),
+        requiresWorkspaceSelection: this.requiresWorkspaceSelection(),
         lastError: this.lastError,
         lastAuthEvent: this.lastAuthEvent
       };
@@ -266,6 +303,7 @@
         this.currentWorkspace = null;
         this.currentSite = null;
         this.currentRole = "";
+        this.availableWorkspaces = [];
         return this.getStateSnapshot();
       }
 
@@ -293,6 +331,7 @@
         this.currentWorkspace = null;
         this.currentSite = null;
         this.currentRole = "";
+        this.availableWorkspaces = [];
         return this.getStateSnapshot();
       }
 
@@ -309,6 +348,7 @@
         this.currentWorkspace = null;
         this.currentSite = null;
         this.currentRole = "";
+        this.availableWorkspaces = [];
         return this.getStateSnapshot();
       }
 
@@ -318,6 +358,7 @@
         this.currentWorkspace = null;
         this.currentSite = null;
         this.currentRole = "";
+        this.availableWorkspaces = [];
         return this.getStateSnapshot();
       }
 
@@ -333,11 +374,52 @@
       const firstMembership = memberships[0] || null;
       const workspaces = Array.isArray(workspaceResponse.data) ? workspaceResponse.data : [];
       const sites = Array.isArray(siteResponse.data) ? siteResponse.data : [];
-      const matchedWorkspace = firstMembership ? workspaces.find(item => item.id === firstMembership.workspace_id) : null;
-      const matchedSite = firstMembership ? sites.find(item => item.workspace_id === firstMembership.workspace_id) : null;
-      this.currentWorkspace = matchedWorkspace ? { id: matchedWorkspace.id, name: matchedWorkspace.name || "Workspace de test" } : null;
-      this.currentSite = matchedSite ? { id: matchedSite.id, name: matchedSite.name || "Site de test", code: matchedSite.code || "" } : null;
-      this.currentRole = firstMembership ? String(firstMembership.role || "") : "";
+      this.availableWorkspaces = memberships.map(item => {
+        const matchedWorkspace = workspaces.find(entry => entry.id === item.workspace_id) || null;
+        const matchedSite = sites.find(entry => entry.workspace_id === item.workspace_id) || null;
+        return {
+          workspaceId: String(item.workspace_id || ""),
+          workspaceName: matchedWorkspace?.name || "Workspace de test",
+          siteId: matchedSite?.id || "",
+          siteName: matchedSite?.name || "Site de test",
+          siteCode: matchedSite?.code || "",
+          role: String(item.role || ""),
+          createdAt: String(item.created_at || "")
+        };
+      }).filter(item => item.workspaceId);
+
+      const preferredWorkspaceId = this.getWorkspacePreference();
+      const selectedEntry = this.availableWorkspaces.length === 1
+        ? this.availableWorkspaces[0]
+        : this.availableWorkspaces.find(item => item.workspaceId === preferredWorkspaceId) || null;
+
+      if (!selectedEntry && this.availableWorkspaces.length > 1) {
+        this.currentWorkspace = null;
+        this.currentSite = null;
+        this.currentRole = "";
+        return this.getStateSnapshot();
+      }
+
+      const fallbackEntry = selectedEntry || (firstMembership ? this.availableWorkspaces.find(item => item.workspaceId === firstMembership.workspace_id) : null) || null;
+      this.currentWorkspace = fallbackEntry ? { id: fallbackEntry.workspaceId, name: fallbackEntry.workspaceName } : null;
+      this.currentSite = fallbackEntry ? { id: fallbackEntry.siteId, name: fallbackEntry.siteName, code: fallbackEntry.siteCode } : null;
+      this.currentRole = fallbackEntry ? String(fallbackEntry.role || "") : "";
+      if (fallbackEntry) this.setWorkspacePreference(fallbackEntry.workspaceId);
+      return this.getStateSnapshot();
+    }
+
+    async selectWorkspace(workspaceId) {
+      const targetId = String(workspaceId || "").trim();
+      if (!targetId) throw createRemoteError("WORKSPACE_SELECTION_REQUIRED", "Sélectionnez un workspace avant de continuer.");
+      if (!this.availableWorkspaces.length) {
+        await this.refreshContext();
+      }
+      const target = this.availableWorkspaces.find(item => item.workspaceId === targetId);
+      if (!target) throw createRemoteError("WORKSPACE_ACCESS_DENIED", "Ce workspace n'est pas accessible avec la session courante.");
+      this.currentWorkspace = { id: target.workspaceId, name: target.workspaceName };
+      this.currentSite = { id: target.siteId, name: target.siteName, code: target.siteCode };
+      this.currentRole = String(target.role || "");
+      this.setWorkspacePreference(target.workspaceId);
       return this.getStateSnapshot();
     }
 
