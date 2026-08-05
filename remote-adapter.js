@@ -4,6 +4,24 @@
     ? supabaseApi.createRemoteError
     : (code, message, details) => ({ code, message, details: details || null });
   const ALLOWED_TEST_PAYLOAD_KEYS = new Set(["scenario", "device", "note", "timestamp", "status", "conflictToken", "client"]);
+  const FORBIDDEN_LINK_KEYS = new Set([
+    "actions",
+    "managers",
+    "projects",
+    "decisions",
+    "priorities",
+    "activity",
+    "journal",
+    "documents",
+    "agenda",
+    "folders",
+    "performance",
+    "meetingPreparations",
+    "performance_imports",
+    "state",
+    "settings",
+    "remoteSync"
+  ]);
   const RESERVED_DEOS_KEYS = new Set([
     "actions",
     "managers",
@@ -59,6 +77,40 @@
     return value;
   }
 
+  function normalizeLinkData(link) {
+    if (!link || typeof link !== "object" || Array.isArray(link)) {
+      throw createRemoteError("INVALID_LINK_PAYLOAD", "Le payload distant d'un Lien doit rester un objet simple.");
+    }
+    const output = {};
+    for (const [key, value] of Object.entries(link)) {
+      const normalizedKey = String(key || "").trim();
+      if (!normalizedKey || normalizedKey === "id" || normalizedKey === "clientId") continue;
+      if (normalizedKey.startsWith("__") || normalizedKey.startsWith("_sync") || FORBIDDEN_LINK_KEYS.has(normalizedKey) || RESERVED_DEOS_KEYS.has(normalizedKey)) {
+        throw createRemoteError("LINK_PAYLOAD_FORBIDDEN", `La cle ${normalizedKey} n'est pas autorisee pour la synchronisation Liens.`);
+      }
+      output[normalizedKey] = value;
+    }
+    return clonePlainObject(output);
+  }
+
+  function normalizeLinkRow(row) {
+    const data = row && row.data && typeof row.data === "object" && !Array.isArray(row.data) ? clonePlainObject(row.data) : {};
+    return {
+      remoteId: row && row.id ? String(row.id) : "",
+      clientId: row && row.client_id ? String(row.client_id) : String(data.id || ""),
+      ownerId: row && row.owner_id ? String(row.owner_id) : "",
+      workspaceId: row && row.workspace_id ? String(row.workspace_id) : "",
+      version: Number.isFinite(Number(row && row.version)) ? Number(row.version) : 0,
+      createdAt: row && row.created_at ? String(row.created_at) : "",
+      updatedAt: row && row.updated_at ? String(row.updated_at) : "",
+      deletedAt: row && row.deleted_at ? String(row.deleted_at) : "",
+      link: {
+        id: row && row.client_id ? String(row.client_id) : String(data.id || ""),
+        ...data
+      }
+    };
+  }
+
   function normalizeRecord(record, expectedWorkspaceId, ownerId) {
     const payload = clonePlainObject(record.payload || {});
     validatePayloadShape(payload);
@@ -106,6 +158,10 @@
     assertWritableRole(role) {
       if (["owner", "admin", "contributor"].includes(String(role || "").toLowerCase())) return;
       throw createRemoteError("FORBIDDEN_ROLE", "Ce role distant ne peut pas ecrire dans les enregistrements de test.");
+    }
+
+    assertLinksOnlyMode() {
+      return true;
     }
 
     async listTestRecords(workspaceId) {
@@ -210,6 +266,100 @@
       if (response.error) throw createRemoteError("REMOTE_DELETE_FAILED", response.error.message || "Suppression logique impossible.");
       if (response.data) return response.data;
       throw createRemoteError("CONFLICT", "Le record distant a ete modifie avant suppression logique.");
+    }
+
+    async listLinks(workspaceId) {
+      this.assertLinksOnlyMode();
+      const context = this.getContext(workspaceId);
+      const response = await context.client
+        .from("deos_links")
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .eq("workspace_id", context.workspaceId)
+        .order("updated_at", { ascending: false });
+      if (response.error) throw createRemoteError("REMOTE_LINKS_LIST_FAILED", response.error.message || "Lecture distante des Liens impossible.");
+      return Array.isArray(response.data) ? response.data.map(normalizeLinkRow) : [];
+    }
+
+    async getLink(clientId) {
+      this.assertLinksOnlyMode();
+      const context = this.getContext();
+      const response = await context.client
+        .from("deos_links")
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .eq("workspace_id", context.workspaceId)
+        .eq("client_id", String(clientId || ""))
+        .maybeSingle();
+      if (response.error) throw createRemoteError("REMOTE_LINK_GET_FAILED", response.error.message || "Lecture distante du Lien impossible.");
+      return response.data ? normalizeLinkRow(response.data) : null;
+    }
+
+    async createLink(link) {
+      this.assertLinksOnlyMode();
+      const context = this.getContext(link && link.workspaceId);
+      this.assertWritableRole(context.role);
+      const clientId = String(link && link.id ? link.id : "").trim();
+      if (!clientId) throw createRemoteError("LINK_CLIENT_ID_REQUIRED", "Un id local stable est requis pour créer un Lien distant.");
+      const payload = normalizeLinkData(link || {});
+      const response = await context.client
+        .from("deos_links")
+        .insert({
+          workspace_id: context.workspaceId,
+          owner_id: context.userId,
+          client_id: clientId,
+          data: payload
+        })
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .single();
+      if (response.error) {
+        const code = String(response.error.code || "").trim();
+        if (code === "23505") throw createRemoteError("REMOTE_LINK_EXISTS", response.error.message || "Le Lien existe déjà à distance.", response.error);
+        throw createRemoteError("REMOTE_LINK_CREATE_FAILED", response.error.message || "Création distante du Lien impossible.", response.error);
+      }
+      return normalizeLinkRow(response.data);
+    }
+
+    async updateLink(clientId, patch, expectedVersion) {
+      this.assertLinksOnlyMode();
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) {
+        throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour mettre à jour un Lien distant.");
+      }
+      const payload = normalizeLinkData(patch || {});
+      const response = await context.client.rpc("deos_update_link", {
+        p_client_id: String(clientId || "").trim(),
+        p_expected_version: version,
+        p_data: payload
+      });
+      if (response.error) {
+        const message = response.error.message || "Mise à jour distante du Lien impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_LINK_UPDATE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeLinkRow(row || {});
+    }
+
+    async softDeleteLink(clientId, expectedVersion) {
+      this.assertLinksOnlyMode();
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) {
+        throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour supprimer logiquement un Lien distant.");
+      }
+      const response = await context.client.rpc("deos_soft_delete_link", {
+        p_client_id: String(clientId || "").trim(),
+        p_expected_version: version
+      });
+      if (response.error) {
+        const message = response.error.message || "Suppression logique distante du Lien impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_LINK_DELETE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeLinkRow(row || {});
     }
   }
 

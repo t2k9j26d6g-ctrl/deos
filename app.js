@@ -95,6 +95,8 @@ const DEOS_STORAGE_KEYS = Object.freeze({
   backup_last_restore: "deos_backup_last_restore",
   backup_category_count: "deos_backup_category_count",
   restore_success: "deos_restore_success",
+  sync_meta_links: "deos_sync_meta_links",
+  sync_queue_links: "deos_sync_queue_links",
   gc_token: "deos_gc_token",
   gc_email: "deos_gc_email"
 });
@@ -103,7 +105,9 @@ DEOS_TECHNICAL_BACKUP_KEYS = [
   DEOS_STORAGE_KEYS.backup_last_export,
   DEOS_STORAGE_KEYS.backup_last_restore,
   DEOS_STORAGE_KEYS.backup_category_count,
-  DEOS_STORAGE_KEYS.restore_success
+  DEOS_STORAGE_KEYS.restore_success,
+  DEOS_STORAGE_KEYS.sync_meta_links,
+  DEOS_STORAGE_KEYS.sync_queue_links
 ];
 
 const DEOS_STORAGE_PREFIX = "deos_";
@@ -343,6 +347,47 @@ const externalEventEnrichmentsRepository = createRepository(deosDataService, {
   normalize: value => (value && typeof value === "object" && !Array.isArray(value) ? value : {})
 });
 
+const DEOS_LINKS_SYNC_STATUS = Object.freeze({
+  LOCAL_ONLY: "LOCAL_ONLY",
+  SYNC_READY: "SYNC_READY",
+  SYNCING: "SYNCING",
+  SYNCED: "SYNCED",
+  OFFLINE: "OFFLINE",
+  CONFLICT: "CONFLICT",
+  ERROR: "ERROR"
+});
+
+const DEOS_LINKS_SYNC_FORBIDDEN_KEYS = Object.freeze([
+  "actions",
+  "managers",
+  "projects",
+  "decisions",
+  "priorities",
+  "activity",
+  "journal",
+  "documents",
+  "agenda",
+  "folders",
+  "performance",
+  "meetingPreparations",
+  "performance_imports",
+  "state",
+  "settings",
+  "remoteSync"
+]);
+
+const linksSyncMetaRepository = createRepository(deosDataService, {
+  key: "sync_meta_links",
+  fallbackFactory: () => ({}),
+  normalize: value => normalizeLinksSyncMetaMap(value)
+});
+
+const linksSyncQueueRepository = createRepository(deosDataService, {
+  key: "sync_queue_links",
+  fallbackFactory: () => [],
+  normalize: value => normalizeLinksSyncQueue(value)
+});
+
 const DEOS_REMOTE_TEST_RECORD_TEMPLATES = Object.freeze([
   { label: "Test de connexion", payload: { scenario: "connectivity", device: "Navigateur principal", note: "Validation du canal distant de test.", status: "draft", client: "DEOS V5.21C" } },
   { label: "Test PC", payload: { scenario: "pc", device: "PC", note: "Validation multi-appareils sur poste principal.", status: "draft", client: "DEOS V5.21C" } },
@@ -363,6 +408,27 @@ let deosRemoteAuthDialog = {
   error: "",
   message: ""
 };
+
+let deosLinksSyncRuntime = createLinksSyncRuntimeState();
+let deosLinksSyncPreviewDialog = {
+  open: false,
+  busy: false,
+  mode: "preview",
+  selectedClientIds: [],
+  error: "",
+  analysis: null,
+  message: ""
+};
+
+let deosLinksSyncMergeDialog = {
+  open: false,
+  clientId: "",
+  error: "",
+  local: null,
+  remote: null
+};
+
+const linksHybridRepository = createLinksHybridRepository();
 
 let deosRemoteWorkspaceDialog = {
   open: false,
@@ -712,7 +778,7 @@ function deosBackupKeys(payload) {
 }
 
 function localStorageBackupPayload() {
-  return deosDataService.exportAll();
+  return Object.fromEntries(Object.entries(deosDataService.exportAll()).filter(([key]) => !isTechnicalBackupKey(key)));
 }
 
 function backupFileName(date = new Date()) {
@@ -1535,6 +1601,7 @@ async function init() {
   }
   state.settings = ensureSettings(settingsRepository.load({}));
   await initializeRemoteServices({ silent: true });
+  initializeLinksHybridSync({ skipAutoSync: false });
   // V5.5 — Charger les événements externes (Google Calendar)
   state.externalCalendarEvents = externalEventsRepository.load([]);
   // V5.7 — Charger les enrichissements locaux des événements Google
@@ -15470,6 +15537,32 @@ function linkStatusBadge(status) {
   return `<span class="badge ${cls}">${esc(status || "actif")}</span>`;
 }
 
+function linkSyncStatusForItem(link) {
+  const meta = getLinkSyncMeta(link.id);
+  if (!linksSyncIsEnabled()) return DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY;
+  if (meta.syncStatus) return meta.syncStatus;
+  return navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY;
+}
+
+function linkSyncBadge(link) {
+  const status = linkSyncStatusForItem(link);
+  const label = {
+    LOCAL_ONLY: "Local",
+    SYNC_READY: "Prête",
+    SYNCING: "En attente",
+    SYNCED: "Synchronisé",
+    OFFLINE: "Hors ligne",
+    CONFLICT: "Conflit",
+    ERROR: "Erreur"
+  }[status] || "Local";
+  return `<span class="badge ${linksSyncStatusClass(status)}">${esc(label)}</span>`;
+}
+
+function linkSyncGlobalSummary() {
+  if (!linksSyncIsEnabled()) return "Synchronisation Liens désactivée";
+  return `Liens synchronisés : ${deosLinksSyncRuntime.syncedCount}/${state.links.length || 0}`;
+}
+
 function linkForm(link = {}) {
   const isEdit = Boolean(link.id);
   const icon = link.icon || suggestLinkIcon(`${link.name || ""} ${link.url || ""} ${link.category || ""}`);
@@ -15480,7 +15573,7 @@ function linkCard(link) {
   const url = linkUrl(link.url);
   const domain = linkDomain(link.url);
   const disabled = !url;
-  return `<div class="card link-card link-tile ${link.status === "archivé" ? "link-archived" : ""}"><button class="link-tile-main" onclick="${disabled ? "" : `openExternalLink('${esc(link.id)}')`}" aria-label="Ouvrir ${esc(link.name || "lien")}"><span class="link-icon" aria-hidden="true">${esc(link.icon || suggestLinkIcon(`${link.name} ${link.url}`))}</span><span class="link-tile-text"><strong>${esc(link.name || "Lien")}</strong><small>${esc(link.category || "Autre")}${domain ? " · " + esc(domain) : ""}</small></span></button><p>${esc(link.description || "Ressource professionnelle")}</p><div class="link-tile-footer"><div>${linkStatusBadge(link.status)}${link.favorite ? `<span class="badge orange">★ Favori</span>` : ""}</div><button class="icon-button ${link.favorite ? "is-favorite" : ""}" onclick="toggleLinkFavorite('${esc(link.id)}')" title="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-label="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}">${link.favorite ? "★" : "☆"}</button></div><div class="link-actions"><a class="action link-action" href="${esc(url || "#")}" target="_blank" rel="noopener noreferrer" aria-disabled="${disabled}">Ouvrir</a><button class="secondary" onclick="editLink('${esc(link.id)}')">Modifier</button><button class="secondary" onclick="archiveLink('${esc(link.id)}')">${link.status === "archivé" ? "Réactiver" : "Archiver"}</button><button class="secondary" onclick="moveLink('${esc(link.id)}',-1)">Monter</button><button class="secondary" onclick="moveLink('${esc(link.id)}',1)">Descendre</button><button class="danger" onclick="deleteLink('${esc(link.id)}')">Supprimer</button></div></div>`;
+  return `<div class="card link-card link-tile ${link.status === "archivé" ? "link-archived" : ""}"><button class="link-tile-main" onclick="${disabled ? "" : `openExternalLink('${esc(link.id)}')`}" aria-label="Ouvrir ${esc(link.name || "lien")}"><span class="link-icon" aria-hidden="true">${esc(link.icon || suggestLinkIcon(`${link.name} ${link.url}`))}</span><span class="link-tile-text"><strong>${esc(link.name || "Lien")}</strong><small>${esc(link.category || "Autre")}${domain ? " · " + esc(domain) : ""}</small></span></button><p>${esc(link.description || "Ressource professionnelle")}</p><div class="link-tile-footer"><div>${linkStatusBadge(link.status)}${linkSyncBadge(link)}${link.favorite ? `<span class="badge orange">★ Favori</span>` : ""}</div><button class="icon-button ${link.favorite ? "is-favorite" : ""}" onclick="toggleLinkFavorite('${esc(link.id)}')" title="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-label="${link.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}">${link.favorite ? "★" : "☆"}</button></div><div class="link-actions"><a class="action link-action" href="${esc(url || "#")}" target="_blank" rel="noopener noreferrer" aria-disabled="${disabled}">Ouvrir</a><button class="secondary" onclick="editLink('${esc(link.id)}')">Modifier</button><button class="secondary" onclick="archiveLink('${esc(link.id)}')">${link.status === "archivé" ? "Réactiver" : "Archiver"}</button><button class="secondary" onclick="moveLink('${esc(link.id)}',-1)">Monter</button><button class="secondary" onclick="moveLink('${esc(link.id)}',1)">Descendre</button><button class="danger" onclick="deleteLink('${esc(link.id)}')">Supprimer</button></div></div>`;
 }
 
 function renderLinks() {
@@ -15491,7 +15584,7 @@ function renderLinks() {
   const categories = ["all", ...linkCategoryOptions()];
   const activeCategories = categories.filter(c => c === "all" || state.links.some(l => l.category === c));
   const grouped = activeCategories.filter(c => c !== "all").map(c => ({ category: c, count: state.links.filter(l => l.category === c).length }));
-  appHtml(`<div class="card hero links-hero"><div class="row"><div><h2>🔗 Liens utiles</h2><p class="muted">Lanceur visuel des ressources professionnelles du quotidien.</p></div><button class="action" onclick="newLink()">+ Nouveau lien</button></div></div>${linkEditId !== "" ? linkForm(linkEditId ? byId("links", linkEditId) : {}) : ""}<div class="links-layout"><aside class="card link-categories"><button class="secondary ${linkCategoryFilter === "all" && !linkFavoriteFilter ? "active-filter" : ""}" onclick="setLinkCategoryFilter('all')">Tous les liens</button><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">⭐ Favoris</button>${grouped.map(g => `<button class="secondary ${linkCategoryFilter === g.category ? "active-filter" : ""}" onclick="setLinkCategoryFilter('${esc(g.category)}')"><span>${linkCategoryIcon(g.category)}</span>${esc(g.category)} <small>${g.count}</small></button>`).join("")}</aside><section><div class="card link-toolbar"><input value="${esc(linkSearch)}" placeholder="Rechercher un lien, une catégorie ou un domaine" oninput="setLinkSearch(this.value)"><select onchange="setLinkCategoryFilter(this.value)">${categories.map(c => `<option value="${esc(c)}" ${linkCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">Favoris</button></div><div class="card links-favorites"><div class="row"><h2>Favoris</h2><span class="muted">${favorites.length} lien(s)</span></div><div class="links-grid links-grid-compact">${favorites.map(linkCard).join("") || `<div class="empty">Aucun favori — ajoutez-en avec l'étoile sur une tuile.</div>`}</div></div><div class="card links-results-head"><div><h2>Catalogue</h2><p class="muted">${items.length} ressource(s) affichée(s)</p><p class="muted">Le catalogue contient toutes les ressources, y compris les favoris.</p></div></div><div id="linkResults" class="links-grid">${items.map(linkCard).join("") || `<div class="card empty">Aucun lien ne correspond aux filtres.<br><button class="secondary" onclick="newLink()">+ Ajouter mon premier lien</button></div>`}</div></section></div>`);
+  appHtml(`<div class="card hero links-hero"><div class="row"><div><h2>🔗 Liens utiles</h2><p class="muted">Lanceur visuel des ressources professionnelles du quotidien.</p><p class="muted">${esc(linkSyncGlobalSummary())}</p></div><button class="action" onclick="newLink()">+ Nouveau lien</button></div></div>${linkEditId !== "" ? linkForm(linkEditId ? byId("links", linkEditId) : {}) : ""}<div class="links-layout"><aside class="card link-categories"><button class="secondary ${linkCategoryFilter === "all" && !linkFavoriteFilter ? "active-filter" : ""}" onclick="setLinkCategoryFilter('all')">Tous les liens</button><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">⭐ Favoris</button>${grouped.map(g => `<button class="secondary ${linkCategoryFilter === g.category ? "active-filter" : ""}" onclick="setLinkCategoryFilter('${esc(g.category)}')"><span>${linkCategoryIcon(g.category)}</span>${esc(g.category)} <small>${g.count}</small></button>`).join("")}</aside><section><div class="card link-toolbar"><input value="${esc(linkSearch)}" placeholder="Rechercher un lien, une catégorie ou un domaine" oninput="setLinkSearch(this.value)"><select onchange="setLinkCategoryFilter(this.value)">${categories.map(c => `<option value="${esc(c)}" ${linkCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><button class="secondary ${linkFavoriteFilter ? "active-filter" : ""}" onclick="toggleLinkFavoriteFilter()">Favoris</button></div><div class="card links-favorites"><div class="row"><h2>Favoris</h2><span class="muted">${favorites.length} lien(s)</span></div><div class="links-grid links-grid-compact">${favorites.map(linkCard).join("") || `<div class="empty">Aucun favori — ajoutez-en avec l'étoile sur une tuile.</div>`}</div></div><div class="card links-results-head"><div><h2>Catalogue</h2><p class="muted">${items.length} ressource(s) affichée(s)</p><p class="muted">Le catalogue contient toutes les ressources, y compris les favoris.</p></div></div><div id="linkResults" class="links-grid">${items.map(linkCard).join("") || `<div class="card empty">Aucun lien ne correspond aux filtres.<br><button class="secondary" onclick="newLink()">+ Ajouter mon premier lien</button></div>`}</div></section></div>`);
 }
 
 function newLink() {
@@ -15527,6 +15620,7 @@ function addLink() {
   if (!link) return;
   state.links.push(normalizeEntity("links", link));
   persist("links");
+  linksHybridRepository.queueUpsert(byId("links", link.id), "create");
   addActivity("🔗 Lien utile", link.name, link.url, link.id);
   linkEditId = "";
   renderLinks();
@@ -15539,6 +15633,7 @@ function saveLink(id) {
   if (!link) return;
   state.links[i] = normalizeEntity("links", link);
   persist("links");
+  linksHybridRepository.queueUpsert(state.links[i], "update");
   addActivity("🔗 Lien modifié", state.links[i].name, state.links[i].url, id);
   linkEditId = "";
   renderLinks();
@@ -15548,8 +15643,10 @@ function deleteLink(id) {
   const i = indexById("links", id);
   if (i < 0 || !confirm("Supprimer ce lien ?")) return;
   const title = state.links[i].name;
+  const snapshot = cloneLinkBusinessData(state.links[i]);
   state.links.splice(i, 1);
   persist("links");
+  linksHybridRepository.queueDelete(id, snapshot);
   addActivity("🗑️ Lien supprimé", title);
   renderLinks();
 }
@@ -15558,7 +15655,9 @@ function archiveLink(id) {
   const link = byId("links", id);
   if (!link) return;
   link.status = link.status === "archivé" ? "actif" : "archivé";
+  link.updatedAt = isoToday();
   persist("links");
+  linksHybridRepository.queueUpsert(link, "archive");
   addActivity("🗄️ Lien archivé", link.name, link.status, id);
   renderLinks();
 }
@@ -15567,7 +15666,9 @@ function toggleLinkFavorite(id) {
   const link = byId("links", id);
   if (!link) return;
   link.favorite = !link.favorite;
+  link.updatedAt = isoToday();
   persist("links");
+  linksHybridRepository.queueUpsert(link, "favorite");
   addActivity("⭐ Favori", link.name, link.favorite ? "Ajouté aux favoris" : "Retiré des favoris", id);
   renderLinks();
 }
@@ -15578,7 +15679,11 @@ function moveLink(id, delta) {
   const next = index + delta;
   if (index < 0 || next < 0 || next >= ordered.length) return;
   [ordered[index].order, ordered[next].order] = [ordered[next].order, ordered[index].order];
+  ordered[index].updatedAt = isoToday();
+  ordered[next].updatedAt = isoToday();
   persist("links");
+  linksHybridRepository.queueUpsert(ordered[index], "reorder");
+  linksHybridRepository.queueUpsert(ordered[next], "reorder");
   renderLinks();
 }
 
@@ -15693,6 +15798,718 @@ function createRemoteRuntimeState(overrides = {}) {
   };
 }
 
+function createLinksSyncRuntimeState(overrides = {}) {
+  return {
+    enabled: false,
+    state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY,
+    queue: [],
+    metaByClientId: {},
+    remoteCount: 0,
+    pendingCount: 0,
+    syncedCount: 0,
+    conflictCount: 0,
+    lastSyncAt: "",
+    lastError: "",
+    lastAnalysisAt: "",
+    lastAnalysis: null,
+    currentDevice: detectLinksSyncDeviceLabel(),
+    autoResumeBound: false,
+    syncing: false,
+    ...overrides
+  };
+}
+
+function createLinksHybridRepository() {
+  return {
+    loadRuntime(options = {}) {
+      return initializeLinksHybridSync(options);
+    },
+    analyze() {
+      return analyzeLinksHybridState();
+    },
+    activate() {
+      return activateLinksHybridSync();
+    },
+    deactivate() {
+      return deactivateLinksHybridSync();
+    },
+    syncNow(options = {}) {
+      return syncLinksHybridNow(options);
+    },
+    queueUpsert(link, operation = "upsert") {
+      return scheduleLinksHybridUpsert(link, operation);
+    },
+    queueDelete(clientId, snapshot = null) {
+      return scheduleLinksHybridDelete(clientId, snapshot);
+    }
+  };
+}
+
+function normalizeLinksSyncSettings(value = {}) {
+  return {
+    enabled: Boolean(value.enabled),
+    activatedAt: String(value.activatedAt || "").trim(),
+    lastMode: String(value.lastMode || "").trim()
+  };
+}
+
+function getLinksSyncSettings() {
+  const remote = getRemoteSyncSettings();
+  return normalizeLinksSyncSettings({
+    enabled: Boolean(remote.linksPilotEnabled),
+    activatedAt: String(remote.linksPilotActivatedAt || "").trim(),
+    lastMode: String(remote.linksPilotLastMode || "").trim()
+  });
+}
+
+function setLinksSyncSettings(patch = {}) {
+  const currentRemote = getRemoteSyncSettings();
+  const current = getLinksSyncSettings();
+  const next = normalizeLinksSyncSettings({ ...current, ...(patch || {}) });
+  state.settings.remoteSync = normalizeRemoteSyncSettings({
+    ...currentRemote,
+    linksPilotEnabled: next.enabled,
+    linksPilotActivatedAt: next.activatedAt,
+    linksPilotLastMode: next.lastMode
+  });
+  persistSettings();
+  return next;
+}
+
+function normalizeLinksSyncMetaEntry(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    clientId: String(source.clientId || "").trim(),
+    remoteId: String(source.remoteId || "").trim(),
+    remoteVersion: Number.isInteger(Number(source.remoteVersion)) ? Number(source.remoteVersion) : 0,
+    localRevision: Number.isInteger(Number(source.localRevision)) ? Number(source.localRevision) : 0,
+    lastSyncedAt: String(source.lastSyncedAt || "").trim(),
+    syncStatus: String(source.syncStatus || DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY).trim() || DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY,
+    remoteUpdatedAt: String(source.remoteUpdatedAt || "").trim(),
+    lastSyncError: String(source.lastSyncError || "").trim(),
+    lastLocalFingerprint: String(source.lastLocalFingerprint || "").trim(),
+    lastLocalUpdatedAt: String(source.lastLocalUpdatedAt || "").trim(),
+    deletedLocallyAt: String(source.deletedLocallyAt || "").trim(),
+    deletedRemotelyAt: String(source.deletedRemotelyAt || "").trim(),
+    conflictRemote: source.conflictRemote && typeof source.conflictRemote === "object" ? source.conflictRemote : null,
+    conflictFields: ensureArray(source.conflictFields).map(String)
+  };
+}
+
+function normalizeLinksSyncMetaMap(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.entries(source)
+    .map(([key, entry]) => {
+      const normalized = normalizeLinksSyncMetaEntry({ ...(entry || {}), clientId: entry?.clientId || key });
+      return normalized.clientId ? [normalized.clientId, normalized] : null;
+    })
+    .filter(Boolean));
+}
+
+function normalizeLinksSyncQueue(value = []) {
+  return ensureArray(value)
+    .map(item => ({
+      operation: item?.operation === "delete" ? "delete" : "upsert",
+      clientId: String(item?.clientId || "").trim(),
+      queuedAt: String(item?.queuedAt || new Date().toISOString()).trim(),
+      expectedVersion: Number.isInteger(Number(item?.expectedVersion)) ? Number(item.expectedVersion) : 0,
+      payload: item?.payload && typeof item.payload === "object" && !Array.isArray(item.payload) ? JSON.parse(JSON.stringify(item.payload)) : null,
+      attempts: Number.isInteger(Number(item?.attempts)) ? Number(item.attempts) : 0,
+      lastError: String(item?.lastError || "").trim()
+    }))
+    .filter(item => item.clientId);
+}
+
+function detectLinksSyncDeviceLabel() {
+  const ua = typeof navigator !== "undefined" ? String(navigator.userAgent || "") : "";
+  if (/ipad/i.test(ua)) return "iPad";
+  if (/iphone/i.test(ua)) return "iPhone";
+  if (/android/i.test(ua)) return "Android";
+  if (/firefox/i.test(ua)) return "Firefox";
+  if (/edg/i.test(ua)) return "Edge";
+  if (/chrome/i.test(ua)) return "Chrome";
+  if (/safari/i.test(ua)) return "Safari";
+  return "Navigateur courant";
+}
+
+function linksSyncStatusLabel(status = deosLinksSyncRuntime.state) {
+  return ({
+    LOCAL_ONLY: "Désactivée",
+    SYNC_READY: "Prête",
+    SYNCING: "Active",
+    SYNCED: "Synchronisée",
+    OFFLINE: "Hors ligne",
+    CONFLICT: "Conflit",
+    ERROR: "Erreur"
+  })[status] || "Désactivée";
+}
+
+function linksSyncStatusClass(status = deosLinksSyncRuntime.state) {
+  return ({
+    LOCAL_ONLY: "green",
+    SYNC_READY: "orange",
+    SYNCING: "orange",
+    SYNCED: "green",
+    OFFLINE: "orange",
+    CONFLICT: "red",
+    ERROR: "red"
+  })[status] || "green";
+}
+
+function linksSyncIsEnabled() {
+  return Boolean(getLinksSyncSettings().enabled);
+}
+
+function linksSyncCanUseRemote() {
+  return Boolean(
+    linksSyncIsEnabled()
+    && navigator.onLine !== false
+    && deosRemoteAuthService
+    && deosRemoteAuthService.isAuthenticated
+    && deosRemoteAuthService.isAuthenticated()
+    && deosRemoteRuntime.configurationStatus === "ready"
+    && deosRemoteRuntime.workspace
+    && deosRemoteAdapter
+  );
+}
+
+function cloneLinkBusinessData(link = {}) {
+  const source = link && typeof link === "object" && !Array.isArray(link) ? link : {};
+  const forbidden = new Set([
+    "id",
+    "clientId",
+    "remoteId",
+    "remoteVersion",
+    "lastSyncedAt",
+    "syncStatus",
+    "remoteUpdatedAt",
+    "lastSyncError"
+  ]);
+  const output = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (forbidden.has(key) || key.startsWith("__") || key.startsWith("_sync")) continue;
+    output[key] = value;
+  }
+  return JSON.parse(JSON.stringify(output));
+}
+
+function validateLinkPayloadBeforeSync(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Le payload Liens doit rester un objet simple.");
+  }
+  for (const key of Object.keys(data)) {
+    if (DEOS_LINKS_SYNC_FORBIDDEN_KEYS.includes(String(key || ""))) {
+      throw new Error(`La cle ${key} n'est pas autorisee pour la synchronisation pilote des Liens.`);
+    }
+  }
+}
+
+function stableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((acc, key) => {
+    acc[key] = stableJsonValue(value[key]);
+    return acc;
+  }, {});
+}
+
+function linkFingerprint(link = {}) {
+  const payload = cloneLinkBusinessData(link);
+  validateLinkPayloadBeforeSync(payload);
+  return JSON.stringify(stableJsonValue(payload));
+}
+
+function getLinkSyncMeta(clientId) {
+  return normalizeLinksSyncMetaEntry({ ...(deosLinksSyncRuntime.metaByClientId[String(clientId || "").trim()] || {}), clientId });
+}
+
+function setLinkSyncMeta(clientId, patch = {}) {
+  const key = String(clientId || "").trim();
+  if (!key) return null;
+  const next = normalizeLinksSyncMetaEntry({ ...getLinkSyncMeta(key), ...(patch || {}), clientId: key });
+  deosLinksSyncRuntime.metaByClientId = {
+    ...deosLinksSyncRuntime.metaByClientId,
+    [key]: next
+  };
+  linksSyncMetaRepository.save(deosLinksSyncRuntime.metaByClientId);
+  refreshLinksSyncRuntimeState();
+  return next;
+}
+
+function removeLinkSyncMeta(clientId) {
+  const key = String(clientId || "").trim();
+  if (!key || !deosLinksSyncRuntime.metaByClientId[key]) return;
+  const next = { ...deosLinksSyncRuntime.metaByClientId };
+  delete next[key];
+  deosLinksSyncRuntime.metaByClientId = next;
+  linksSyncMetaRepository.save(next);
+  refreshLinksSyncRuntimeState();
+}
+
+function persistLinksSyncQueue() {
+  linksSyncQueueRepository.save(deosLinksSyncRuntime.queue);
+  refreshLinksSyncRuntimeState();
+}
+
+function refreshLinksSyncRuntimeState(patch = {}) {
+  const queue = normalizeLinksSyncQueue(patch.queue === undefined ? deosLinksSyncRuntime.queue : patch.queue);
+  const metaByClientId = normalizeLinksSyncMetaMap(patch.metaByClientId === undefined ? deosLinksSyncRuntime.metaByClientId : patch.metaByClientId);
+  const localCount = ensureArray(state.links).length;
+  const pendingCount = queue.length;
+  const conflictCount = Object.values(metaByClientId).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT).length;
+  const syncedCount = ensureArray(state.links).filter(link => getLinkSyncMeta(link.id).syncStatus === DEOS_LINKS_SYNC_STATUS.SYNCED).length;
+  let nextState = linksSyncIsEnabled() ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY;
+  if (patch.state) nextState = patch.state;
+  else if (conflictCount > 0) nextState = DEOS_LINKS_SYNC_STATUS.CONFLICT;
+  else if (patch.syncing || deosLinksSyncRuntime.syncing) nextState = DEOS_LINKS_SYNC_STATUS.SYNCING;
+  else if (linksSyncIsEnabled() && navigator.onLine === false) nextState = DEOS_LINKS_SYNC_STATUS.OFFLINE;
+  else if (linksSyncIsEnabled() && deosLinksSyncRuntime.lastError) nextState = DEOS_LINKS_SYNC_STATUS.ERROR;
+  else if (linksSyncIsEnabled() && pendingCount === 0 && localCount > 0 && syncedCount === localCount) nextState = DEOS_LINKS_SYNC_STATUS.SYNCED;
+  deosLinksSyncRuntime = {
+    ...deosLinksSyncRuntime,
+    enabled: linksSyncIsEnabled(),
+    queue,
+    metaByClientId,
+    pendingCount,
+    conflictCount,
+    syncedCount,
+    state: nextState,
+    currentDevice: detectLinksSyncDeviceLabel(),
+    ...patch,
+    queue,
+    metaByClientId
+  };
+}
+
+function bindLinksHybridNetworkListeners() {
+  if (deosLinksSyncRuntime.autoResumeBound || typeof window === "undefined") return;
+  window.addEventListener("online", () => {
+    refreshLinksSyncRuntimeState({ lastError: "", state: linksSyncIsEnabled() ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY });
+    if (linksSyncIsEnabled()) syncLinksHybridNow({ silent: true, source: "online" });
+  });
+  window.addEventListener("offline", () => {
+    refreshLinksSyncRuntimeState({ state: linksSyncIsEnabled() ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY });
+    if (currentView === "settings" || currentView === "links") {
+      currentView === "settings" ? renderSettings() : renderLinks();
+    }
+  });
+  deosLinksSyncRuntime.autoResumeBound = true;
+}
+
+function initializeLinksHybridSync(options = {}) {
+  const settings = getLinksSyncSettings();
+  deosLinksSyncRuntime = createLinksSyncRuntimeState({
+    enabled: settings.enabled,
+    queue: linksSyncQueueRepository.load([]),
+    metaByClientId: linksSyncMetaRepository.load({})
+  });
+  bindLinksHybridNetworkListeners();
+  refreshLinksSyncRuntimeState({
+    lastError: "",
+    state: settings.enabled ? (navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY) : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY
+  });
+  if (settings.enabled && !options.skipAutoSync && linksSyncCanUseRemote()) {
+    syncLinksHybridNow({ silent: true, source: "init" });
+  }
+  return deosLinksSyncRuntime;
+}
+
+function buildLinksRemotePreview(localLinks, remoteRows) {
+  const localMap = new Map(ensureArray(localLinks).map(link => [String(link.id), link]));
+  const remoteMap = new Map(ensureArray(remoteRows).filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
+  const localOnly = [];
+  const remoteOnly = [];
+  const both = [];
+  const conflicts = [];
+  const duplicateCandidates = [];
+  const categoryCounts = {};
+  let favorites = 0;
+  let archived = 0;
+
+  ensureArray(localLinks).forEach(link => {
+    if (link.favorite) favorites += 1;
+    if (String(link.status || "") === "archivé") archived += 1;
+    categoryCounts[link.category || "Autre"] = (categoryCounts[link.category || "Autre"] || 0) + 1;
+    const remote = remoteMap.get(String(link.id));
+    if (!remote) {
+      localOnly.push(link);
+      const matchByNameUrl = ensureArray(remoteRows).find(row => !row.deletedAt && String(row.link.name || "").trim().toLowerCase() === String(link.name || "").trim().toLowerCase() && String(row.link.url || "") === String(link.url || ""));
+      if (matchByNameUrl) duplicateCandidates.push({ local: link, remote: matchByNameUrl.link, remoteClientId: matchByNameUrl.clientId });
+      return;
+    }
+    both.push({ local: link, remote: remote.link, remoteVersion: remote.version, remoteUpdatedAt: remote.updatedAt });
+    if (linkFingerprint(link) !== linkFingerprint(remote.link)) {
+      conflicts.push(buildLinksConflictEntry(String(link.id), link, remote));
+    }
+  });
+
+  ensureArray(remoteRows).forEach(row => {
+    if (row.deletedAt) return;
+    if (!localMap.has(String(row.clientId))) remoteOnly.push(row.link);
+  });
+
+  return {
+    localCount: ensureArray(localLinks).length,
+    remoteCount: ensureArray(remoteRows).filter(row => !row.deletedAt).length,
+    localOnly,
+    remoteOnly,
+    both,
+    conflicts,
+    duplicateCandidates,
+    favorites,
+    archived,
+    categoryCounts,
+    generatedAt: new Date().toLocaleString("fr-FR")
+  };
+}
+
+function buildLinksConflictEntry(clientId, localLink, remoteRow) {
+  const remoteLink = remoteRow && remoteRow.link ? remoteRow.link : normalizeEntity("links", { id: clientId });
+  const localData = cloneLinkBusinessData(localLink);
+  const remoteData = cloneLinkBusinessData(remoteLink);
+  const fields = [...new Set([...Object.keys(localData), ...Object.keys(remoteData)])].filter(key => JSON.stringify(localData[key] ?? null) !== JSON.stringify(remoteData[key] ?? null));
+  return {
+    clientId,
+    title: localLink?.name || remoteLink?.name || clientId,
+    local: localLink,
+    remote: remoteLink,
+    localRevision: getLinkSyncMeta(clientId).localRevision,
+    remoteVersion: Number(remoteRow?.version || 0),
+    localDate: String(localLink?.updatedAt || localLink?.createdAt || "").trim(),
+    remoteDate: String(remoteRow?.updatedAt || "").trim(),
+    fields,
+    remoteMeta: remoteRow
+  };
+}
+
+async function analyzeLinksHybridState() {
+  const remoteRows = linksSyncCanUseRemote() ? await deosRemoteAdapter.listLinks() : [];
+  const analysis = buildLinksRemotePreview(state.links, remoteRows);
+  refreshLinksSyncRuntimeState({
+    remoteCount: analysis.remoteCount,
+    lastAnalysisAt: analysis.generatedAt,
+    lastAnalysis: analysis,
+    lastError: ""
+  });
+  return analysis;
+}
+
+async function activateLinksHybridSync() {
+  setLinksSyncSettings({ enabled: true, activatedAt: new Date().toISOString(), lastMode: "activated" });
+  refreshLinksSyncRuntimeState({ enabled: true, state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY, lastError: "" });
+  return deosLinksSyncRuntime;
+}
+
+function deactivateLinksHybridSync() {
+  setLinksSyncSettings({ enabled: false, lastMode: "deactivated" });
+  refreshLinksSyncRuntimeState({ enabled: false, state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" });
+  return deosLinksSyncRuntime;
+}
+
+function mergeLinksQueueEntry(nextEntry) {
+  const queue = normalizeLinksSyncQueue(deosLinksSyncRuntime.queue);
+  const existingIndex = queue.findIndex(item => item.clientId === nextEntry.clientId);
+  if (existingIndex < 0) {
+    queue.push(nextEntry);
+    return queue;
+  }
+  const current = queue[existingIndex];
+  if (nextEntry.operation === "delete") {
+    queue[existingIndex] = { ...current, ...nextEntry, payload: null, operation: "delete", attempts: 0, lastError: "" };
+    return queue;
+  }
+  if (current.operation === "delete") {
+    queue[existingIndex] = { ...nextEntry, attempts: 0, lastError: "" };
+    return queue;
+  }
+  queue[existingIndex] = {
+    ...current,
+    ...nextEntry,
+    attempts: 0,
+    lastError: ""
+  };
+  return queue;
+}
+
+function scheduleLinksHybridUpsert(link, operation = "upsert") {
+  if (!link || !link.id) return null;
+  const payload = cloneLinkBusinessData(link);
+  validateLinkPayloadBeforeSync(payload);
+  const meta = setLinkSyncMeta(link.id, {
+    clientId: link.id,
+    localRevision: getLinkSyncMeta(link.id).localRevision + 1,
+    lastLocalUpdatedAt: String(link.updatedAt || isoToday()).trim(),
+    lastLocalFingerprint: linkFingerprint(link),
+    syncStatus: linksSyncIsEnabled() ? (navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY) : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY,
+    lastSyncError: "",
+    deletedLocallyAt: ""
+  });
+  if (!linksSyncIsEnabled()) return meta;
+  deosLinksSyncRuntime.queue = mergeLinksQueueEntry({
+    operation: "upsert",
+    clientId: link.id,
+    queuedAt: new Date().toISOString(),
+    expectedVersion: Number(meta.remoteVersion || 0),
+    payload,
+    attempts: 0,
+    lastError: ""
+  });
+  persistLinksSyncQueue();
+  if (linksSyncCanUseRemote()) {
+    syncLinksHybridNow({ silent: true, source: operation });
+  } else {
+    refreshLinksSyncRuntimeState({ state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY });
+  }
+  return meta;
+}
+
+function scheduleLinksHybridDelete(clientId, snapshot = null) {
+  const key = String(clientId || "").trim();
+  if (!key) return null;
+  const meta = getLinkSyncMeta(key);
+  const hasRemoteVersion = Number(meta.remoteVersion || 0) > 0;
+  if (!linksSyncIsEnabled()) {
+    removeLinkSyncMeta(key);
+    return null;
+  }
+  if (!hasRemoteVersion) {
+    deosLinksSyncRuntime.queue = normalizeLinksSyncQueue(deosLinksSyncRuntime.queue).filter(item => item.clientId !== key);
+    persistLinksSyncQueue();
+    removeLinkSyncMeta(key);
+    return null;
+  }
+  setLinkSyncMeta(key, {
+    deletedLocallyAt: new Date().toISOString(),
+    syncStatus: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY,
+    lastSyncError: "",
+    lastLocalFingerprint: snapshot ? linkFingerprint({ id: key, ...snapshot }) : meta.lastLocalFingerprint
+  });
+  deosLinksSyncRuntime.queue = mergeLinksQueueEntry({
+    operation: "delete",
+    clientId: key,
+    queuedAt: new Date().toISOString(),
+    expectedVersion: Number(meta.remoteVersion || 0),
+    payload: null,
+    attempts: 0,
+    lastError: ""
+  });
+  persistLinksSyncQueue();
+  if (linksSyncCanUseRemote()) {
+    syncLinksHybridNow({ silent: true, source: "delete" });
+  } else {
+    refreshLinksSyncRuntimeState({ state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY });
+  }
+  return getLinkSyncMeta(key);
+}
+
+async function pushSingleLinkQueueEntry(entry) {
+  const meta = getLinkSyncMeta(entry.clientId);
+  if (entry.operation === "delete") {
+    const removed = await deosRemoteAdapter.softDeleteLink(entry.clientId, Number(entry.expectedVersion || meta.remoteVersion || 0));
+    setLinkSyncMeta(entry.clientId, {
+      remoteId: removed.remoteId || removed.id || meta.remoteId,
+      remoteVersion: Number(removed.version || 0),
+      remoteUpdatedAt: String(removed.updatedAt || "").trim(),
+      lastSyncedAt: new Date().toISOString(),
+      syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED,
+      lastSyncError: "",
+      deletedRemotelyAt: String(removed.deletedAt || new Date().toISOString()).trim(),
+      conflictRemote: null,
+      conflictFields: []
+    });
+    return { success: true };
+  }
+  const localLink = byId("links", entry.clientId);
+  if (!localLink) return { success: true, skip: true };
+  validateLinkPayloadBeforeSync(entry.payload || cloneLinkBusinessData(localLink));
+  let remoteResult = null;
+  if (Number(meta.remoteVersion || 0) > 0) {
+    remoteResult = await deosRemoteAdapter.updateLink(entry.clientId, localLink, Number(entry.expectedVersion || meta.remoteVersion));
+  } else {
+    remoteResult = await deosRemoteAdapter.createLink(localLink);
+  }
+  setLinkSyncMeta(entry.clientId, {
+    remoteId: remoteResult.remoteId || remoteResult.id || meta.remoteId,
+    remoteVersion: Number(remoteResult.version || 0),
+    remoteUpdatedAt: String(remoteResult.updatedAt || "").trim(),
+    lastSyncedAt: new Date().toISOString(),
+    syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED,
+    lastSyncError: "",
+    deletedLocallyAt: "",
+    deletedRemotelyAt: "",
+    conflictRemote: null,
+    conflictFields: []
+  });
+  return { success: true };
+}
+
+function isOfflineSyncError(error) {
+  const code = String(error?.code || "").toUpperCase();
+  return navigator.onLine === false || /NETWORK|FETCH|TIMEOUT|OFFLINE/.test(code) || /network|connexion|offline/i.test(String(error?.message || ""));
+}
+
+async function syncLinksHybridNow(options = {}) {
+  if (!linksSyncIsEnabled()) {
+    refreshLinksSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" });
+    return deosLinksSyncRuntime;
+  }
+  if (!linksSyncCanUseRemote()) {
+    refreshLinksSyncRuntimeState({
+      state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR,
+      lastError: navigator.onLine === false ? "Le navigateur est hors ligne." : "Connexion distante Liens indisponible."
+    });
+    if (!options.silent && (currentView === "settings" || currentView === "links")) {
+      currentView === "settings" ? renderSettings(deosLinksSyncRuntime.lastError) : renderLinks();
+    }
+    return deosLinksSyncRuntime;
+  }
+
+  refreshLinksSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
+  const queue = normalizeLinksSyncQueue(deosLinksSyncRuntime.queue);
+  const remaining = [];
+  try {
+    for (const entry of queue) {
+      try {
+        const result = await pushSingleLinkQueueEntry(entry);
+        if (result.skip) continue;
+      } catch (error) {
+        const meta = getLinkSyncMeta(entry.clientId);
+        if (String(error?.code || "").toUpperCase() === "CONFLICT") {
+          const remoteRow = await deosRemoteAdapter.getLink(entry.clientId);
+          const conflict = buildLinksConflictEntry(entry.clientId, byId("links", entry.clientId) || normalizeEntity("links", { id: entry.clientId }), remoteRow || { clientId: entry.clientId, link: normalizeEntity("links", { id: entry.clientId }), version: meta.remoteVersion, updatedAt: meta.remoteUpdatedAt });
+          setLinkSyncMeta(entry.clientId, {
+            syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT,
+            lastSyncError: "CONFLICT",
+            conflictRemote: remoteRow,
+            conflictFields: conflict.fields
+          });
+          continue;
+        }
+        if (isOfflineSyncError(error)) {
+          setLinkSyncMeta(entry.clientId, {
+            syncStatus: DEOS_LINKS_SYNC_STATUS.OFFLINE,
+            lastSyncError: error.message || "Hors ligne"
+          });
+          remaining.push({ ...entry, attempts: Number(entry.attempts || 0) + 1, lastError: error.message || "Hors ligne" });
+          throw error;
+        }
+        setLinkSyncMeta(entry.clientId, {
+          syncStatus: DEOS_LINKS_SYNC_STATUS.ERROR,
+          lastSyncError: error.message || "Erreur distante"
+        });
+        remaining.push({ ...entry, attempts: Number(entry.attempts || 0) + 1, lastError: error.message || "Erreur distante" });
+      }
+    }
+
+    const remoteRows = await deosRemoteAdapter.listLinks();
+    const remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
+    let localChanged = false;
+
+    remoteRows.filter(row => row.deletedAt).forEach(row => {
+      const local = byId("links", row.clientId);
+      if (!local) {
+        setLinkSyncMeta(row.clientId, {
+          remoteId: row.remoteId,
+          remoteVersion: Number(row.version || 0),
+          remoteUpdatedAt: String(row.updatedAt || "").trim(),
+          deletedRemotelyAt: String(row.deletedAt || "").trim(),
+          syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED
+        });
+        return;
+      }
+      const hasPending = remaining.some(item => item.clientId === row.clientId);
+      if (!hasPending) {
+        state.links = state.links.filter(item => !sameId(item.id, row.clientId));
+        localChanged = true;
+        setLinkSyncMeta(row.clientId, {
+          remoteId: row.remoteId,
+          remoteVersion: Number(row.version || 0),
+          remoteUpdatedAt: String(row.updatedAt || "").trim(),
+          deletedRemotelyAt: String(row.deletedAt || "").trim(),
+          syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED
+        });
+      }
+    });
+
+    remoteRows.filter(row => !row.deletedAt).forEach(row => {
+      const local = byId("links", row.clientId);
+      const meta = getLinkSyncMeta(row.clientId);
+      const remoteFingerprint = linkFingerprint(row.link);
+      if (!local) {
+        state.links.push(normalizeEntity("links", row.link));
+        localChanged = true;
+        setLinkSyncMeta(row.clientId, {
+          remoteId: row.remoteId,
+          remoteVersion: Number(row.version || 0),
+          remoteUpdatedAt: String(row.updatedAt || "").trim(),
+          lastSyncedAt: new Date().toISOString(),
+          syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED,
+          lastLocalFingerprint: remoteFingerprint,
+          lastLocalUpdatedAt: String(row.link.updatedAt || row.updatedAt || "").trim(),
+          conflictRemote: null,
+          conflictFields: []
+        });
+        return;
+      }
+      const localFingerprint = linkFingerprint(local);
+      const hasPending = remaining.some(item => item.clientId === row.clientId);
+      if (hasPending) return;
+      if (meta.remoteVersion > 0 && Number(row.version || 0) > Number(meta.remoteVersion || 0) && meta.lastLocalFingerprint && meta.lastLocalFingerprint !== localFingerprint) {
+        const conflict = buildLinksConflictEntry(row.clientId, local, row);
+        setLinkSyncMeta(row.clientId, {
+          syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT,
+          lastSyncError: "CONFLICT",
+          conflictRemote: row,
+          conflictFields: conflict.fields
+        });
+        return;
+      }
+      if (remoteFingerprint !== localFingerprint && (!meta.lastLocalFingerprint || meta.lastLocalFingerprint === localFingerprint || Number(row.version || 0) >= Number(meta.remoteVersion || 0))) {
+        const index = indexById("links", row.clientId);
+        if (index >= 0) {
+          state.links[index] = normalizeEntity("links", row.link);
+          localChanged = true;
+        }
+      }
+      setLinkSyncMeta(row.clientId, {
+        remoteId: row.remoteId,
+        remoteVersion: Number(row.version || 0),
+        remoteUpdatedAt: String(row.updatedAt || "").trim(),
+        lastSyncedAt: new Date().toISOString(),
+        syncStatus: getLinkSyncMeta(row.clientId).syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED,
+        lastLocalFingerprint: linkFingerprint(byId("links", row.clientId) || row.link),
+        lastLocalUpdatedAt: String((byId("links", row.clientId) || row.link).updatedAt || row.updatedAt || "").trim()
+      });
+    });
+
+    if (localChanged) persist("links");
+    deosLinksSyncRuntime.queue = remaining;
+    persistLinksSyncQueue();
+    const analysis = buildLinksRemotePreview(state.links, remoteRows);
+    refreshLinksSyncRuntimeState({
+      syncing: false,
+      state: remaining.length ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : (analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED),
+      remoteCount: analysis.remoteCount,
+      lastAnalysis: analysis,
+      lastAnalysisAt: analysis.generatedAt,
+      lastSyncAt: new Date().toLocaleString("fr-FR"),
+      lastError: ""
+    });
+  } catch (error) {
+    deosLinksSyncRuntime.queue = [...remaining, ...queue.slice(remaining.length)];
+    persistLinksSyncQueue();
+    refreshLinksSyncRuntimeState({
+      syncing: false,
+      state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR,
+      lastError: error.message || "Synchronisation Liens impossible."
+    });
+  }
+  if (!options.silent && (currentView === "settings" || currentView === "links")) {
+    currentView === "settings" ? renderSettings(deosLinksSyncRuntime.lastError || "Synchronisation Liens actualisée.") : renderLinks();
+  }
+  return deosLinksSyncRuntime;
+}
+
 function defaultRemoteAuthRedirectUrl() {
   if (!["http:", "https:"].includes(window.location.protocol)) return "";
   return `${window.location.origin}${window.location.pathname}`;
@@ -15709,6 +16526,9 @@ function getDefaultRemoteSyncSettings() {
       supabasePublishableKey: "",
       environment: "test",
       authRedirectUrl: "",
+      linksPilotEnabled: false,
+      linksPilotActivatedAt: "",
+      linksPilotLastMode: "",
       debug: false
     };
   return {
@@ -15718,6 +16538,9 @@ function getDefaultRemoteSyncSettings() {
     supabasePublishableKey: String(base.supabasePublishableKey || "").trim(),
     environment: String(base.environment || "test").trim().toLowerCase() || "test",
     authRedirectUrl: String(base.authRedirectUrl || defaultRemoteAuthRedirectUrl()).trim(),
+    linksPilotEnabled: Boolean(base.linksPilotEnabled),
+    linksPilotActivatedAt: String(base.linksPilotActivatedAt || "").trim(),
+    linksPilotLastMode: String(base.linksPilotLastMode || "").trim(),
     debug: Boolean(base.debug)
   };
 }
@@ -15731,6 +16554,9 @@ function normalizeRemoteSyncSettings(value = {}) {
     supabasePublishableKey: String(merged.supabasePublishableKey || "").trim(),
     environment: String(merged.environment || "test").trim().toLowerCase() || "test",
     authRedirectUrl: String(merged.authRedirectUrl || defaultRemoteAuthRedirectUrl()).trim(),
+    linksPilotEnabled: Boolean(merged.linksPilotEnabled),
+    linksPilotActivatedAt: String(merged.linksPilotActivatedAt || "").trim(),
+    linksPilotLastMode: String(merged.linksPilotLastMode || "").trim(),
     debug: Boolean(merged.debug)
   };
 }
@@ -15904,14 +16730,18 @@ async function initializeRemoteServices(options = {}) {
       updateRemoteRuntime(snapshot);
       if (snapshot && snapshot.authenticated) {
         await refreshRemoteTestRecords({ silent: true });
+        initializeLinksHybridSync({ skipAutoSync: false });
       } else {
         deosRemoteRuntime.testRecords = [];
+        initializeLinksHybridSync({ skipAutoSync: true });
       }
       if (currentView === "settings") renderSettings();
+      if (currentView === "links") renderLinks();
     });
     if (deosRemoteAuthService.isAuthenticated()) {
       await refreshRemoteTestRecords({ silent: true });
       setRemoteLastOperation("Session distante restauree.");
+      initializeLinksHybridSync({ skipAutoSync: false });
     }
   } catch (error) {
     deosRemoteRuntime.connectionStatus = "error";
@@ -15925,6 +16755,7 @@ async function initializeRemoteServices(options = {}) {
 }
 
 function readRemoteSettingsForm() {
+  const current = getRemoteSyncSettings();
   return normalizeRemoteSyncSettings({
     enabled: document.getElementById("remoteEnabled")?.checked,
     provider: document.getElementById("remoteProvider")?.value || "supabase",
@@ -15932,6 +16763,7 @@ function readRemoteSettingsForm() {
     supabasePublishableKey: document.getElementById("remoteSupabasePublishableKey")?.value || "",
     environment: document.getElementById("remoteEnvironment")?.value || "test",
     authRedirectUrl: document.getElementById("remoteAuthRedirectUrl")?.value || "",
+    linksPilotEnabled: Boolean(current.linksPilotEnabled),
     debug: document.getElementById("remoteDebug")?.checked
   });
 }
@@ -16292,8 +17124,13 @@ function mountRemoteSettingsCard() {
   if (!document.getElementById("remoteWorkspaceSettingsCard")) {
     root.insertAdjacentHTML("beforeend", renderRemoteWorkspaceInitCardHtml());
   }
+  if (!document.getElementById("linksHybridSyncSettingsCard")) {
+    root.insertAdjacentHTML("beforeend", renderLinksHybridSettingsCardHtml());
+  }
   renderRemoteAuthOverlay();
   renderRemoteWorkspaceOverlay();
+  renderLinksSyncPreviewOverlay();
+  renderLinksSyncMergeOverlay();
 }
 
 function renderRemoteWorkspaceInitCardHtml() {
@@ -16337,6 +17174,403 @@ function renderRemoteWorkspaceOverlay() {
   if (existing) existing.remove();
   if (!deosRemoteWorkspaceDialog.open) return;
   root.insertAdjacentHTML("beforeend", `<div id="remoteWorkspaceOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>Créer mon espace de test</h2><button class="icon-close" type="button" onclick="closeRemoteWorkspaceDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">L'appel Supabase utilise une RPC publique dédiée et réutilise automatiquement l'espace si un doublon existe déjà.</p><div class="settings-card-control"><label for="remoteWorkspaceDisplayName">Nom affiché</label><input id="remoteWorkspaceDisplayName" value="${esc(deosRemoteWorkspaceDialog.displayName || "")}" placeholder="Ludovic Aoust"></div><div class="settings-card-control"><label for="remoteWorkspaceName">Nom du workspace</label><input id="remoteWorkspaceName" value="${esc(deosRemoteWorkspaceDialog.workspaceName || "")}" placeholder="DEOS Ludovic Aoust"></div><div class="settings-card-control"><label for="remoteWorkspaceSiteName">Nom du site</label><input id="remoteWorkspaceSiteName" value="${esc(deosRemoteWorkspaceDialog.siteName || "")}" placeholder="Saint-Gilles"></div><div class="settings-card-control"><label for="remoteWorkspaceSiteCode">Code du site</label><input id="remoteWorkspaceSiteCode" value="${esc(deosRemoteWorkspaceDialog.siteCode || "")}" placeholder="STG"></div>${deosRemoteWorkspaceDialog.error ? `<p class="remote-error-box">${esc(deosRemoteWorkspaceDialog.error)}</p>` : ""}${deosRemoteWorkspaceDialog.message ? `<p class="settings-confirm">${esc(deosRemoteWorkspaceDialog.message)}</p>` : ""}<div class="row-actions"><button class="action" type="button" onclick="initializeRemoteWorkspace()" ${deosRemoteWorkspaceDialog.busy ? "disabled" : ""}>Créer ou retrouver l’espace</button><button class="secondary" type="button" onclick="closeRemoteWorkspaceDialog()" ${deosRemoteWorkspaceDialog.busy ? "disabled" : ""}>Annuler</button></div></div></div></div>`);
+}
+
+function renderLinksHybridSettingsCardHtml() {
+  const analysis = deosLinksSyncRuntime.lastAnalysis;
+  const stateLabel = linksSyncStatusLabel();
+  const signedIn = Boolean(deosRemoteAuthService && deosRemoteAuthService.isAuthenticated && deosRemoteAuthService.isAuthenticated());
+  const remoteReady = Boolean(signedIn && deosRemoteRuntime.workspace && deosRemoteAdapter);
+  const lastSync = deosLinksSyncRuntime.lastSyncAt || "Jamais";
+  const lastError = deosLinksSyncRuntime.lastError || "Aucune";
+  return `<div id="linksHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Liens</h2><p class="muted">Seuls les Liens sont concernés par cette synchronisation pilote. Aucun autre objet métier DEOS n'est envoyé.</p></div><span class="remote-mode-badge ${linksSyncStatusClass()}">${esc(stateLabel)}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>Managers, Documents, Agenda, Google Calendar, Performance, Actions, Dossiers, Projets, Décisions et Journal restent strictement locaux dans cette version.</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>Etat pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Etat</strong><span>${esc(stateLabel)}</span></div><div class="settings-calendar-summary-item"><strong>Liens locaux</strong><span>${esc(String(state.links.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Liens distants</strong><span>${esc(String(deosLinksSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosLinksSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(lastSync)}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(lastError)}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosLinksSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || deosLinksSyncRuntime.lastAnalysisAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Actions</h3><p class="muted">Le pilote reste désactivé par défaut et n'utilise que le workspace actif.</p><div class="row-actions"><button class="secondary" type="button" onclick="analyzeLinksHybridFromSettings()">Analyser les Liens</button><button class="secondary" type="button" onclick="openLinksSyncPreviewDialog()" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="activateLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="syncLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="openLinksConflictsDialog()" ${deosLinksSyncRuntime.conflictCount > 0 ? "" : "disabled"}>Voir les conflits</button><button class="danger" type="button" onclick="deactivateLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Liens locaux et distants.</div>` : ""}</section></div></div>`;
+}
+
+async function analyzeLinksHybridFromSettings() {
+  try {
+    const analysis = await linksHybridRepository.analyze();
+    renderSettings(`Analyse Liens prête: ${analysis.localCount} local(s), ${analysis.remoteCount} distant(s).`);
+  } catch (error) {
+    renderSettings(error.message || "Analyse Liens impossible.");
+  }
+}
+
+async function openLinksSyncPreviewDialog() {
+  deosLinksSyncPreviewDialog = {
+    open: true,
+    busy: true,
+    mode: "preview",
+    selectedClientIds: [],
+    error: "",
+    analysis: null,
+    message: ""
+  };
+  renderSettings();
+  try {
+    const analysis = await linksHybridRepository.analyze();
+    deosLinksSyncPreviewDialog = {
+      ...deosLinksSyncPreviewDialog,
+      busy: false,
+      analysis,
+      message: "Pour le premier envoi réel, privilégiez un Lien fictif non sensible."
+    };
+  } catch (error) {
+    deosLinksSyncPreviewDialog = {
+      ...deosLinksSyncPreviewDialog,
+      busy: false,
+      error: error.message || "Prévisualisation impossible."
+    };
+  }
+  renderSettings();
+}
+
+function closeLinksSyncPreviewDialog() {
+  deosLinksSyncPreviewDialog = {
+    open: false,
+    busy: false,
+    mode: "preview",
+    selectedClientIds: [],
+    error: "",
+    analysis: null,
+    message: ""
+  };
+  deosLinksSyncMergeDialog = {
+    open: false,
+    clientId: "",
+    error: "",
+    local: null,
+    remote: null
+  };
+  if (currentView === "settings") renderSettings();
+}
+
+async function activateLinksHybridFromSettings() {
+  await linksHybridRepository.activate();
+  renderSettings("Synchronisation pilote Liens activée. Aucun envoi n'est effectué sans action explicite.");
+}
+
+async function syncLinksHybridFromSettings() {
+  await linksHybridRepository.syncNow({ silent: false, source: "manual" });
+}
+
+function deactivateLinksHybridFromSettings() {
+  linksHybridRepository.deactivate();
+  renderSettings("Synchronisation pilote Liens désactivée. Les Liens locaux sont conservés et les données distantes ne sont pas supprimées.");
+}
+
+function buildLinksPreviewSelectableItems(analysis) {
+  if (!analysis) return [];
+  const conflictIds = new Set(ensureArray(analysis.conflicts).map(item => String(item.clientId || "")).filter(Boolean));
+  const rows = [];
+  ensureArray(analysis.localOnly).forEach(link => {
+    rows.push({
+      clientId: String(link.id || ""),
+      name: link.name || "Lien",
+      url: link.url || "",
+      domain: linkDomain(link.url || ""),
+      category: link.category || "Autre",
+      favorite: Boolean(link.favorite),
+      status: link.status || "actif",
+      origin: "Local",
+      hasConflict: conflictIds.has(String(link.id || ""))
+    });
+  });
+  ensureArray(analysis.remoteOnly).forEach(link => {
+    rows.push({
+      clientId: String(link.id || ""),
+      name: link.name || "Lien",
+      url: link.url || "",
+      domain: linkDomain(link.url || ""),
+      category: link.category || "Autre",
+      favorite: Boolean(link.favorite),
+      status: link.status || "actif",
+      origin: "Distant",
+      hasConflict: conflictIds.has(String(link.id || ""))
+    });
+  });
+  ensureArray(analysis.both).forEach(item => {
+    const link = item.local || item.remote || {};
+    rows.push({
+      clientId: String(link.id || item.local?.id || item.remote?.id || ""),
+      name: link.name || "Lien",
+      url: link.url || "",
+      domain: linkDomain(link.url || ""),
+      category: link.category || "Autre",
+      favorite: Boolean(link.favorite),
+      status: link.status || "actif",
+      origin: "Les deux",
+      hasConflict: conflictIds.has(String(link.id || item.local?.id || item.remote?.id || ""))
+    });
+  });
+  return rows.sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
+}
+
+function selectedLinksPreviewItems() {
+  const analysis = deosLinksSyncPreviewDialog.analysis;
+  const selectedIds = new Set(ensureArray(deosLinksSyncPreviewDialog.selectedClientIds).map(String));
+  return buildLinksPreviewSelectableItems(analysis).filter(item => selectedIds.has(item.clientId));
+}
+
+function selectedLinksPreviewItemsForMode(mode) {
+  const items = selectedLinksPreviewItems();
+  if (mode === "local_to_remote") return items.filter(item => item.origin === "Local");
+  if (mode === "remote_to_local") return items.filter(item => item.origin === "Distant");
+  if (mode === "merge") return items.filter(item => item.origin === "Local" || item.origin === "Distant" || item.origin === "Les deux");
+  return items;
+}
+
+function toggleLinksPreviewSelection(clientId) {
+  const key = String(clientId || "").trim();
+  if (!key || deosLinksSyncPreviewDialog.busy) return;
+  const selected = new Set(ensureArray(deosLinksSyncPreviewDialog.selectedClientIds).map(String));
+  if (selected.has(key)) selected.delete(key);
+  else selected.add(key);
+  deosLinksSyncPreviewDialog = {
+    ...deosLinksSyncPreviewDialog,
+    selectedClientIds: [...selected]
+  };
+  renderSettings();
+}
+
+function linksPreviewSelectionCount() {
+  return ensureArray(deosLinksSyncPreviewDialog.selectedClientIds).filter(Boolean).length;
+}
+
+function confirmLinksPreviewSelection(actionLabel, items) {
+  const workspaceName = deosRemoteRuntime.workspace?.name || "workspace actif";
+  const count = items.length;
+  const label = count > 1 ? `${count} Liens seront ${actionLabel}` : `1 Lien sera ${actionLabel}`;
+  const lines = items.map(item => `- ${item.name}`).join("\n");
+  return confirm(`${label} vers le workspace ${workspaceName} :\n${lines}\n\nContinuer ?`);
+}
+
+async function applyLinksSyncPreviewChoice(mode) {
+  const analysis = deosLinksSyncPreviewDialog.analysis;
+  if (!analysis) return;
+  const selectedItems = selectedLinksPreviewItemsForMode(mode);
+  if (!selectedItems.length && mode !== "cancel") {
+    deosLinksSyncPreviewDialog = {
+      ...deosLinksSyncPreviewDialog,
+      error: mode === "local_to_remote"
+        ? "Sélectionnez au moins un Lien local avant l'envoi vers Supabase."
+        : mode === "remote_to_local"
+          ? "Sélectionnez au moins un Lien distant avant la récupération locale."
+          : "Sélectionnez au moins un Lien avant de lancer la migration."
+    };
+    renderSettings();
+    return;
+  }
+  if (!linksSyncIsEnabled() && mode !== "cancel") {
+    deosLinksSyncPreviewDialog = {
+      ...deosLinksSyncPreviewDialog,
+      error: "Activez d'abord la synchronisation pilote Liens avant de migrer une sélection."
+    };
+    renderSettings();
+    return;
+  }
+  if (mode === "local_to_remote" && !confirmLinksPreviewSelection("envoyé", selectedItems)) return;
+  deosLinksSyncPreviewDialog = { ...deosLinksSyncPreviewDialog, busy: true, error: "" };
+  renderSettings();
+  try {
+    if (mode === "local_to_remote" || mode === "merge") {
+      const localOnlyIds = new Set(ensureArray(analysis.localOnly).map(link => String(link.id || "")));
+      selectedItems
+        .filter(item => localOnlyIds.has(item.clientId))
+        .forEach(item => {
+          const link = ensureArray(analysis.localOnly).find(candidate => String(candidate.id || "") === item.clientId);
+          if (link) linksHybridRepository.queueUpsert(link, "initial_push");
+        });
+    }
+    if (mode === "remote_to_local" || mode === "merge") {
+      const remoteOnlyIds = new Set(ensureArray(analysis.remoteOnly).map(link => String(link.id || "")));
+      let changed = false;
+      selectedItems
+        .filter(item => remoteOnlyIds.has(item.clientId))
+        .forEach(item => {
+          const link = ensureArray(analysis.remoteOnly).find(candidate => String(candidate.id || "") === item.clientId);
+          if (link && !byId("links", link.id)) {
+          state.links.push(normalizeEntity("links", link));
+          changed = true;
+        }
+        });
+      if (changed) persist("links");
+    }
+    const selectedIds = new Set(selectedItems.map(item => item.clientId));
+    ensureArray(analysis.conflicts).filter(conflict => selectedIds.has(String(conflict.clientId || ""))).forEach(conflict => {
+      setLinkSyncMeta(conflict.clientId, {
+        syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT,
+        lastSyncError: "CONFLICT",
+        conflictRemote: conflict.remoteMeta,
+        conflictFields: conflict.fields
+      });
+    });
+    if (mode === "cancel") {
+      closeLinksSyncPreviewDialog();
+      return;
+    }
+    await linksHybridRepository.syncNow({ silent: true, source: `preview_${mode}` });
+    closeLinksSyncPreviewDialog();
+    renderSettings(mode === "local_to_remote" ? "Envoi de la sélection locale vers Supabase lancé." : mode === "remote_to_local" ? "Récupération de la sélection distante appliquée localement." : "Fusion non destructive de la sélection lancée.");
+  } catch (error) {
+    deosLinksSyncPreviewDialog = {
+      ...deosLinksSyncPreviewDialog,
+      busy: false,
+      error: error.message || "Application de la prévisualisation impossible."
+    };
+    renderSettings();
+  }
+}
+
+function collectLinksConflictEntries() {
+  return Object.values(normalizeLinksSyncMetaMap(deosLinksSyncRuntime.metaByClientId))
+    .filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT && meta.conflictRemote)
+    .map(meta => buildLinksConflictEntry(meta.clientId, byId("links", meta.clientId) || normalizeEntity("links", { id: meta.clientId }), meta.conflictRemote));
+}
+
+function openLinksConflictsDialog() {
+  deosLinksSyncPreviewDialog = {
+    open: true,
+    busy: false,
+    mode: "conflicts",
+    selectedClientIds: [],
+    error: "",
+    analysis: { conflicts: collectLinksConflictEntries() },
+    message: "Aucun choix automatique de type dernier écrit gagnant n'est appliqué."
+  };
+  renderSettings();
+}
+
+function resolveLinkConflictKeepRemote(clientId) {
+  const meta = getLinkSyncMeta(clientId);
+  const remoteRow = meta.conflictRemote;
+  if (!remoteRow) return;
+  const next = normalizeEntity("links", remoteRow.link);
+  const index = indexById("links", clientId);
+  if (index >= 0) state.links[index] = next;
+  else state.links.push(next);
+  persist("links");
+  setLinkSyncMeta(clientId, {
+    remoteId: remoteRow.remoteId,
+    remoteVersion: Number(remoteRow.version || 0),
+    remoteUpdatedAt: String(remoteRow.updatedAt || "").trim(),
+    lastSyncedAt: new Date().toISOString(),
+    syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED,
+    lastSyncError: "",
+    conflictRemote: null,
+    conflictFields: []
+  });
+  openLinksConflictsDialog();
+}
+
+function resolveLinkConflictKeepLocal(clientId) {
+  const meta = getLinkSyncMeta(clientId);
+  const remoteRow = meta.conflictRemote;
+  const local = byId("links", clientId);
+  if (!remoteRow || !local) return;
+  setLinkSyncMeta(clientId, {
+    remoteVersion: Number(remoteRow.version || 0),
+    syncStatus: DEOS_LINKS_SYNC_STATUS.SYNC_READY,
+    lastSyncError: "",
+    conflictRemote: null,
+    conflictFields: []
+  });
+  linksHybridRepository.queueUpsert(local, "conflict_keep_local");
+  openLinksConflictsDialog();
+}
+
+function openLinksConflictMergeDialog(clientId) {
+  const meta = getLinkSyncMeta(clientId);
+  if (!meta.conflictRemote) return;
+  deosLinksSyncMergeDialog = {
+    open: true,
+    clientId,
+    error: "",
+    local: byId("links", clientId) || normalizeEntity("links", { id: clientId }),
+    remote: meta.conflictRemote.link
+  };
+  renderSettings();
+}
+
+function saveLinksConflictMerge() {
+  const clientId = deosLinksSyncMergeDialog.clientId;
+  const name = document.getElementById("linksMergeName")?.value.trim() || "";
+  const url = document.getElementById("linksMergeUrl")?.value.trim() || "";
+  const category = document.getElementById("linksMergeCategory")?.value.trim() || "Autre";
+  if (!name || !url) {
+    deosLinksSyncMergeDialog.error = "Nom et URL requis pour la fusion manuelle.";
+    renderSettings();
+    return;
+  }
+  const normalizedUrl = linkUrl(url);
+  if (!normalizedUrl) {
+    deosLinksSyncMergeDialog.error = "URL non valide pour la fusion manuelle.";
+    renderSettings();
+    return;
+  }
+  const merged = normalizeEntity("links", {
+    ...(byId("links", clientId) || {}),
+    id: clientId,
+    name,
+    url: normalizedUrl,
+    category,
+    description: document.getElementById("linksMergeDescription")?.value.trim() || "",
+    status: document.getElementById("linksMergeStatus")?.value || "actif",
+    favorite: Boolean(document.getElementById("linksMergeFavorite")?.checked),
+    icon: document.getElementById("linksMergeIcon")?.value.trim() || suggestLinkIcon(`${name} ${normalizedUrl} ${category}`),
+    order: Number(document.getElementById("linksMergeOrder")?.value || Date.now()),
+    updatedAt: isoToday()
+  });
+  const index = indexById("links", clientId);
+  if (index >= 0) state.links[index] = merged;
+  else state.links.push(merged);
+  persist("links");
+  const remoteRow = getLinkSyncMeta(clientId).conflictRemote;
+  setLinkSyncMeta(clientId, {
+    remoteVersion: Number(remoteRow?.version || getLinkSyncMeta(clientId).remoteVersion || 0),
+    syncStatus: DEOS_LINKS_SYNC_STATUS.SYNC_READY,
+    lastSyncError: "",
+    conflictRemote: null,
+    conflictFields: []
+  });
+  deosLinksSyncMergeDialog = {
+    open: false,
+    clientId: "",
+    error: "",
+    local: null,
+    remote: null
+  };
+  linksHybridRepository.queueUpsert(merged, "conflict_merge");
+  openLinksConflictsDialog();
+}
+
+function renderLinksSyncPreviewOverlay() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  const existing = document.getElementById("linksSyncPreviewOverlay");
+  if (existing) existing.remove();
+  if (!deosLinksSyncPreviewDialog.open) return;
+  const analysis = deosLinksSyncPreviewDialog.analysis;
+  const conflicts = ensureArray(analysis?.conflicts);
+  const previewItems = buildLinksPreviewSelectableItems(analysis);
+  const selectedCount = linksPreviewSelectionCount();
+  const selectedLocalCount = selectedLinksPreviewItemsForMode("local_to_remote").length;
+  const selectedRemoteCount = selectedLinksPreviewItemsForMode("remote_to_local").length;
+  const selectedMergeCount = selectedLinksPreviewItemsForMode("merge").length;
+  const body = deosLinksSyncPreviewDialog.mode === "conflicts"
+    ? `${conflicts.length ? conflicts.map(conflict => `<div class="item"><strong>${esc(conflict.title)}</strong><span class="muted">Version locale ${esc(String(conflict.localRevision || 0))} · version distante ${esc(String(conflict.remoteVersion || 0))}</span><span class="meta">Local ${esc(conflict.localDate || "--")} · Distant ${esc(conflict.remoteDate || "--")}</span><span class="meta">Champs différents : ${esc(conflict.fields.join(", ") || "Aucun")}</span><div class="row-actions"><button class="secondary" type="button" onclick="resolveLinkConflictKeepLocal('${esc(conflict.clientId)}')">Conserver la version locale</button><button class="secondary" type="button" onclick="resolveLinkConflictKeepRemote('${esc(conflict.clientId)}')">Conserver la version distante</button><button class="secondary" type="button" onclick="openLinksConflictMergeDialog('${esc(conflict.clientId)}')">Fusionner manuellement</button><button class="secondary" type="button" onclick="closeLinksSyncPreviewDialog()">Reporter</button></div></div>`).join("") : `<div class="empty">Aucun conflit actif.</div>`}`
+    : `${analysis ? `<div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Liens locaux</strong><span>${esc(String(analysis.localCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Liens distants</strong><span>${esc(String(analysis.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Uniquement locaux</strong><span>${esc(String(analysis.localOnly.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Uniquement distants</strong><span>${esc(String(analysis.remoteOnly.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Présents des deux côtés</strong><span>${esc(String(analysis.both.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Conflits potentiels</strong><span>${esc(String(analysis.conflicts.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Doublons potentiels</strong><span>${esc(String(analysis.duplicateCandidates.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Favoris / archivés</strong><span>${esc(`${analysis.favorites || 0} / ${analysis.archived || 0}`)}</span></div></div><p class="muted">Catégories: ${esc(Object.entries(analysis.categoryCounts || {}).map(([key, count]) => `${key} (${count})`).join(", ") || "Aucune")}</p><p class="muted">${esc(deosLinksSyncPreviewDialog.message || "")}</p><div class="card"><h3>Liste détaillée</h3>${previewItems.length ? previewItems.map(item => `<label class="item" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer"><input type="checkbox" ${ensureArray(deosLinksSyncPreviewDialog.selectedClientIds).includes(item.clientId) ? "checked" : ""} onchange="toggleLinksPreviewSelection('${esc(item.clientId)}')" ${deosLinksSyncPreviewDialog.busy ? "disabled" : ""}><div><strong>${esc(item.name)}</strong><span class="muted">${esc(item.domain || item.url || "")}</span><span class="meta">${esc(item.category)} · ${esc(item.status)}${item.favorite ? " · Favori" : ""} · ${esc(item.origin)}${item.hasConflict ? " · Conflit" : ""}</span></div></label>`).join("") : `<div class="empty">Aucun Lien concerné par cette migration.</div>`}</div><p class="muted">${esc(String(selectedCount))} sélectionné(s). Aucune case n'est cochée par défaut.</p><div class="row-actions"><button class="action" type="button" onclick="applyLinksSyncPreviewChoice('local_to_remote')" ${(deosLinksSyncPreviewDialog.busy || selectedLocalCount === 0) ? "disabled" : ""}>Envoyer les Liens sélectionnés vers Supabase</button><button class="secondary" type="button" onclick="applyLinksSyncPreviewChoice('remote_to_local')" ${(deosLinksSyncPreviewDialog.busy || selectedRemoteCount === 0) ? "disabled" : ""}>Récupérer les Liens sélectionnés</button><button class="secondary" type="button" onclick="applyLinksSyncPreviewChoice('merge')" ${(deosLinksSyncPreviewDialog.busy || selectedMergeCount === 0) ? "disabled" : ""}>Fusionner non destructivement les Liens sélectionnés</button><button class="secondary" type="button" onclick="applyLinksSyncPreviewChoice('cancel')" ${deosLinksSyncPreviewDialog.busy ? "disabled" : ""}>Annuler</button></div>` : `<div class="empty">Analyse en cours…</div>`}`;
+  root.insertAdjacentHTML("beforeend", `<div id="linksSyncPreviewOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>${deosLinksSyncPreviewDialog.mode === "conflicts" ? "Conflits Liens" : "Prévisualisation de migration Liens"}</h2><button class="icon-close" type="button" onclick="closeLinksSyncPreviewDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body">${deosLinksSyncPreviewDialog.error ? `<p class="remote-error-box">${esc(deosLinksSyncPreviewDialog.error)}</p>` : ""}${body}</div></div></div>`);
+}
+
+function renderLinksSyncMergeOverlay() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  const existing = document.getElementById("linksSyncMergeOverlay");
+  if (existing) existing.remove();
+  if (!deosLinksSyncMergeDialog.open) return;
+  const local = deosLinksSyncMergeDialog.local || normalizeEntity("links", { id: deosLinksSyncMergeDialog.clientId });
+  const remote = deosLinksSyncMergeDialog.remote || normalizeEntity("links", { id: deosLinksSyncMergeDialog.clientId });
+  root.insertAdjacentHTML("beforeend", `<div id="linksSyncMergeOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>Fusion manuelle du Lien</h2><button class="icon-close" type="button" onclick="closeLinksSyncPreviewDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">Choisissez explicitement la version finale pour les champs simples du Lien.</p><div class="settings-card-grid"><section class="settings-card-block"><h3>Local</h3><div class="item"><strong>${esc(local.name || "Lien")}</strong><span class="muted">${esc(local.url || "")}</span><span class="meta">${esc(local.category || "Autre")} · ${esc(local.status || "actif")}</span></div></section><section class="settings-card-block"><h3>Distant</h3><div class="item"><strong>${esc(remote.name || "Lien")}</strong><span class="muted">${esc(remote.url || "")}</span><span class="meta">${esc(remote.category || "Autre")} · ${esc(remote.status || "actif")}</span></div></section></div><div class="form-grid"><input id="linksMergeName" value="${esc(local.name || remote.name || "")}" placeholder="Nom du lien"><input id="linksMergeUrl" value="${esc(local.url || remote.url || "")}" placeholder="URL"><input id="linksMergeCategory" value="${esc(local.category || remote.category || "Autre")}" placeholder="Catégorie"><select id="linksMergeStatus">${linkStatuses.map(status => `<option value="${esc(status)}" ${(local.status || remote.status || "actif") === status ? "selected" : ""}>${esc(status)}</option>`).join("")}</select><input id="linksMergeIcon" value="${esc(local.icon || remote.icon || "")}" placeholder="Icône"><input id="linksMergeOrder" type="number" value="${esc(String(local.order || remote.order || Date.now()))}" placeholder="Ordre"><label class="check-row"><input id="linksMergeFavorite" type="checkbox" ${(local.favorite || remote.favorite) ? "checked" : ""}><span>Favori</span></label><textarea id="linksMergeDescription" class="full" placeholder="Description">${esc(local.description || remote.description || "")}</textarea></div>${deosLinksSyncMergeDialog.error ? `<p class="remote-error-box">${esc(deosLinksSyncMergeDialog.error)}</p>` : ""}<div class="row-actions"><button class="action" type="button" onclick="saveLinksConflictMerge()">Enregistrer la fusion manuelle</button><button class="secondary" type="button" onclick="closeLinksSyncPreviewDialog()">Annuler</button></div></div></div></div>`);
 }
 
 function settingsCalendarConnectionCard() {
