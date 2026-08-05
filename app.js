@@ -399,6 +399,10 @@ let deosRemoteAuthService = null;
 let deosRemoteAdapter = null;
 let deosRemoteAuthSubscription = null;
 let deosRemoteRuntime = createRemoteRuntimeState();
+let deosRemoteUserContextUi = {
+  expanded: false,
+  networkBound: false
+};
 let deosRemoteAuthDialog = {
   open: false,
   busy: false,
@@ -16718,6 +16722,81 @@ function remoteDisplayName() {
   return String(deosRemoteRuntime.profile?.display_name || deosRemoteRuntime.user?.email || "").trim() || "Utilisateur DEOS";
 }
 
+function remoteSummaryDisplayName() {
+  const profileName = String(deosRemoteRuntime.profile?.display_name || "").trim();
+  if (profileName) return profileName;
+  const email = String(deosRemoteRuntime.user?.email || "").trim();
+  return email ? remoteShortValue(email) : "Utilisateur DEOS";
+}
+
+function remoteDetailEmail() {
+  const email = String(deosRemoteRuntime.user?.email || "").trim();
+  return email ? remoteSafeEmail(email) : "--";
+}
+
+function remoteSummarySiteName() {
+  return String(deosRemoteRuntime.site?.name || identity.siteName || "").trim() || "--";
+}
+
+function remoteUserConnectionState() {
+  const signedIn = Boolean(deosRemoteAuthService && deosRemoteAuthService.isAuthenticated && deosRemoteAuthService.isAuthenticated() && deosRemoteRuntime.user);
+  if (navigator.onLine === false) {
+    return {
+      summaryLabel: "Hors ligne",
+      detailLabel: deosRemoteRuntime.temporaryLocal ? "Local temporaire hors ligne" : "Hors ligne",
+      tone: "offline"
+    };
+  }
+  if (deosRemoteRuntime.temporaryLocal) {
+    return {
+      summaryLabel: "Non connecté",
+      detailLabel: "Local temporaire",
+      tone: "local"
+    };
+  }
+  if (signedIn) {
+    return {
+      summaryLabel: "Connecté",
+      detailLabel: "Connecté",
+      tone: "connected"
+    };
+  }
+  return {
+    summaryLabel: "Non connecté",
+    detailLabel: "Non connecté",
+    tone: "signed-out"
+  };
+}
+
+function remoteUserContextAlertState() {
+  const remoteError = String(deosRemoteRuntime.lastError || "").trim();
+  const remoteCode = String(deosRemoteRuntime.lastErrorCode || "").trim();
+  const conflictCount = Number(deosLinksSyncRuntime.conflictCount || 0);
+  const hasAlert = Boolean(conflictCount > 0 || remoteError || ["error", "session_expired"].includes(String(deosRemoteRuntime.connectionStatus || "")));
+  return {
+    hasAlert,
+    remoteError,
+    remoteCode,
+    conflictCount
+  };
+}
+
+function setRemoteUserContextExpanded(expanded) {
+  deosRemoteUserContextUi.expanded = Boolean(expanded);
+  renderRemoteUserContext();
+}
+
+function toggleRemoteUserContext() {
+  setRemoteUserContextExpanded(!deosRemoteUserContextUi.expanded);
+}
+
+function bindRemoteUserContextNetworkListeners() {
+  if (deosRemoteUserContextUi.networkBound || typeof window === "undefined") return;
+  window.addEventListener("online", () => renderRemoteUserContext());
+  window.addEventListener("offline", () => renderRemoteUserContext());
+  deosRemoteUserContextUi.networkBound = true;
+}
+
 function remoteCanInspectLinks() {
   return Boolean(
     navigator.onLine !== false
@@ -16778,7 +16857,7 @@ function renderRemoteUserContext() {
   if (!root) {
     root = document.createElement("div");
     root.id = "brandRemoteContext";
-    root.className = "card";
+    root.className = "sidebar-user-compact";
     const environment = document.getElementById("brandEnvironment");
     if (environment && environment.parentNode === sidebar) {
       environment.insertAdjacentElement("afterend", root);
@@ -16786,11 +16865,21 @@ function renderRemoteUserContext() {
       sidebar.insertBefore(root, sidebar.querySelector("button.nav") || null);
     }
   }
-  const modeLabel = remoteStartupModeLabel();
+  root.className = `sidebar-user-compact${deosRemoteUserContextUi.expanded ? " is-expanded" : ""}`;
   const contextVisible = deosRemoteRuntime.user || deosRemoteRuntime.temporaryLocal || resolvedRemoteConfig().enabled;
   root.hidden = !contextVisible;
   if (!contextVisible) return;
-  root.innerHTML = `<div><strong>${esc(remoteDisplayName())}</strong><p class="muted">${esc(modeLabel)}</p>${deosRemoteRuntime.workspace ? `<p class="muted">${esc(deosRemoteRuntime.workspace.name || "")}</p>` : ""}${deosRemoteRuntime.site ? `<p class="muted">${esc(deosRemoteRuntime.site.name || "")}</p>` : ""}${deosRemoteRuntime.role ? `<p class="muted">${esc(remoteRoleLabel(deosRemoteRuntime.role))}</p>` : ""}</div><div class="row-actions"><button class="secondary" type="button" onclick="focusRemoteWorkspaceArea()">Mon espace</button><button class="secondary" type="button" onclick="setView('settings')">Paramètres</button>${deosRemoteAuthService && deosRemoteAuthService.isAuthenticated && deosRemoteAuthService.isAuthenticated() ? `<button class="secondary" type="button" onclick="remoteSignOut()">Se déconnecter</button>` : `<button class="secondary" type="button" onclick="reopenRemoteStartupOverlay()">Se connecter à l’espace DEOS</button>`}</div>`;
+  const connection = remoteUserConnectionState();
+  const alertState = remoteUserContextAlertState();
+  const signedIn = Boolean(deosRemoteAuthService && deosRemoteAuthService.isAuthenticated && deosRemoteAuthService.isAuthenticated() && deosRemoteRuntime.user);
+  const workspaceName = String(deosRemoteRuntime.workspace?.name || "--").trim() || "--";
+  const siteName = remoteSummarySiteName();
+  const roleLabel = deosRemoteRuntime.role ? remoteRoleLabel(deosRemoteRuntime.role) : "--";
+  const detailNotes = [];
+  if (deosRemoteRuntime.startupMessage) detailNotes.push(deosRemoteRuntime.startupMessage);
+  if (alertState.remoteError) detailNotes.push(alertState.remoteError);
+  if (alertState.conflictCount > 0) detailNotes.push(`${alertState.conflictCount} conflit${alertState.conflictCount > 1 ? "s" : ""} Liens en attente de résolution.`);
+  root.innerHTML = `<button class="sidebar-user-toggle" type="button" aria-expanded="${deosRemoteUserContextUi.expanded ? "true" : "false"}" aria-controls="sidebarUserDetails" onclick="toggleRemoteUserContext()"><span class="sidebar-user-summary"><strong class="sidebar-user-name">${esc(remoteSummaryDisplayName())}</strong><span class="sidebar-user-meta"><span>${esc(siteName)}</span><span class="sidebar-user-meta-sep">·</span><span class="sidebar-user-status sidebar-user-status-${connection.tone}"><span class="sidebar-user-status-dot" aria-hidden="true"></span>${esc(connection.summaryLabel)}</span></span></span><span class="sidebar-user-toggle-side"><span class="sidebar-user-alert${alertState.hasAlert ? " is-visible" : ""}" aria-hidden="true"></span><span class="sidebar-user-chevron" aria-hidden="true">${deosRemoteUserContextUi.expanded ? "▴" : "▾"}</span></span></button><div id="sidebarUserDetails" class="sidebar-user-details" ${deosRemoteUserContextUi.expanded ? "" : "hidden"}><div class="sidebar-user-details-grid"><div class="sidebar-user-detail-row"><span>Utilisateur</span><strong>${esc(remoteDisplayName())}</strong></div><div class="sidebar-user-detail-row"><span>Email</span><strong>${esc(remoteDetailEmail())}</strong></div><div class="sidebar-user-detail-row"><span>Workspace</span><strong>${esc(workspaceName)}</strong></div><div class="sidebar-user-detail-row"><span>Site</span><strong>${esc(siteName)}</strong></div><div class="sidebar-user-detail-row"><span>Rôle</span><strong>${esc(roleLabel)}</strong></div><div class="sidebar-user-detail-row"><span>État</span><strong>${esc(connection.detailLabel)}</strong></div>${alertState.remoteCode ? `<div class="sidebar-user-detail-row"><span>Code</span><strong>${esc(alertState.remoteCode)}</strong></div>` : ""}</div>${detailNotes.length ? `<div class="sidebar-user-notes">${detailNotes.map(note => `<p>${esc(note)}</p>`).join("")}</div>` : ""}<div class="sidebar-user-actions"><button class="secondary sidebar-user-action" type="button" onclick="focusRemoteWorkspaceArea()">Mon espace</button><button class="secondary sidebar-user-action" type="button" onclick="setView('settings')">Paramètres</button>${signedIn ? `<button class="secondary sidebar-user-action" type="button" onclick="remoteSignOut()">Se déconnecter</button>` : `<button class="secondary sidebar-user-action" type="button" onclick="reopenRemoteStartupOverlay()">Se connecter</button>`}</div></div>`;
 }
 
 function focusRemoteWorkspaceArea() {
@@ -17000,6 +17089,7 @@ async function disposeRemoteServices() {
 
 async function initializeRemoteServices(options = {}) {
   await disposeRemoteServices();
+  bindRemoteUserContextNetworkListeners();
   updateRemoteStartupDialog({ linksPromptDismissed: false });
   const config = resolvedRemoteConfig();
   deosRemoteRuntime = createRemoteRuntimeState({
