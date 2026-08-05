@@ -364,6 +364,17 @@ let deosRemoteAuthDialog = {
   message: ""
 };
 
+let deosRemoteWorkspaceDialog = {
+  open: false,
+  busy: false,
+  error: "",
+  message: "",
+  displayName: "Ludovic Aoust",
+  workspaceName: "DEOS Ludovic Aoust",
+  siteName: "Saint-Gilles",
+  siteCode: "STG"
+};
+
 function getEntityRepository(name) {
   return entityRepositories[name] || null;
 }
@@ -15976,6 +15987,77 @@ function closeRemoteAuthDialog() {
   if (currentView === "settings") renderSettings();
 }
 
+function openRemoteWorkspaceDialog() {
+  deosRemoteWorkspaceDialog = {
+    ...deosRemoteWorkspaceDialog,
+    open: true,
+    busy: false,
+    error: "",
+    message: ""
+  };
+  renderSettings();
+}
+
+function closeRemoteWorkspaceDialog() {
+  deosRemoteWorkspaceDialog = {
+    ...deosRemoteWorkspaceDialog,
+    open: false,
+    busy: false,
+    error: "",
+    message: ""
+  };
+  if (currentView === "settings") renderSettings();
+}
+
+function readRemoteWorkspaceDialogValues() {
+  deosRemoteWorkspaceDialog.displayName = document.getElementById("remoteWorkspaceDisplayName")?.value.trim() || deosRemoteWorkspaceDialog.displayName || "";
+  deosRemoteWorkspaceDialog.workspaceName = document.getElementById("remoteWorkspaceName")?.value.trim() || deosRemoteWorkspaceDialog.workspaceName || "";
+  deosRemoteWorkspaceDialog.siteName = document.getElementById("remoteWorkspaceSiteName")?.value.trim() || deosRemoteWorkspaceDialog.siteName || "";
+  deosRemoteWorkspaceDialog.siteCode = document.getElementById("remoteWorkspaceSiteCode")?.value.trim() || deosRemoteWorkspaceDialog.siteCode || "";
+}
+
+async function initializeRemoteWorkspace() {
+  readRemoteWorkspaceDialogValues();
+  if (!deosRemoteAuthService || !deosRemoteAuthService.isAuthenticated || !deosRemoteAuthService.isAuthenticated()) {
+    deosRemoteWorkspaceDialog.error = "Authentification requise avant la création du workspace de test.";
+    renderSettings();
+    return;
+  }
+  if (!deosRemoteAuthService.getClient || !deosRemoteAuthService.getClient()) {
+    deosRemoteWorkspaceDialog.error = "Client Supabase indisponible. Vérifiez la configuration publique.";
+    renderSettings();
+    return;
+  }
+  deosRemoteWorkspaceDialog.busy = true;
+  deosRemoteWorkspaceDialog.error = "";
+  deosRemoteWorkspaceDialog.message = "";
+  renderSettings();
+  try {
+    const result = await deosRemoteAuthService.initializeWorkspace({
+      displayName: deosRemoteWorkspaceDialog.displayName,
+      workspaceName: deosRemoteWorkspaceDialog.workspaceName,
+      siteName: deosRemoteWorkspaceDialog.siteName,
+      siteCode: deosRemoteWorkspaceDialog.siteCode
+    });
+    updateRemoteRuntime(deosRemoteAuthService.getStateSnapshot());
+    deosRemoteRuntime.workspace = result.workspace || deosRemoteRuntime.workspace;
+    deosRemoteRuntime.site = result.site || deosRemoteRuntime.site;
+    deosRemoteRuntime.role = result.role || deosRemoteRuntime.role;
+    setRemoteLastOperation(result.created_workspace ? "Espace de test créé avec succès." : "Espace existant retrouvé.");
+    deosRemoteWorkspaceDialog.busy = false;
+    deosRemoteWorkspaceDialog.message = result.created_workspace ? "Espace de test créé avec succès." : "Espace existant retrouvé.";
+    deosRemoteWorkspaceDialog.error = "";
+    renderSettings(deosRemoteWorkspaceDialog.message);
+  } catch (error) {
+    deosRemoteWorkspaceDialog.busy = false;
+    deosRemoteWorkspaceDialog.error = error.message || "Initialisation du workspace impossible.";
+    deosRemoteRuntime.lastError = error.message || "Initialisation du workspace impossible.";
+    deosRemoteRuntime.lastErrorCode = error.code || "WORKSPACE_INIT_FAILED";
+    setRemoteLastOperation("Initialisation du workspace de test en échec.", deosRemoteRuntime.lastErrorCode);
+    renderSettings();
+  }
+}
+
 function readRemoteAuthDialogValues() {
   deosRemoteAuthDialog.email = document.getElementById("remoteAuthEmail")?.value.trim() || deosRemoteAuthDialog.email || "";
   deosRemoteAuthDialog.password = document.getElementById("remoteAuthPassword")?.value || deosRemoteAuthDialog.password || "";
@@ -16207,7 +16289,25 @@ function mountRemoteSettingsCard() {
   const root = document.getElementById("app");
   if (!root || document.getElementById("remoteSyncSettingsCard")) return;
   root.insertAdjacentHTML("beforeend", renderRemoteSettingsCardHtml());
+  if (!document.getElementById("remoteWorkspaceSettingsCard")) {
+    root.insertAdjacentHTML("beforeend", renderRemoteWorkspaceInitCardHtml());
+  }
   renderRemoteAuthOverlay();
+  renderRemoteWorkspaceOverlay();
+}
+
+function renderRemoteWorkspaceInitCardHtml() {
+  const signedIn = Boolean(deosRemoteAuthService && deosRemoteAuthService.isAuthenticated && deosRemoteAuthService.isAuthenticated());
+  const canInit = remoteCanInitializeWorkspace();
+  const workspaceName = deosRemoteRuntime.workspace?.name || "--";
+  const siteName = deosRemoteRuntime.site?.name || "--";
+  const role = remoteRoleLabel(deosRemoteRuntime.role);
+  const lastOperation = deosRemoteRuntime.lastOperation || "Aucune operation distante.";
+  const lastOperationAt = deosRemoteRuntime.lastOperationAt || "--";
+  const lastConnection = deosRemoteRuntime.lastConnectionTestAt
+    ? `${deosRemoteRuntime.lastConnectionTestAt} · ${deosRemoteRuntime.lastConnectionTestResult || "OK"}`
+    : "Aucun test realise";
+  return `<div id="remoteWorkspaceSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Espace de test Supabase</h2><p class="muted">Création ou récupération du premier workspace distant sans toucher aux données métier DEOS.</p></div><span class="remote-mode-badge ${remoteModeClass(deosRemoteRuntime.mode)}">${esc(remoteModeLabel(deosRemoteRuntime.mode))}</span></div><div class="settings-card-grid"><section class="settings-card-block"><h3>Etat distant</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Utilisateur</strong><span>${esc(signedIn ? (deosRemoteRuntime.user?.email || "") : "--")}</span></div><div class="settings-calendar-summary-item"><strong>Workspace actif</strong><span>${esc(workspaceName)}</span></div><div class="settings-calendar-summary-item"><strong>Site actif</strong><span>${esc(siteName)}</span></div><div class="settings-calendar-summary-item"><strong>Rôle actif</strong><span>${esc(role)}</span></div><div class="settings-calendar-summary-item"><strong>Dernière opération distante</strong><span>${esc(lastOperation)}${lastOperationAt !== "--" ? ` · ${esc(lastOperationAt)}` : ""}</span></div><div class="settings-calendar-summary-item"><strong>Dernier test de connexion</strong><span>${esc(lastConnection)}</span></div></div></section><section class="settings-card-block"><h3>Workspace initial</h3><p class="muted">Nom affiché, workspace, site et code sont transmis à la RPC publique <strong>deos_initialize_workspace</strong>.</p><div class="settings-info-box">Les valeurs proposées sont celles du workspace de test demandé.</div>${canInit ? `<div class="row-actions"><button class="action" type="button" onclick="openRemoteWorkspaceDialog()">Créer mon espace de test</button></div>` : `<div class="empty">Le bouton est disponible uniquement lorsque Supabase est configuré, que l’utilisateur est connecté et qu’aucun workspace actif n’est encore rattaché.</div>`}</section></div></div>`;
 }
 
 function renderRemoteAuthOverlay() {
@@ -16218,6 +16318,25 @@ function renderRemoteAuthOverlay() {
   if (!deosRemoteAuthDialog.open) return;
   const mode = remoteModeLabel(deosRemoteRuntime.mode);
   root.insertAdjacentHTML("beforeend", `<div id="remoteAuthOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>Connexion DEOS - ${esc(mode)}</h2><button class="icon-close" type="button" onclick="closeRemoteAuthDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">Aucune donnee metier distante n'est exposee avant authentification. Seuls les tests Supabase passent par cet ecran.</p><div class="remote-auth-chip-row"><span class="remote-mode-badge ${remoteModeClass(deosRemoteRuntime.mode)}">${esc(mode)}</span><span class="remote-provider-chip">${esc((deosRemoteRuntime.provider || "supabase").toUpperCase())}</span></div><input id="remoteAuthEmail" type="email" value="${esc(deosRemoteAuthDialog.email || "")}" placeholder="Email de test"><input id="remoteAuthPassword" type="password" value="${esc(deosRemoteAuthDialog.password || "")}" placeholder="Mot de passe">${deosRemoteAuthDialog.error ? `<p class="remote-error-box">${esc(deosRemoteAuthDialog.error)}</p>` : ""}${deosRemoteAuthDialog.message ? `<p class="settings-confirm">${esc(deosRemoteAuthDialog.message)}</p>` : ""}<div class="row-actions"><button class="action" type="button" onclick="submitRemotePasswordSignIn()" ${deosRemoteAuthDialog.busy ? "disabled" : ""}>Se connecter</button><button class="secondary" type="button" onclick="requestRemotePasswordReset()" ${deosRemoteAuthDialog.busy ? "disabled" : ""}>Mot de passe oublie</button><button class="secondary" type="button" onclick="sendRemoteMagicLink()" ${deosRemoteAuthDialog.busy ? "disabled" : ""}>Recevoir un lien de connexion</button></div></div></div></div>`);
+}
+
+function remoteCanInitializeWorkspace() {
+  return Boolean(
+    resolvedRemoteConfig().enabled &&
+    deosRemoteAuthService &&
+    deosRemoteAuthService.isAuthenticated &&
+    deosRemoteAuthService.isAuthenticated() &&
+    !deosRemoteRuntime.workspace
+  );
+}
+
+function renderRemoteWorkspaceOverlay() {
+  const root = document.getElementById("app");
+  if (!root) return;
+  const existing = document.getElementById("remoteWorkspaceOverlay");
+  if (existing) existing.remove();
+  if (!deosRemoteWorkspaceDialog.open) return;
+  root.insertAdjacentHTML("beforeend", `<div id="remoteWorkspaceOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>Créer mon espace de test</h2><button class="icon-close" type="button" onclick="closeRemoteWorkspaceDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">L'appel Supabase utilise une RPC publique dédiée et réutilise automatiquement l'espace si un doublon existe déjà.</p><div class="settings-card-control"><label for="remoteWorkspaceDisplayName">Nom affiché</label><input id="remoteWorkspaceDisplayName" value="${esc(deosRemoteWorkspaceDialog.displayName || "")}" placeholder="Ludovic Aoust"></div><div class="settings-card-control"><label for="remoteWorkspaceName">Nom du workspace</label><input id="remoteWorkspaceName" value="${esc(deosRemoteWorkspaceDialog.workspaceName || "")}" placeholder="DEOS Ludovic Aoust"></div><div class="settings-card-control"><label for="remoteWorkspaceSiteName">Nom du site</label><input id="remoteWorkspaceSiteName" value="${esc(deosRemoteWorkspaceDialog.siteName || "")}" placeholder="Saint-Gilles"></div><div class="settings-card-control"><label for="remoteWorkspaceSiteCode">Code du site</label><input id="remoteWorkspaceSiteCode" value="${esc(deosRemoteWorkspaceDialog.siteCode || "")}" placeholder="STG"></div>${deosRemoteWorkspaceDialog.error ? `<p class="remote-error-box">${esc(deosRemoteWorkspaceDialog.error)}</p>` : ""}${deosRemoteWorkspaceDialog.message ? `<p class="settings-confirm">${esc(deosRemoteWorkspaceDialog.message)}</p>` : ""}<div class="row-actions"><button class="action" type="button" onclick="initializeRemoteWorkspace()" ${deosRemoteWorkspaceDialog.busy ? "disabled" : ""}>Créer ou retrouver l’espace</button><button class="secondary" type="button" onclick="closeRemoteWorkspaceDialog()" ${deosRemoteWorkspaceDialog.busy ? "disabled" : ""}>Annuler</button></div></div></div></div>`);
 }
 
 function settingsCalendarConnectionCard() {

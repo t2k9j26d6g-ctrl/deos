@@ -341,6 +341,42 @@
       return this.getStateSnapshot();
     }
 
+    async initializeWorkspace(options = {}) {
+      if (!this.client) throw createRemoteError("REMOTE_NOT_READY", "Client Supabase indisponible.");
+      if (!this.isAuthenticated()) throw createRemoteError("AUTH_REQUIRED", "Authentification requise pour initialiser un workspace.");
+      const displayName = String(options.displayName || "").trim();
+      const workspaceName = String(options.workspaceName || "").trim();
+      const siteName = String(options.siteName || "").trim();
+      const siteCode = String(options.siteCode || "").trim();
+      if (!displayName || !workspaceName || !siteName || !siteCode) {
+        throw createRemoteError("WORKSPACE_INIT_INVALID", "Les informations du workspace de test sont incomplètes.");
+      }
+
+      const response = await this.client.rpc("deos_initialize_workspace", {
+        p_display_name: displayName,
+        p_workspace_name: workspaceName,
+        p_site_name: siteName,
+        p_site_code: siteCode
+      });
+      if (response.error) {
+        throw createRemoteError("WORKSPACE_INIT_FAILED", response.error.message || "Initialisation du workspace impossible.", response.error);
+      }
+
+      const result = Array.isArray(response.data) ? (response.data[0] || {}) : (response.data || {});
+      await this.refreshContext();
+      const snapshot = this.getStateSnapshot();
+      return {
+        user_id: result.user_id || (this.user && this.user.id) || "",
+        workspace_id: result.workspace_id || (snapshot.workspace && snapshot.workspace.id) || "",
+        site_id: result.site_id || (snapshot.site && snapshot.site.id) || "",
+        member_role: result.member_role || snapshot.role || "",
+        created_workspace: Boolean(result.created_workspace),
+        workspace: snapshot.workspace,
+        site: snapshot.site,
+        role: snapshot.role
+      };
+    }
+
     async signInWithPassword(email, password) {
       if (!this.client) throw createRemoteError("AUTH_NOT_READY", "Client Supabase indisponible.");
       const response = await this.client.auth.signInWithPassword({ email, password });
