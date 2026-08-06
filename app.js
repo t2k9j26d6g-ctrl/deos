@@ -17136,23 +17136,35 @@ async function initializeRemoteServices(options = {}) {
     updateRemoteRuntime(summary);
     deosRemoteRuntime.temporaryLocal = false;
     syncRemoteStartupOverlayState();
-    deosRemoteAuthSubscription = deosRemoteAuthService.onAuthStateChange(async (_event, _session, snapshot) => {
+    deosRemoteAuthSubscription = deosRemoteAuthService.onAuthStateChange((_event, _session, snapshot) => {
+      // Ne jamais attendre une requête Supabase dans onAuthStateChange :
+      // le client Auth peut conserver son verrou interne pendant le callback.
       updateRemoteRuntime(snapshot);
       if (snapshot && snapshot.authenticated) {
         deosRemoteRuntime.temporaryLocal = false;
-      }
-      if (snapshot && snapshot.authenticated) {
-        await refreshRemoteTestRecords({ silent: true });
-        initializeLinksHybridSync({ skipAutoSync: false });
-        await maybePromptRemoteLinksRecovery({ silent: true });
       } else {
         deosRemoteRuntime.testRecords = [];
         initializeLinksHybridSync({ skipAutoSync: true });
       }
+
       syncRemoteStartupOverlayState();
       if (currentView === "settings") renderSettings();
       if (currentView === "links") renderLinks();
       if (!["settings", "links"].includes(currentView)) setView(currentView || "cockpit");
+
+      if (snapshot && snapshot.authenticated) {
+        setTimeout(async () => {
+          try {
+            await refreshRemoteTestRecords({ silent: true });
+            initializeLinksHybridSync({ skipAutoSync: false });
+            await maybePromptRemoteLinksRecovery({ silent: true });
+          } catch (error) {
+            deosRemoteRuntime.lastError = error?.message || "Actualisation distante impossible.";
+            deosRemoteRuntime.lastErrorCode = error?.code || "REMOTE_REFRESH_FAILED";
+            if (currentView === "settings") renderSettings(deosRemoteRuntime.lastError);
+          }
+        }, 0);
+      }
     });
     if (deosRemoteAuthService.isAuthenticated()) {
       await refreshRemoteTestRecords({ silent: true });
