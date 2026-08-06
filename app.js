@@ -16202,6 +16202,7 @@ function buildLinksRemotePreview(localLinks, remoteRows) {
     favorites,
     archived,
     categoryCounts,
+    remoteRows: ensureArray(remoteRows),
     generatedAt: new Date().toLocaleString("fr-FR")
   };
 }
@@ -16226,7 +16227,9 @@ function buildLinksConflictEntry(clientId, localLink, remoteRow) {
 }
 
 async function analyzeLinksHybridState() {
-  const remoteRows = linksSyncCanInspectRemote() ? await deosRemoteAdapter.listLinks() : [];
+  const remoteRows = linksSyncCanInspectRemote()
+    ? await withLinksRemoteTimeout(deosRemoteAdapter.listLinks(), "Lecture des Liens distants")
+    : [];
   const analysis = buildLinksRemotePreview(state.links, remoteRows);
   refreshLinksSyncRuntimeState({
     remoteCount: analysis.remoteCount,
@@ -16370,7 +16373,10 @@ function scheduleLinksHybridDelete(clientId, snapshot = null) {
 async function pushSingleLinkQueueEntry(entry) {
   const meta = getLinkSyncMeta(entry.clientId);
   if (entry.operation === "delete") {
-    const removed = await deosRemoteAdapter.softDeleteLink(entry.clientId, Number(entry.expectedVersion || meta.remoteVersion || 0));
+    const removed = await withLinksRemoteTimeout(
+      deosRemoteAdapter.softDeleteLink(entry.clientId, Number(entry.expectedVersion || meta.remoteVersion || 0)),
+      `Suppression du Lien ${entry.clientId}`
+    );
     setLinkSyncMeta(entry.clientId, {
       remoteId: removed.remoteId || removed.id || meta.remoteId,
       remoteVersion: Number(removed.version || 0),
@@ -16388,10 +16394,34 @@ async function pushSingleLinkQueueEntry(entry) {
   if (!localLink) return { success: true, skip: true };
   validateLinkPayloadBeforeSync(entry.payload || cloneLinkBusinessData(localLink));
   let remoteResult = null;
-  if (Number(meta.remoteVersion || 0) > 0) {
-    remoteResult = await deosRemoteAdapter.updateLink(entry.clientId, localLink, Number(entry.expectedVersion || meta.remoteVersion));
+  let effectiveMeta = meta;
+  if (Number(effectiveMeta.remoteVersion || 0) <= 0) {
+    const existingRemote = await withLinksRemoteTimeout(
+      deosRemoteAdapter.getLink(entry.clientId),
+      `Recherche du Lien distant ${localLink.name || entry.clientId}`
+    );
+    if (existingRemote && !existingRemote.deletedAt) {
+      effectiveMeta = setLinkSyncMeta(entry.clientId, {
+        remoteId: existingRemote.remoteId || existingRemote.id || "",
+        remoteVersion: Number(existingRemote.version || 0),
+        remoteUpdatedAt: String(existingRemote.updatedAt || "").trim(),
+        lastLocalFingerprint: linkFingerprint(existingRemote.link || localLink),
+        lastLocalUpdatedAt: String(existingRemote.link?.updatedAt || existingRemote.updatedAt || "").trim(),
+        syncStatus: DEOS_LINKS_SYNC_STATUS.SYNC_READY,
+        lastSyncError: ""
+      }) || effectiveMeta;
+    }
+  }
+  if (Number(effectiveMeta.remoteVersion || 0) > 0) {
+    remoteResult = await withLinksRemoteTimeout(
+      deosRemoteAdapter.updateLink(entry.clientId, localLink, Number(entry.expectedVersion || effectiveMeta.remoteVersion)),
+      `Mise à jour du Lien ${localLink.name || entry.clientId}`
+    );
   } else {
-    remoteResult = await deosRemoteAdapter.createLink(localLink);
+    remoteResult = await withLinksRemoteTimeout(
+      deosRemoteAdapter.createLink(localLink),
+      `Création du Lien ${localLink.name || entry.clientId}`
+    );
   }
   setLinkSyncMeta(entry.clientId, {
     remoteId: remoteResult.remoteId || remoteResult.id || meta.remoteId,
@@ -16413,7 +16443,22 @@ function isOfflineSyncError(error) {
   return navigator.onLine === false || /NETWORK|FETCH|TIMEOUT|OFFLINE/.test(code) || /network|connexion|offline/i.test(String(error?.message || ""));
 }
 
+function withLinksRemoteTimeout(promise, operationLabel, timeoutMs = 12000) {
+  let timeoutId = null;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const error = new Error(`${operationLabel} ne répond pas après ${Math.round(timeoutMs / 1000)} secondes.`);
+      error.code = "TIMEOUT";
+      reject(error);
+    }, timeoutMs);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+}
+
 async function syncLinksHybridNow(options = {}) {
+  if (deosLinksSyncRuntime.syncing) return deosLinksSyncRuntime;
   if (!linksSyncIsEnabled()) {
     refreshLinksSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" });
     return deosLinksSyncRuntime;
@@ -16440,7 +16485,10 @@ async function syncLinksHybridNow(options = {}) {
       } catch (error) {
         const meta = getLinkSyncMeta(entry.clientId);
         if (String(error?.code || "").toUpperCase() === "CONFLICT") {
-          const remoteRow = await deosRemoteAdapter.getLink(entry.clientId);
+          const remoteRow = await withLinksRemoteTimeout(
+            deosRemoteAdapter.getLink(entry.clientId),
+            `Lecture du conflit ${entry.clientId}`
+          );
           const conflict = buildLinksConflictEntry(entry.clientId, byId("links", entry.clientId) || normalizeEntity("links", { id: entry.clientId }), remoteRow || { clientId: entry.clientId, link: normalizeEntity("links", { id: entry.clientId }), version: meta.remoteVersion, updatedAt: meta.remoteUpdatedAt });
           setLinkSyncMeta(entry.clientId, {
             syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT,
@@ -16466,7 +16514,7 @@ async function syncLinksHybridNow(options = {}) {
       }
     }
 
-    const remoteRows = await deosRemoteAdapter.listLinks();
+    const remoteRows = await withLinksRemoteTimeout(deosRemoteAdapter.listLinks(), "Actualisation des Liens distants");
     const remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
     let localChanged = false;
 
@@ -17840,9 +17888,25 @@ async function applyLinksSyncPreviewChoice(mode) {
         .forEach(item => {
           const link = ensureArray(analysis.remoteOnly).find(candidate => String(candidate.id || "") === item.clientId);
           if (link && !byId("links", link.id)) {
-          state.links.push(normalizeEntity("links", link));
-          changed = true;
-        }
+            const normalizedLink = normalizeEntity("links", link);
+            state.links.push(normalizedLink);
+            const remoteRow = ensureArray(analysis.remoteRows).find(row => String(row.clientId || "") === item.clientId);
+            if (remoteRow) {
+              setLinkSyncMeta(item.clientId, {
+                remoteId: remoteRow.remoteId || remoteRow.id || "",
+                remoteVersion: Number(remoteRow.version || 0),
+                remoteUpdatedAt: String(remoteRow.updatedAt || "").trim(),
+                lastSyncedAt: new Date().toISOString(),
+                syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED,
+                lastSyncError: "",
+                lastLocalFingerprint: linkFingerprint(normalizedLink),
+                lastLocalUpdatedAt: String(normalizedLink.updatedAt || remoteRow.updatedAt || "").trim(),
+                conflictRemote: null,
+                conflictFields: []
+              });
+            }
+            changed = true;
+          }
         });
       if (changed) persist("links");
     }
