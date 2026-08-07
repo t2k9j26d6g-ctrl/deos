@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.20.5";
+const DEOS_VERSION = "V5.21F";
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
@@ -769,6 +769,10 @@ function appHtml(html) {
   renderRemoteAuthOverlay();
   renderRemoteUserContext();
   renderRemoteStartupOverlay();
+  // V5.21F — les dialogues Liens doivent pouvoir apparaître sur toutes les vues,
+  // notamment après une restauration de session sur Safari/iPad.
+  renderLinksSyncPreviewOverlay();
+  renderLinksSyncMergeOverlay();
 }
 
 function badge(status) {
@@ -16245,6 +16249,30 @@ async function maybePromptRemoteLinksRecovery(options = {}) {
   if (deosRemoteStartupDialog.linksPromptDismissed) return null;
   const analysis = await analyzeLinksHybridState();
   if ((state.links || []).length === 0 && analysis.remoteOnly.length > 0) {
+    // V5.21F — sur un nouvel appareil, les Liens déjà présents dans le workspace
+    // doivent être récupérés automatiquement. On n'active jamais automatiquement
+    // un appareil qui contient déjà des Liens locaux afin d'éviter tout envoi implicite.
+    if (options.autoRecover === true) {
+      try {
+        if (!linksSyncIsEnabled()) {
+          await activateLinksHybridSync();
+        }
+        initializeLinksHybridSync({ skipAutoSync: true });
+        await syncLinksHybridNow({ silent: true, source: "remote_recovery" });
+        const refreshed = await analyzeLinksHybridState();
+        setRemoteLastOperation(`${analysis.remoteOnly.length} Lien${analysis.remoteOnly.length > 1 ? "s" : ""} récupéré${analysis.remoteOnly.length > 1 ? "s" : ""} depuis Supabase.`);
+        if (!options.silent) {
+          if (currentView === "settings") renderSettings("Liens distants récupérés sur cet appareil.");
+          else if (currentView === "links") renderLinks();
+        }
+        return refreshed;
+      } catch (error) {
+        deosLinksSyncRuntime.lastError = error?.message || "Récupération automatique des Liens impossible.";
+        console.error("[DEOS LINKS SYNC] automatic recovery failed", error);
+        if (!options.silent && currentView === "settings") renderSettings(deosLinksSyncRuntime.lastError);
+      }
+    }
+
     deosLinksSyncPreviewDialog = {
       open: true,
       busy: false,
@@ -17205,7 +17233,7 @@ async function initializeRemoteServices(options = {}) {
           try {
             await refreshRemoteTestRecords({ silent: true });
             initializeLinksHybridSync({ skipAutoSync: false });
-            await maybePromptRemoteLinksRecovery({ silent: true });
+            await maybePromptRemoteLinksRecovery({ silent: true, autoRecover: true });
           } catch (error) {
             deosRemoteRuntime.lastError = error?.message || "Actualisation distante impossible.";
             deosRemoteRuntime.lastErrorCode = error?.code || "REMOTE_REFRESH_FAILED";
@@ -17218,7 +17246,7 @@ async function initializeRemoteServices(options = {}) {
       await refreshRemoteTestRecords({ silent: true });
       setRemoteLastOperation("Session distante restauree.");
       initializeLinksHybridSync({ skipAutoSync: false });
-      await maybePromptRemoteLinksRecovery({ silent: true });
+      await maybePromptRemoteLinksRecovery({ silent: true, autoRecover: true });
     }
   } catch (error) {
     deosRemoteRuntime.connectionStatus = "error";
@@ -17743,12 +17771,37 @@ function closeLinksSyncPreviewDialog() {
 }
 
 async function activateLinksHybridFromSettings() {
-  await linksHybridRepository.activate();
-  renderSettings("Synchronisation pilote Liens activée. Aucun envoi n'est effectué sans action explicite.");
+  console.info("[DEOS LINKS SYNC] activation requested", { device: detectLinksSyncDeviceLabel() });
+  try {
+    await linksHybridRepository.activate();
+    // V5.21F — l'activation manuelle doit produire un effet visible immédiatement.
+    // Si le workspace est disponible, on lance aussi une lecture/synchronisation.
+    if (linksSyncCanUseRemote()) {
+      await linksHybridRepository.syncNow({ silent: true, source: "manual_activation" });
+    }
+    renderSettings("Synchronisation pilote Liens activée et actualisée.");
+  } catch (error) {
+    console.error("[DEOS LINKS SYNC] activation failed", error);
+    refreshLinksSyncRuntimeState({
+      state: DEOS_LINKS_SYNC_STATUS.ERROR,
+      lastError: error?.message || "Activation de la synchronisation Liens impossible."
+    });
+    renderSettings(deosLinksSyncRuntime.lastError);
+  }
 }
 
 async function syncLinksHybridFromSettings() {
-  await linksHybridRepository.syncNow({ silent: false, source: "manual" });
+  console.info("[DEOS LINKS SYNC] manual sync requested", { device: detectLinksSyncDeviceLabel() });
+  try {
+    await linksHybridRepository.syncNow({ silent: false, source: "manual" });
+  } catch (error) {
+    console.error("[DEOS LINKS SYNC] manual sync failed", error);
+    refreshLinksSyncRuntimeState({
+      state: DEOS_LINKS_SYNC_STATUS.ERROR,
+      lastError: error?.message || "Synchronisation manuelle des Liens impossible."
+    });
+    renderSettings(deosLinksSyncRuntime.lastError);
+  }
 }
 
 function deactivateLinksHybridFromSettings() {
