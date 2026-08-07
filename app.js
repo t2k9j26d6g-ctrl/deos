@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.21F";
+const DEOS_VERSION = "V5.21G";
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
@@ -414,6 +414,12 @@ let deosRemoteAuthDialog = {
 };
 
 let deosLinksSyncRuntime = createLinksSyncRuntimeState();
+let deosLinksRemoteDiagnostic = {
+  running: false,
+  lastRunAt: "",
+  result: null,
+  error: ""
+};
 let deosLinksSyncPreviewDialog = {
   open: false,
   busy: false,
@@ -17701,6 +17707,140 @@ function renderRemoteWorkspaceOverlay() {
   root.insertAdjacentHTML("beforeend", `<div id="remoteWorkspaceOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel"><div class="modal-head"><h2>Créer mon espace de test</h2><button class="icon-close" type="button" onclick="closeRemoteWorkspaceDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">L'appel Supabase utilise une RPC publique dédiée et réutilise automatiquement l'espace si un doublon existe déjà.</p><div class="settings-card-control"><label for="remoteWorkspaceDisplayName">Nom affiché</label><input id="remoteWorkspaceDisplayName" value="${esc(deosRemoteWorkspaceDialog.displayName || "")}" placeholder="Ludovic Aoust"></div><div class="settings-card-control"><label for="remoteWorkspaceName">Nom du workspace</label><input id="remoteWorkspaceName" value="${esc(deosRemoteWorkspaceDialog.workspaceName || "")}" placeholder="DEOS Ludovic Aoust"></div><div class="settings-card-control"><label for="remoteWorkspaceSiteName">Nom du site</label><input id="remoteWorkspaceSiteName" value="${esc(deosRemoteWorkspaceDialog.siteName || "")}" placeholder="Saint-Gilles"></div><div class="settings-card-control"><label for="remoteWorkspaceSiteCode">Code du site</label><input id="remoteWorkspaceSiteCode" value="${esc(deosRemoteWorkspaceDialog.siteCode || "")}" placeholder="STG"></div>${deosRemoteWorkspaceDialog.error ? `<p class="remote-error-box">${esc(deosRemoteWorkspaceDialog.error)}</p>` : ""}${deosRemoteWorkspaceDialog.message ? `<p class="settings-confirm">${esc(deosRemoteWorkspaceDialog.message)}</p>` : ""}<div class="row-actions"><button class="action" type="button" onclick="initializeRemoteWorkspace()" ${deosRemoteWorkspaceDialog.busy ? "disabled" : ""}>Créer ou retrouver l’espace</button><button class="secondary" type="button" onclick="closeRemoteWorkspaceDialog()" ${deosRemoteWorkspaceDialog.busy ? "disabled" : ""}>Annuler</button></div></div></div></div>`);
 }
 
+function safeRemoteDiagnosticHints(value) {
+  if (!value || typeof value !== "object") return {};
+  const output = {};
+  for (const key of Object.keys(value)) {
+    if (!/(workspace|user|owner|site|role|current)/i.test(key)) continue;
+    const item = value[key];
+    if (["string", "number", "boolean"].includes(typeof item)) {
+      output[key] = item;
+    } else if (item && typeof item === "object" && !Array.isArray(item)) {
+      const nested = {};
+      for (const nestedKey of ["id", "workspaceId", "userId", "ownerId", "siteId", "role", "name"]) {
+        if (["string", "number", "boolean"].includes(typeof item[nestedKey])) nested[nestedKey] = item[nestedKey];
+      }
+      if (Object.keys(nested).length) output[key] = nested;
+    }
+  }
+  return output;
+}
+
+function remoteDiagnosticMethodNames(value) {
+  if (!value) return [];
+  const names = new Set();
+  let cursor = value;
+  let depth = 0;
+  while (cursor && cursor !== Object.prototype && depth < 4) {
+    Object.getOwnPropertyNames(cursor).forEach(name => {
+      if (name !== "constructor" && typeof value[name] === "function") names.add(name);
+    });
+    cursor = Object.getPrototypeOf(cursor);
+    depth += 1;
+  }
+  return [...names].sort();
+}
+
+function linksRemoteDiagnosticText() {
+  const diag = deosLinksRemoteDiagnostic;
+  if (!diag.result && !diag.error) return "Aucun diagnostic exécuté.";
+  const payload = {
+    date: diag.lastRunAt || "",
+    version: DEOS_VERSION,
+    appareil: detectLinksSyncDeviceLabel(),
+    erreur: diag.error || "",
+    ...(diag.result || {})
+  };
+  try {
+    return JSON.stringify(payload, null, 2);
+  } catch {
+    return String(payload);
+  }
+}
+
+async function runLinksRemoteDiagnostic() {
+  if (deosLinksRemoteDiagnostic.running) return;
+  deosLinksRemoteDiagnostic = { ...deosLinksRemoteDiagnostic, running: true, error: "" };
+  if (currentView === "settings") renderSettings("Diagnostic de lecture distante en cours...");
+  const workspaceId = String(deosRemoteRuntime.workspace?.id || "").trim();
+  const userId = String(deosRemoteRuntime.user?.id || "").trim();
+  const result = {
+    navigateur: navigator.userAgent || "",
+    enLigne: navigator.onLine !== false,
+    authentifie: Boolean(deosRemoteAuthService?.isAuthenticated && deosRemoteAuthService.isAuthenticated()),
+    configurationStatus: deosRemoteRuntime.configurationStatus || "",
+    connectionStatus: deosRemoteRuntime.connectionStatus || "",
+    workspaceRuntimeId: workspaceId,
+    workspaceRuntimeName: String(deosRemoteRuntime.workspace?.name || ""),
+    userRuntimeId: userId,
+    roleRuntime: String(deosRemoteRuntime.role || ""),
+    siteRuntimeId: String(deosRemoteRuntime.site?.id || ""),
+    siteRuntimeName: String(deosRemoteRuntime.site?.name || ""),
+    temporaryLocal: Boolean(deosRemoteRuntime.temporaryLocal),
+    syncEnabled: linksSyncIsEnabled(),
+    canInspectRemote: linksSyncCanInspectRemote(),
+    canUseRemote: linksSyncCanUseRemote(),
+    adapterOwnKeys: deosRemoteAdapter ? Object.keys(deosRemoteAdapter).sort() : [],
+    adapterHints: safeRemoteDiagnosticHints(deosRemoteAdapter),
+    adapterMethods: remoteDiagnosticMethodNames(deosRemoteAdapter),
+    authOwnKeys: deosRemoteAuthService ? Object.keys(deosRemoteAuthService).sort() : [],
+    authHints: safeRemoteDiagnosticHints(deosRemoteAuthService),
+    authMethods: remoteDiagnosticMethodNames(deosRemoteAuthService),
+    listLinksCount: null,
+    listLinksClientIds: [],
+    listLinksWorkspaceIds: []
+  };
+  try {
+    if (!deosRemoteAdapter || typeof deosRemoteAdapter.listLinks !== "function") {
+      throw new Error("Adaptateur distant ou méthode listLinks indisponible.");
+    }
+    const rows = await withLinksRemoteTimeout(deosRemoteAdapter.listLinks(), "Diagnostic lecture des Liens distants");
+    const safeRows = ensureArray(rows);
+    result.listLinksCount = safeRows.length;
+    result.listLinksClientIds = safeRows.slice(0, 10).map(row => String(row?.clientId || row?.client_id || "")).filter(Boolean);
+    result.listLinksWorkspaceIds = [...new Set(safeRows.map(row => String(row?.workspaceId || row?.workspace_id || "")).filter(Boolean))];
+    deosLinksRemoteDiagnostic = {
+      running: false,
+      lastRunAt: new Date().toLocaleString("fr-FR"),
+      result,
+      error: ""
+    };
+    console.info("[DEOS LINKS DIAGNOSTIC]", result);
+    if (currentView === "settings") renderSettings(`Diagnostic terminé : ${safeRows.length} ligne(s) distante(s) renvoyée(s).`);
+    return result;
+  } catch (error) {
+    deosLinksRemoteDiagnostic = {
+      running: false,
+      lastRunAt: new Date().toLocaleString("fr-FR"),
+      result,
+      error: `${String(error?.code || "REMOTE_DIAGNOSTIC_FAILED")}: ${error?.message || String(error)}`
+    };
+    console.error("[DEOS LINKS DIAGNOSTIC] failed", error, result);
+    if (currentView === "settings") renderSettings(deosLinksRemoteDiagnostic.error);
+    return result;
+  }
+}
+
+async function copyLinksRemoteDiagnostic() {
+  const text = linksRemoteDiagnosticText();
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      renderSettings("Diagnostic copié dans le presse-papiers.");
+      return;
+    }
+  } catch (error) {
+    console.warn("[DEOS LINKS DIAGNOSTIC] clipboard unavailable", error);
+  }
+  window.prompt("Copiez le diagnostic ci-dessous :", text);
+}
+
+function renderLinksRemoteDiagnosticHtml() {
+  const diag = deosLinksRemoteDiagnostic;
+  const text = linksRemoteDiagnosticText();
+  return `<div class="settings-warning-box" style="margin-top:14px"><strong>Diagnostic multi-appareils V5.21G</strong><p>Lecture seule : aucun Lien n'est créé, modifié ou supprimé par ce diagnostic.</p><div class="row-actions"><button class="secondary" type="button" onclick="runLinksRemoteDiagnostic()" ${diag.running ? "disabled" : ""}>${diag.running ? "Diagnostic en cours..." : "Diagnostiquer la lecture distante"}</button><button class="secondary" type="button" onclick="copyLinksRemoteDiagnostic()" ${diag.result || diag.error ? "" : "disabled"}>Copier le diagnostic</button></div>${diag.result || diag.error ? `<pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;background:#fff;border:1px solid #d7dee8;border-radius:10px;padding:10px;margin-top:10px;font-size:11px">${esc(text)}</pre>` : `<p class="muted" style="margin-top:10px">Aucun diagnostic exécuté sur cet appareil.</p>`}</div>`;
+}
+
 function renderLinksHybridSettingsCardHtml() {
   const analysis = deosLinksSyncRuntime.lastAnalysis;
   const stateLabel = linksSyncStatusLabel();
@@ -17708,7 +17848,7 @@ function renderLinksHybridSettingsCardHtml() {
   const remoteReady = Boolean(signedIn && deosRemoteRuntime.workspace && deosRemoteAdapter);
   const lastSync = deosLinksSyncRuntime.lastSyncAt || "Jamais";
   const lastError = deosLinksSyncRuntime.lastError || "Aucune";
-  return `<div id="linksHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Liens</h2><p class="muted">Seuls les Liens sont concernés par cette synchronisation pilote. Aucun autre objet métier DEOS n'est envoyé.</p></div><span class="remote-mode-badge ${linksSyncStatusClass()}">${esc(stateLabel)}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>Managers, Documents, Agenda, Google Calendar, Performance, Actions, Dossiers, Projets, Décisions et Journal restent strictement locaux dans cette version.</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>Etat pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Etat</strong><span>${esc(stateLabel)}</span></div><div class="settings-calendar-summary-item"><strong>Liens locaux</strong><span>${esc(String(state.links.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Liens distants</strong><span>${esc(String(deosLinksSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosLinksSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(lastSync)}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(lastError)}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosLinksSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || deosLinksSyncRuntime.lastAnalysisAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Actions</h3><p class="muted">Le pilote reste désactivé par défaut et n'utilise que le workspace actif.</p><div class="row-actions"><button class="secondary" type="button" onclick="analyzeLinksHybridFromSettings()">Analyser les Liens</button><button class="secondary" type="button" onclick="openLinksSyncPreviewDialog()" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="activateLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="syncLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="openLinksConflictsDialog()" ${deosLinksSyncRuntime.conflictCount > 0 ? "" : "disabled"}>Voir les conflits</button><button class="danger" type="button" onclick="deactivateLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Liens locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="linksHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Liens</h2><p class="muted">Seuls les Liens sont concernés par cette synchronisation pilote. Aucun autre objet métier DEOS n'est envoyé.</p></div><span class="remote-mode-badge ${linksSyncStatusClass()}">${esc(stateLabel)}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>Managers, Documents, Agenda, Google Calendar, Performance, Actions, Dossiers, Projets, Décisions et Journal restent strictement locaux dans cette version.</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>Etat pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Etat</strong><span>${esc(stateLabel)}</span></div><div class="settings-calendar-summary-item"><strong>Liens locaux</strong><span>${esc(String(state.links.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Liens distants</strong><span>${esc(String(deosLinksSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosLinksSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(lastSync)}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(lastError)}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosLinksSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || deosLinksSyncRuntime.lastAnalysisAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Actions</h3><p class="muted">Le pilote reste désactivé par défaut et n'utilise que le workspace actif.</p><div class="row-actions"><button class="secondary" type="button" onclick="analyzeLinksHybridFromSettings()">Analyser les Liens</button><button class="secondary" type="button" onclick="openLinksSyncPreviewDialog()" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="activateLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="syncLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="openLinksConflictsDialog()" ${deosLinksSyncRuntime.conflictCount > 0 ? "" : "disabled"}>Voir les conflits</button><button class="danger" type="button" onclick="deactivateLinksHybridFromSettings()" ${linksSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Liens locaux et distants.</div>` : ""}${renderLinksRemoteDiagnosticHtml()}</section></div></div>`;
 }
 
 async function analyzeLinksHybridFromSettings() {
