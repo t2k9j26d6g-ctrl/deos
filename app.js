@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.21G";
+const DEOS_VERSION = "V5.21H";
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
@@ -10949,41 +10949,119 @@ function setImportPreviewAction(id, action) {
 function performanceImportStepValidate() {
   const selected = performanceImportWizard.preview.filter(x => x.selected && x.destinationPath);
   const conflicts = performanceImportWizard.preview.filter(x => x.status === "Conflit" || x.status === "Différente");
-  return `<div class="card"><h2>Validation</h2><p>La validation alimente réellement Performance uniquement avec les lignes cochées. Les lignes en conflit restent conservées côté DEOS sauf choix « Utiliser source ».</p><div class="form-grid"><input id="piValidatedBy" value="${esc(performanceImportWizard.validatedBy || identityName())}" placeholder="Utilisateur ayant validé"><select id="piStatus"><option value="validé">validé</option><option value="brouillon">brouillon</option><option value="rejeté">rejeté</option></select><textarea id="piComments" class="full" placeholder="Commentaires">${esc(performanceImportWizard.comments || "")}</textarea></div><div class="item"><strong>${selected.length} indicateur(s) importable(s)</strong><span class="muted">${conflicts.length} conflit(s) ou différence(s) · ${performanceImportWizard.files.length} fichier(s) source(s)</span></div><div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(3)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="validatePerformanceImport()">Valider l'import</button></div></div>`;
+  const validationError = performanceImportWizard.validationError
+    ? `<div class="item alert-red"><strong>Import non enregistré</strong><span class="muted">${esc(performanceImportWizard.validationError)}</span></div>`
+    : "";
+  return `<div class="card"><h2>Validation</h2><p>La validation alimente réellement Performance uniquement avec les lignes cochées. Les lignes en conflit restent conservées côté DEOS sauf choix « Utiliser source ».</p>${validationError}<div class="form-grid"><input id="piValidatedBy" value="${esc(performanceImportWizard.validatedBy || identityName())}" placeholder="Utilisateur ayant validé"><select id="piStatus"><option value="validé">validé</option><option value="brouillon">brouillon</option><option value="rejeté">rejeté</option></select><textarea id="piComments" class="full" placeholder="Commentaires">${esc(performanceImportWizard.comments || "")}</textarea></div><div class="item"><strong>${selected.length} indicateur(s) importable(s)</strong><span class="muted">${conflicts.length} conflit(s) ou différence(s) · ${performanceImportWizard.files.length} fichier(s) source(s)</span></div><div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(3)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="validatePerformanceImport()">Valider l'import</button></div></div>`;
+}
+
+function compactPerformanceImportIndicator(row = {}) {
+  return {
+    period: row.period || "",
+    periodType: row.periodType || "monthly",
+    source: row.source || row.sourceType || "",
+    indicator: row.indicator || row.label || "",
+    value: row.value ?? row.actual ?? "",
+    unit: row.unit || "",
+    destinationLabel: row.destinationLabel || "",
+    destinationPath: row.destinationPath || "",
+    status: row.status || "",
+    confidence: row.confidence || row.confidenceText || "",
+    action: row.action || ""
+  };
+}
+
+function compactPerformanceImportPayload(item = {}) {
+  const sourceRows = ensureArray(item.indicators).length ? ensureArray(item.indicators) : ensureArray(item.preview);
+  const sourceFile = String(item.sourceFile || ensureArray(item.files).map(file => file?.name || "").filter(Boolean).join(", ")).trim();
+  return normalizeEntity("performance_imports", {
+    id: item.id || newId("perfimport"),
+    importDate: item.importDate || "",
+    sourceFile,
+    sourceType: item.sourceType || "Source à confirmer",
+    period: item.period || "",
+    site: item.site || "",
+    indicators: sourceRows.map(compactPerformanceImportIndicator),
+    detectedCount: Number(item.detectedCount ?? sourceRows.length),
+    status: item.status || "brouillon",
+    validatedBy: item.validatedBy || "",
+    comments: item.comments || "",
+    importedCount: Number(item.importedCount || 0),
+    ignoredCount: Number(item.ignoredCount || 0),
+    conflictCount: Number(item.conflictCount ?? ensureArray(item.conflicts).length),
+    periods: ensureArray(item.periods),
+    privacyAudit: item.privacyAudit || undefined
+  });
+}
+
+function compactPerformanceImportHistoryForStorage() {
+  state.performance_imports = ensureArray(state.performance_imports).map(compactPerformanceImportPayload);
+  persist("performance_imports");
+}
+
+function performanceImportQuotaMessage(error) {
+  const code = String(error?.code || "").toUpperCase();
+  const name = String(error?.name || error?.originalError?.name || "").toUpperCase();
+  if (code === "STORAGE_QUOTA_EXCEEDED" || name.includes("QUOTA")) {
+    return "Le stockage local du navigateur est saturé. DEOS a compacté l'historique des imports Performance, mais l'import reste trop volumineux. Exportez une sauvegarde puis contactez l'administrateur DEOS avant de supprimer des données.";
+  }
+  return error?.message || "La validation de l'import Performance a échoué.";
 }
 
 function validatePerformanceImport() {
   const first = performanceImportWizard.files[0] || {};
   const selectedRows = performanceImportWizard.preview.filter(row => row.selected && row.destinationPath && row.action !== "keep" && row.action !== "ignore");
   const importDate = new Date().toLocaleString("fr-FR");
-  const imported = applyPerformanceImportRows(selectedRows, first, importDate);
-  const payload = normalizeEntity("performance_imports", {
-    id: performanceImportWizard.id,
-    importDate,
-    sourceFile: performanceImportWizard.files.map(f => f.name).join(", "),
-    sourceType: first.source || first.typeDetected || "Source à confirmer",
-    period: [...new Set(performanceImportWizard.preview.map(x => x.period).filter(Boolean))].join(", "),
-    site: first.site || "",
-    indicators: performanceImportWizard.preview,
-    status: document.getElementById("piStatus").value,
-    validatedBy: document.getElementById("piValidatedBy").value.trim(),
-    comments: document.getElementById("piComments").value.trim(),
-    files: performanceImportWizard.files,
-    preview: performanceImportWizard.preview,
-    conflicts: performanceImportWizard.preview.filter(x => x.status === "Conflit" || x.status === "Différente"),
-    importedCount: imported.importedCount,
-    ignoredCount: performanceImportWizard.preview.length - imported.importedCount,
-    conflictCount: performanceImportWizard.preview.filter(x => x.status === "Conflit" || x.status === "Différente").length,
-    periods: imported.periods
-  });
-  const containsCgtab = performanceImportWizard.preview.some(row => /CGTAB/i.test(String(row.source || row.sourceType || "")));
-  if (containsCgtab) payload.privacyAudit = performancePrivacyAuditForSensitiveData();
-  state.performance_imports.unshift(payload);
-  persist("performance");
-  persist("performance_imports");
-  addActivity("Performance", "Import de données", `${payload.status} · ${payload.sourceFile}`, payload.id);
-  performanceImportWizard = null;
-  renderPerformance();
+  const previousPerformance = JSON.stringify(state.performance || []);
+  const status = document.getElementById("piStatus")?.value || "validé";
+  const validatedBy = document.getElementById("piValidatedBy")?.value?.trim() || "";
+  const comments = document.getElementById("piComments")?.value?.trim() || "";
+  performanceImportWizard.validationError = "";
+
+  try {
+    // V5.21H : libère d'abord l'espace occupé par les anciennes copies redondantes
+    // (files / preview / conflicts) avant d'écrire le nouvel état Performance.
+    compactPerformanceImportHistoryForStorage();
+
+    const imported = applyPerformanceImportRows(selectedRows, first, importDate);
+    persist("performance");
+
+    const conflictRows = performanceImportWizard.preview.filter(x => x.status === "Conflit" || x.status === "Différente");
+    const payload = compactPerformanceImportPayload({
+      id: performanceImportWizard.id,
+      importDate,
+      sourceFile: performanceImportWizard.files.map(f => f.name).join(", "),
+      sourceType: first.source || first.typeDetected || "Source à confirmer",
+      period: [...new Set(performanceImportWizard.preview.map(x => x.period).filter(Boolean))].join(", "),
+      site: first.site || "",
+      indicators: performanceImportWizard.preview,
+      detectedCount: performanceImportWizard.preview.length,
+      status,
+      validatedBy,
+      comments,
+      importedCount: imported.importedCount,
+      ignoredCount: performanceImportWizard.preview.length - imported.importedCount,
+      conflictCount: conflictRows.length,
+      periods: imported.periods
+    });
+    const containsCgtab = performanceImportWizard.preview.some(row => /CGTAB/i.test(String(row.source || row.sourceType || "")));
+    if (containsCgtab) payload.privacyAudit = performancePrivacyAuditForSensitiveData();
+    state.performance_imports.unshift(payload);
+    persist("performance_imports");
+    addActivity("Performance", "Import de données", `${payload.status} · ${payload.sourceFile}`, payload.id);
+    performanceImportWizard = null;
+    renderPerformance();
+  } catch (error) {
+    try {
+      state.performance = JSON.parse(previousPerformance);
+      persist("performance");
+    } catch (rollbackError) {
+      console.error("[DEOS][Performance] Rollback impossible", rollbackError);
+    }
+    console.error("[DEOS][Performance] Validation import impossible", error);
+    performanceImportWizard.validationError = performanceImportQuotaMessage(error);
+    renderPerformanceImportWizard();
+  }
 }
 
 function performancePrivacyAuditForSensitiveData() {
@@ -11012,7 +11090,7 @@ function performancePrivacyAuditForSensitiveData() {
 }
 
 function performanceImportHistory() {
-  const rows = state.performance_imports.map(item => `<tr class="clickable" onclick="openPerformanceImportDetail('${esc(item.id)}')"><td>${esc(item.importDate || "")}</td><td>${esc(item.sourceFile || "")}</td><td>${esc(item.sourceType || "")}</td><td>${esc(item.site || "")}</td><td>${esc(item.period || "à confirmer")}</td><td>${ensureArray(item.indicators).length}</td><td>${esc(item.importedCount ?? "")}</td><td>${esc(item.conflictCount ?? ensureArray(item.conflicts).length)}</td><td>${esc(item.status || "brouillon")}</td></tr>`).join("");
+  const rows = state.performance_imports.map(item => `<tr class="clickable" onclick="openPerformanceImportDetail('${esc(item.id)}')"><td>${esc(item.importDate || "")}</td><td>${esc(item.sourceFile || "")}</td><td>${esc(item.sourceType || "")}</td><td>${esc(item.site || "")}</td><td>${esc(item.period || "à confirmer")}</td><td>${esc(item.detectedCount ?? ensureArray(item.indicators).length)}</td><td>${esc(item.importedCount ?? "")}</td><td>${esc(item.conflictCount ?? ensureArray(item.conflicts).length)}</td><td>${esc(item.status || "brouillon")}</td></tr>`).join("");
   return `<h2>Historique des imports</h2><table class="perf-table"><thead><tr><th>Date</th><th>Fichier</th><th>Source</th><th>Site</th><th>Période</th><th>Détectés</th><th>Importés</th><th>Conflits</th><th>Statut</th></tr></thead><tbody>${rows || `<tr><td colspan="9">Aucun import enregistré.</td></tr>`}</tbody></table>`;
 }
 
