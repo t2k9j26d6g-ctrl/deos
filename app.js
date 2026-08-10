@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.23C";
+const DEOS_VERSION = "V5.23D";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -485,6 +485,18 @@ const projectsSyncQueueRepository = createRepository(deosDataService, {
   key: "sync_queue_projects",
   fallbackFactory: () => [],
   normalize: value => normalizeProjectsSyncQueue(value)
+});
+
+const projectsSyncShadowRepository = createRepository(deosDataService, {
+  key: "sync_shadow_projects",
+  fallbackFactory: () => ({ syncedAt: "", projects: [] }),
+  normalize: value => {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return {
+      syncedAt: String(source.syncedAt || "").trim(),
+      projects: normalizeCollection("projects", ensureArray(source.projects))
+    };
+  }
 });
 
 const DEOS_REMOTE_TEST_RECORD_TEMPLATES = Object.freeze([
@@ -7811,6 +7823,7 @@ function projectMini(p) {
 }
 
 function renderProjects() {
+  restoreProjectsFromSyncShadowIfNeeded();
   document.getElementById("viewTitle").textContent = "Projets V5";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "projects"));
   appHtml(`<div class="card hero"><h2>Projets V5</h2><p class="muted">Le projet transforme : pilotez ici les changements structurés ayant un objectif et un résultat attendu.</p></div><div class="card"><h2>Ajouter un projet</h2><input id="prName" placeholder="Nom"><input id="prNext" placeholder="Prochaine étape"><div class="form-grid"><div><label>Responsable principal</label>${ownerSelect("prOwnerId")}</div><input id="prDeadline" placeholder="Échéance"><input id="prProgress" type="number" min="0" max="100" value="0"><select id="prStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select></div><div class="manager-links"><label>Dossiers liés</label>${folderSelect("prFolders")}</div><button class="action" onclick="addProject()">Ajouter</button></div><div class="grid two">${state.projects.map(projectCard).join("")}</div>`);
@@ -7822,13 +7835,14 @@ function projectCard(p) {
 }
 
 function addProject() {
+  restoreProjectsFromSyncShadowIfNeeded();
   const name = document.getElementById("prName").value.trim();
   if (!name) return;
   const ownerId = document.getElementById("prOwnerId").value;
   const owner = byId("managers", ownerId)?.name || "";
   const p = { id: newId("project"), name, next: document.getElementById("prNext").value.trim(), owner, ownerId, deadline: document.getElementById("prDeadline").value.trim(), progress: Number(document.getElementById("prProgress").value || 0), status: document.getElementById("prStatus").value, objective: "", linkedManagers: [], linkedFolders: checkedValues("prFolders"), launchDate: "", priorityLevel: "orange", context: "", decisions: "", actions: "", risks: "", milestones: [], linkedActions: [], linkedDecisions: [], linkedDocuments: [], events: [], directorNotes: [] };
   state.projects.push(p);
-  persist("projects");
+  persistProjectsState();
   addActivity("📊 Projet", p.name, p.next, p.id);
   renderProjects();
 }
@@ -7898,6 +7912,7 @@ function projectQuickForm(p, mode = "") {
 }
 
 function openProject(id, mode = "") {
+  restoreProjectsFromSyncShadowIfNeeded();
   const p = byId("projects", id);
   if (!p) return renderProjects();
   document.getElementById("viewTitle").textContent = p.name;
@@ -7916,7 +7931,7 @@ function updateProjectProgress(id) {
   const p = byId("projects", id);
   if (!p) return;
   p.progress = Math.max(0, Math.min(100, Number(document.getElementById("quickProgress").value || 0)));
-  persist("projects");
+  persistProjectsState();
   addActivity("📈 Avancement projet", p.name, `${p.progress}%`, id);
   openProject(id);
 }
@@ -7927,7 +7942,7 @@ function saveProjectMilestone(id) {
   const title = document.getElementById("pmTitle").value.trim();
   if (!title) return;
   p.milestones.unshift({ id: newId("mile"), title, date: document.getElementById("pmDate").value.trim(), status: document.getElementById("pmStatus").value.trim() || "À suivre" });
-  persist("projects");
+  persistProjectsState();
   addActivity("🏁 Jalon projet", p.name, title, id);
   openProject(id);
 }
@@ -7938,7 +7953,7 @@ function saveProjectNote(id) {
   const content = document.getElementById("pnContent").value.trim();
   if (!content) return;
   p.directorNotes.unshift({ id: newId("note"), date: new Date().toLocaleString("fr-FR"), content });
-  persist("projects");
+  persistProjectsState();
   addActivity("📝 Note projet", p.name, content, id);
   openProject(id);
 }
@@ -7949,7 +7964,7 @@ function saveProjectEvent(id) {
   const title = document.getElementById("peTitle").value.trim();
   if (!title) return;
   p.events.unshift({ id: newId("event"), date: document.getElementById("peDate").value.trim() || new Date().toLocaleString("fr-FR"), title, detail: document.getElementById("peDetail").value.trim() });
-  persist("projects");
+  persistProjectsState();
   addActivity("📅 Événement projet", p.name, title, id);
   openProject(id);
 }
@@ -8147,7 +8162,7 @@ function saveProjectEdit(id) {
     linkedManagers: normalizeLinkedManagerIds(checkedValues("pepManagers"))
   };
   state.projects[i] = normalizeEntity("projects", next);
-  persist("projects");
+  persistProjectsState();
   addActivity("📊 Projet modifié", state.projects[i].name, state.projects[i].next || "", id);
   closeProjectEditModal();
   openProject(id);
@@ -8259,10 +8274,18 @@ function deleteProjectSafely(projectId) {
     changed.forEach(name => {
       if (name === "externalEventEnrichments") {
         persistExternalEventEnrichmentsOnly();
+      } else if (name === "projects") {
+        persistProjectsState();
       } else {
         persist(name);
       }
     });
+
+    if (projectsSyncIsEnabled()) {
+      const existingMeta = getProjectSyncMeta(target);
+      setProjectSyncMeta(target, { ...existingMeta, deletePending: true, syncStatus: DEOS_LINKS_SYNC_STATUS.SYNC_READY });
+      saveProjectsSyncShadow(state.projects);
+    }
 
     addActivity("🗑️ Projet supprimé", project.name, "Suppression sécurisée sans cascade", project.id);
     closeProjectDeleteModal();
@@ -8280,7 +8303,7 @@ function deleteProjectSafely(projectId) {
     state.meetingPreparations = snapshot.meetingPreparations;
     state.externalEventEnrichments = snapshot.externalEventEnrichments;
 
-    persist("projects");
+    persistProjectsState();
     persist("actions");
     persist("decisions");
     persist("managers");
@@ -17410,7 +17433,8 @@ function normalizeProjectsSyncMetaEntry(value = {}) {
     lastLocalFingerprint: String(source.lastLocalFingerprint || "").trim(),
     lastSyncError: String(source.lastSyncError || "").trim(),
     conflictRemote: source.conflictRemote && typeof source.conflictRemote === "object" ? source.conflictRemote : null,
-    conflictFields: ensureArray(source.conflictFields).map(String)
+    conflictFields: ensureArray(source.conflictFields).map(String),
+    deletePending: Boolean(source.deletePending)
   };
 }
 function normalizeProjectsSyncMetaMap(value = {}) {
@@ -17463,6 +17487,30 @@ function ensureProjectSyncClientId(project = {}) {
   project.clientId = clientId;
   return project;
 }
+
+function saveProjectsSyncShadow(projects = state.projects) {
+  const normalized = normalizeCollection("projects", ensureArray(projects));
+  projectsSyncShadowRepository.save({ syncedAt: new Date().toISOString(), projects: normalized });
+  return normalized;
+}
+
+function restoreProjectsFromSyncShadowIfNeeded(options = {}) {
+  if (!projectsSyncIsEnabled() && !options.force) return false;
+  const shadow = projectsSyncShadowRepository.load({ syncedAt: "", projects: [] });
+  const shadowProjects = ensureArray(shadow.projects);
+  if (!shadowProjects.length) return false;
+  const localIds = new Set(ensureArray(state.projects).map(projectSyncClientId).filter(Boolean));
+  const missingFromLocal = shadowProjects.filter(project => !localIds.has(projectSyncClientId(project)));
+  if (!missingFromLocal.length) return false;
+  state.projects = normalizeCollection("projects", [...ensureArray(state.projects), ...missingFromLocal]);
+  persist("projects");
+  return true;
+}
+
+function persistProjectsState(options = {}) {
+  persist("projects");
+  if (options.updateShadow !== false && projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
+}
 function projectFingerprint(project = {}) { return JSON.stringify(stableJsonValue(cloneProjectBusinessData(project))); }
 function projectConflictFields(localProject = {}, remoteProject = {}) {
   const a = cloneProjectBusinessData(localProject), b = cloneProjectBusinessData(remoteProject);
@@ -17501,7 +17549,8 @@ function initializeProjectsHybridSync(options = {}) {
     queue: projectsSyncQueueRepository.load([])
   });
   refreshProjectsSyncRuntimeState({ state: settings.enabled ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY });
-  // V5.22B — pendant le pilote Projets, aucune synchronisation automatique au démarrage.
+  if (settings.enabled) restoreProjectsFromSyncShadowIfNeeded();
+  // V5.23D — pendant le pilote Projets, aucune synchronisation automatique au démarrage.
   // Cela évite qu’un rechargement ou une restauration de session amplifie un état incohérent.
   return deosProjectsSyncRuntime;
 }
@@ -17629,11 +17678,12 @@ async function syncProjectsHybridNow(options = {}) {
     let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
     let localChanged = false;
 
-    // Les suppressions locales déjà connues deviennent des soft-deletes distants.
+    // V5.23D — une absence locale n'est JAMAIS interprétée comme une suppression.
+    // Un soft-delete distant n'est autorisé que si la suppression a été explicitement marquée localement.
     for (const [clientId, meta] of Object.entries(deosProjectsSyncRuntime.metaByClientId || {})) {
-      if (!byId("projects", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId) && meta.syncStatus !== DEOS_LINKS_SYNC_STATUS.CONFLICT) {
+      if (meta.deletePending && !byId("projects", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId) && meta.syncStatus !== DEOS_LINKS_SYNC_STATUS.CONFLICT) {
         const deleted = await withProjectsRemoteTimeout(deosRemoteAdapter.softDeleteProject(clientId, Number(remoteActiveMap.get(clientId).version || meta.remoteVersion)), `Suppression logique du Projet ${clientId}`);
-        setProjectSyncMeta(clientId, { remoteVersion: Number(deleted.version || 0), remoteUpdatedAt: deleted.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "" });
+        setProjectSyncMeta(clientId, { remoteVersion: Number(deleted.version || 0), remoteUpdatedAt: deleted.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "", deletePending: false });
       }
     }
 
@@ -17692,7 +17742,12 @@ async function syncProjectsHybridNow(options = {}) {
       }
       setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: projectFingerprint(byId("projects", clientId) || row.project), lastSyncError: "", conflictRemote: null, conflictFields: [] });
     }
-    if (localChanged) persist("projects");
+    if (localChanged) persistProjectsState();
+    else if (projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
+    const persistedProjects = saved("projects", []);
+    if (persistedProjects.length !== state.projects.length) {
+      throw new Error(`PERSISTENCE_PROJECTS_INCOMPLETE — ${state.projects.length} Projet(s) en mémoire mais ${persistedProjects.length} relu(s) dans le stockage local.`);
+    }
     const analysis = buildProjectsRemotePreview(state.projects, await withProjectsRemoteTimeout(deosRemoteAdapter.listProjects(), "Analyse finale des Projets"));
     refreshProjectsSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
   } catch (error) {
@@ -17784,7 +17839,7 @@ function renderProjectsHybridSettingsCardHtml() {
   const remoteReady = projectsSyncCanInspectRemote();
   const analysis = deosProjectsSyncRuntime.lastAnalysis;
   const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Dossiers, Projets, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
-  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.23C séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.23D séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeProjectsHybridFromSettings() {
   return runProjectsUiExclusive("analyze", async () => {
