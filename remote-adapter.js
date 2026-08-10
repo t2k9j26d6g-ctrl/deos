@@ -142,6 +142,37 @@
     };
   }
 
+  function normalizeProjectData(project) {
+    if (!project || typeof project !== "object" || Array.isArray(project)) {
+      throw createRemoteError("INVALID_PROJECT_PAYLOAD", "Le payload distant d'un Projet doit rester un objet simple.");
+    }
+    const output = {};
+    for (const [key, value] of Object.entries(project)) {
+      const normalizedKey = String(key || "").trim();
+      if (!normalizedKey || normalizedKey === "id" || normalizedKey === "clientId") continue;
+      if (normalizedKey.startsWith("__") || normalizedKey.startsWith("_sync") || (RESERVED_DEOS_KEYS.has(normalizedKey) && !["actions", "decisions"].includes(normalizedKey))) {
+        throw createRemoteError("PROJECT_PAYLOAD_FORBIDDEN", `La cle ${normalizedKey} n'est pas autorisee pour la synchronisation Projets.`);
+      }
+      output[normalizedKey] = value;
+    }
+    return clonePlainObject(output);
+  }
+
+  function normalizeProjectRow(row) {
+    const data = row && row.data && typeof row.data === "object" && !Array.isArray(row.data) ? clonePlainObject(row.data) : {};
+    return {
+      remoteId: row && row.id ? String(row.id) : "",
+      clientId: row && row.client_id ? String(row.client_id) : String(data.id || ""),
+      ownerId: row && row.owner_id ? String(row.owner_id) : "",
+      workspaceId: row && row.workspace_id ? String(row.workspace_id) : "",
+      version: Number.isFinite(Number(row && row.version)) ? Number(row.version) : 0,
+      createdAt: row && row.created_at ? String(row.created_at) : "",
+      updatedAt: row && row.updated_at ? String(row.updated_at) : "",
+      deletedAt: row && row.deleted_at ? String(row.deleted_at) : "",
+      project: { id: row && row.client_id ? String(row.client_id) : String(data.id || ""), ...data }
+    };
+  }
+
   function normalizeRecord(record, expectedWorkspaceId, ownerId) {
     const payload = clonePlainObject(record.payload || {});
     validatePayloadShape(payload);
@@ -464,6 +495,83 @@
       }
       const row = Array.isArray(response.data) ? response.data[0] : response.data;
       return normalizeActionRow(row || {});
+    }
+
+    async listProjects(workspaceId) {
+      const context = this.getContext(workspaceId);
+      // V5.23B : lecture via RPC dédiée. Cela évite le chemin SELECT direct
+      // qui pouvait rester bloqué avec PostgREST/RLS sur la table nouvellement créée.
+      const response = await context.client.rpc("deos_list_projects");
+      if (response.error) {
+        throw createRemoteError(
+          "REMOTE_PROJECTS_LIST_FAILED",
+          response.error.message || "Lecture distante des Projets impossible.",
+          response.error
+        );
+      }
+      return Array.isArray(response.data) ? response.data.map(normalizeProjectRow) : [];
+    }
+
+    async getProject(clientId) {
+      const context = this.getContext();
+      const response = await context.client
+        .from("deos_projects")
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .eq("workspace_id", context.workspaceId)
+        .eq("client_id", String(clientId || ""))
+        .maybeSingle();
+      if (response.error) throw createRemoteError("REMOTE_PROJECT_GET_FAILED", response.error.message || "Lecture distante du Projet impossible.");
+      return response.data ? normalizeProjectRow(response.data) : null;
+    }
+
+    async createProject(project) {
+      const context = this.getContext(project && project.workspaceId);
+      this.assertWritableRole(context.role);
+      const clientId = String(project && (project.clientId || project.id) ? (project.clientId || project.id) : "").trim();
+      if (!clientId) throw createRemoteError("PROJECT_CLIENT_ID_REQUIRED", "Un id local stable est requis pour créer un Projet distante.");
+      const payload = normalizeProjectData(project || {});
+      const response = await context.client
+        .from("deos_projects")
+        .insert({ workspace_id: context.workspaceId, owner_id: context.userId, client_id: clientId, data: payload })
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .single();
+      if (response.error) {
+        const code = String(response.error.code || "").trim();
+        if (code === "23505") throw createRemoteError("REMOTE_PROJECT_EXISTS", response.error.message || "Le Projet existe déjà à distance.", response.error);
+        throw createRemoteError("REMOTE_PROJECT_CREATE_FAILED", response.error.message || "Création distante du Projet impossible.", response.error);
+      }
+      return normalizeProjectRow(response.data);
+    }
+
+    async updateProject(clientId, patch, expectedVersion) {
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour mettre à jour un Projet distante.");
+      const payload = normalizeProjectData(patch || {});
+      const response = await context.client.rpc("deos_update_project", { p_client_id: String(clientId || "").trim(), p_expected_version: version, p_data: payload });
+      if (response.error) {
+        const message = response.error.message || "Mise à jour distante du Projet impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_PROJECT_UPDATE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeProjectRow(row || {});
+    }
+
+    async softDeleteProject(clientId, expectedVersion) {
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour supprimer logiquement un Projet distante.");
+      const response = await context.client.rpc("deos_soft_delete_project", { p_client_id: String(clientId || "").trim(), p_expected_version: version });
+      if (response.error) {
+        const message = response.error.message || "Suppression logique distante du Projet impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_PROJECT_DELETE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeProjectRow(row || {});
     }
   }
 
