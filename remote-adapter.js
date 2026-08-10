@@ -419,7 +419,7 @@
     async createAction(action) {
       const context = this.getContext(action && action.workspaceId);
       this.assertWritableRole(context.role);
-      const clientId = String(action && action.id ? action.id : "").trim();
+      const clientId = String(action && (action.clientId || action.id) ? (action.clientId || action.id) : "").trim();
       if (!clientId) throw createRemoteError("ACTION_CLIENT_ID_REQUIRED", "Un id local stable est requis pour créer une Action distante.");
       const payload = normalizeActionData(action || {});
       const response = await context.client
