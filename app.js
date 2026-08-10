@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.22C";
+const DEOS_VERSION = "V5.22D";
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
 
@@ -15942,6 +15942,7 @@ function createLinksSyncRuntimeState(overrides = {}) {
     queue: [],
     metaByClientId: {},
     remoteCount: 0,
+    lastValidRemoteCount: 0,
     pendingCount: 0,
     syncedCount: 0,
     conflictCount: 0,
@@ -16963,10 +16964,63 @@ function buildActionsRemotePreview(localActions, remoteRows) {
 
   return { localCount: locals.length, remoteCount: activeRows.length, localOnly, remoteOnly, both, conflicts, duplicateCandidates, remoteRows: ensureArray(remoteRows), generatedAt: new Date().toLocaleString("fr-FR") };
 }
+// V5.22D — Safari/iPad : sérialisation stricte des opérations Actions.
+// Une synchronisation, une analyse ou une prévisualisation ne doivent jamais effectuer
+// des lectures Supabase concurrentes depuis l'interface.
+let deosActionsUiOperationPromise = null;
+let deosActionsUiOperationKind = "";
+
+function withActionsRemoteTimeout(promise, operationLabel, timeoutMs = 20000) {
+  return withLinksRemoteTimeout(promise, operationLabel, timeoutMs);
+}
+
+function setActionsSyncUiBusy(busy) {
+  const card = document.getElementById("actionsHybridSyncSettingsCard");
+  if (!card) return;
+  card.querySelectorAll("button").forEach(button => {
+    if (busy) {
+      if (!button.dataset.deosActionsWasDisabled) button.dataset.deosActionsWasDisabled = button.disabled ? "1" : "0";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    } else {
+      const wasDisabled = button.dataset.deosActionsWasDisabled === "1";
+      delete button.dataset.deosActionsWasDisabled;
+      button.removeAttribute("aria-busy");
+      button.disabled = wasDisabled;
+    }
+  });
+}
+
+async function runActionsUiExclusive(kind, task) {
+  // Un second clic de synchronisation rejoint l'opération déjà en cours : aucune
+  // seconde synchronisation n'est créée et aucun appel Supabase parallèle ne part.
+  if (deosActionsUiOperationPromise && kind === "sync") return deosActionsUiOperationPromise;
+
+  // Une analyse/prévisualisation demandée pendant une synchro attend proprement la fin
+  // de l'opération précédente avant de démarrer sa propre lecture distante.
+  if (deosActionsUiOperationPromise) {
+    try { await deosActionsUiOperationPromise; } catch (_) { /* l'opération suivante peut diagnostiquer l'état */ }
+  }
+
+  setActionsSyncUiBusy(true);
+  deosActionsUiOperationKind = kind;
+  const operation = Promise.resolve().then(task);
+  deosActionsUiOperationPromise = operation;
+  try {
+    return await operation;
+  } finally {
+    if (deosActionsUiOperationPromise === operation) {
+      deosActionsUiOperationPromise = null;
+      deosActionsUiOperationKind = "";
+    }
+    setActionsSyncUiBusy(false);
+  }
+}
+
 async function analyzeActionsHybridState() {
-  const remoteRows = actionsSyncCanInspectRemote() ? await withLinksRemoteTimeout(deosRemoteAdapter.listActions(), "Lecture des Actions distantes") : [];
+  const remoteRows = actionsSyncCanInspectRemote() ? await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Lecture des Actions distantes") : [];
   const analysis = buildActionsRemotePreview(state.actions, remoteRows);
-  refreshActionsSyncRuntimeState({ remoteCount: analysis.remoteCount, lastAnalysisAt: analysis.generatedAt, lastAnalysis: analysis, lastError: "" });
+  refreshActionsSyncRuntimeState({ remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysisAt: analysis.generatedAt, lastAnalysis: analysis, lastError: "" });
   return analysis;
 }
 async function activateActionsHybridSync() {
@@ -16988,7 +17042,7 @@ async function syncActionsHybridNow(options = {}) {
   }
   refreshActionsSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
   try {
-    let remoteRows = await withLinksRemoteTimeout(deosRemoteAdapter.listActions(), "Lecture des Actions distantes");
+    let remoteRows = await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Lecture des Actions distantes");
     const preflight = buildActionsRemotePreview(state.actions, remoteRows);
     if (preflight.duplicateCandidates.length) {
       throw new Error(`DUPLICATES_ACTIONS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
@@ -16999,12 +17053,12 @@ async function syncActionsHybridNow(options = {}) {
     // Les suppressions locales déjà connues deviennent des soft-deletes distants.
     for (const [clientId, meta] of Object.entries(deosActionsSyncRuntime.metaByClientId || {})) {
       if (!byId("actions", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId) && meta.syncStatus !== DEOS_LINKS_SYNC_STATUS.CONFLICT) {
-        const deleted = await withLinksRemoteTimeout(deosRemoteAdapter.softDeleteAction(clientId, Number(remoteActiveMap.get(clientId).version || meta.remoteVersion)), `Suppression logique de l'Action ${clientId}`);
+        const deleted = await withActionsRemoteTimeout(deosRemoteAdapter.softDeleteAction(clientId, Number(remoteActiveMap.get(clientId).version || meta.remoteVersion)), `Suppression logique de l'Action ${clientId}`);
         setActionSyncMeta(clientId, { remoteVersion: Number(deleted.version || 0), remoteUpdatedAt: deleted.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "" });
       }
     }
 
-    remoteRows = await withLinksRemoteTimeout(deosRemoteAdapter.listActions(), "Actualisation des Actions distantes");
+    remoteRows = await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Actualisation des Actions distantes");
     remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
 
     // Créations locales nouvelles.
@@ -17012,11 +17066,11 @@ async function syncActionsHybridNow(options = {}) {
       ensureActionSyncClientId(action);
       const clientId = actionSyncClientId(action);
       if (!clientId || remoteActiveMap.has(clientId)) continue;
-      const created = await withLinksRemoteTimeout(deosRemoteAdapter.createAction({ ...action, id: clientId, clientId }), `Création de l'Action ${action.title || clientId}`);
+      const created = await withActionsRemoteTimeout(deosRemoteAdapter.createAction({ ...action, id: clientId, clientId }), `Création de l'Action ${action.title || clientId}`);
       setActionSyncMeta(clientId, { remoteId: created.remoteId, remoteVersion: Number(created.version || 0), remoteUpdatedAt: created.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: actionFingerprint(action), conflictRemote: null, conflictFields: [] });
     }
 
-    remoteRows = await withLinksRemoteTimeout(deosRemoteAdapter.listActions(), "Rafraîchissement des Actions distantes");
+    remoteRows = await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Rafraîchissement des Actions distantes");
     for (const row of remoteRows) {
       const clientId = String(row.clientId || "");
       if (!clientId) continue;
@@ -17049,7 +17103,7 @@ async function syncActionsHybridNow(options = {}) {
         continue;
       }
       if (localChangedSinceSync && !remoteChangedSinceSync) {
-        const updated = await withLinksRemoteTimeout(deosRemoteAdapter.updateAction(clientId, local, Number(row.version || meta.remoteVersion)), `Mise à jour de l'Action ${local.title || clientId}`);
+        const updated = await withActionsRemoteTimeout(deosRemoteAdapter.updateAction(clientId, local, Number(row.version || meta.remoteVersion)), `Mise à jour de l'Action ${local.title || clientId}`);
         setActionSyncMeta(clientId, { remoteId: updated.remoteId, remoteVersion: Number(updated.version || 0), remoteUpdatedAt: updated.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
         continue;
       }
@@ -17060,11 +17114,11 @@ async function syncActionsHybridNow(options = {}) {
       setActionSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: actionFingerprint(byId("actions", clientId) || row.action), lastSyncError: "", conflictRemote: null, conflictFields: [] });
     }
     if (localChanged) persist("actions");
-    const analysis = buildActionsRemotePreview(state.actions, await withLinksRemoteTimeout(deosRemoteAdapter.listActions(), "Analyse finale des Actions"));
-    refreshActionsSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
+    const analysis = buildActionsRemotePreview(state.actions, await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Analyse finale des Actions"));
+    refreshActionsSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
   } catch (error) {
-    refreshActionsSyncRuntimeState({ syncing: false, state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Synchronisation Actions impossible." });
-    console.error("[DEOS ACTIONS SYNC]", error);
+    refreshActionsSyncRuntimeState({ syncing: false, remoteCount: Number(deosActionsSyncRuntime.lastValidRemoteCount || deosActionsSyncRuntime.remoteCount || 0), state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Synchronisation Actions impossible." });
+    console.error("[DEOS V5.22D ACTIONS SYNC]", error);
   }
   if (!options.silent && currentView === "settings") renderSettings(deosActionsSyncRuntime.lastError || "Synchronisation Actions actualisée.");
   return deosActionsSyncRuntime;
@@ -17104,7 +17158,7 @@ async function repairExactActionDuplicatesFromSettings() {
 
   refreshActionsSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
   try {
-    const remoteRows = await withLinksRemoteTimeout(deosRemoteAdapter.listActions(), "Lecture des doublons Actions");
+    const remoteRows = await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Lecture des doublons Actions");
     const activeRows = remoteRows.filter(row => !row.deletedAt);
     const groups = new Map();
     activeRows.forEach(row => {
@@ -17122,7 +17176,7 @@ async function repairExactActionDuplicatesFromSettings() {
       const duplicateIds = new Set(sorted.slice(1).map(row => String(row.clientId || "")));
 
       for (const duplicate of sorted.slice(1)) {
-        await withLinksRemoteTimeout(deosRemoteAdapter.softDeleteAction(duplicate.clientId, Number(duplicate.version || 0)), `Suppression logique du doublon ${duplicate.clientId}`);
+        await withActionsRemoteTimeout(deosRemoteAdapter.softDeleteAction(duplicate.clientId, Number(duplicate.version || 0)), `Suppression logique du doublon ${duplicate.clientId}`);
         repairedRemote += 1;
       }
 
@@ -17139,7 +17193,7 @@ async function repairExactActionDuplicatesFromSettings() {
     }
     if (localChanged) persist("actions");
     const finalAnalysis = await analyzeActionsHybridState();
-    refreshActionsSyncRuntimeState({ syncing: false, remoteCount: finalAnalysis.remoteCount, lastAnalysis: finalAnalysis, lastAnalysisAt: finalAnalysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: finalAnalysis.duplicateCandidates.length ? DEOS_LINKS_SYNC_STATUS.ERROR : DEOS_LINKS_SYNC_STATUS.SYNC_READY });
+    refreshActionsSyncRuntimeState({ syncing: false, remoteCount: finalAnalysis.remoteCount, lastValidRemoteCount: finalAnalysis.remoteCount, lastAnalysis: finalAnalysis, lastAnalysisAt: finalAnalysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: finalAnalysis.duplicateCandidates.length ? DEOS_LINKS_SYNC_STATUS.ERROR : DEOS_LINKS_SYNC_STATUS.SYNC_READY });
     renderSettings(`Réparation terminée : ${repairedRemote} doublon(s) distant(s) supprimé(s) logiquement, ${repairedLocal} doublon(s) local(aux) retiré(s).`);
   } catch (error) {
     refreshActionsSyncRuntimeState({ syncing: false, state: DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Réparation des doublons Actions impossible." });
@@ -17151,9 +17205,10 @@ function renderActionsHybridSettingsCardHtml() {
   const remoteReady = actionsSyncCanInspectRemote();
   const analysis = deosActionsSyncRuntime.lastAnalysis;
   const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Dossiers, Projets, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
-  return `<div id="actionsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Actions</h2><p class="muted">Pilote V5.22C séparé des Liens, avec garde anti-doublon, réparation explicite et diagnostic d’analyse renforcé. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${actionsSyncStatusClass()}">${esc(actionsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(actionsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Actions locales</strong><span>${esc(String(state.actions.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Actions distantes</strong><span>${esc(String(deosActionsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosActionsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosActionsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosActionsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosActionsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Actions</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="analyzeActionsHybridFromSettings()">Analyser les Actions</button><button class="secondary" type="button" onclick="previewActionsMigrationFromSettings()" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="activateActionsHybridFromSettings()" ${actionsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="syncActionsHybridFromSettings()" ${actionsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showActionsConflictsFromSettings()" ${deosActionsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactActionDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="repairExactActionDuplicatesFromSettings()" ${actionsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateActionsHybridFromSettings()" ${actionsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Actions locales et distantes.</div>` : ""}</section></div></div>`;
+  return `<div id="actionsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Actions</h2><p class="muted">Pilote V5.22D séparé des Liens, avec verrou Safari/iPad, garde anti-doublon et diagnostic d’analyse renforcé. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${actionsSyncStatusClass()}">${esc(actionsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(actionsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Actions locales</strong><span>${esc(String(state.actions.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Actions distantes</strong><span>${esc(String(deosActionsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosActionsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosActionsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosActionsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosActionsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Actions</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="analyzeActionsHybridFromSettings()">Analyser les Actions</button><button class="secondary" type="button" onclick="previewActionsMigrationFromSettings()" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="activateActionsHybridFromSettings()" ${actionsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="syncActionsHybridFromSettings()" ${actionsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showActionsConflictsFromSettings()" ${deosActionsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactActionDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="repairExactActionDuplicatesFromSettings()" ${actionsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateActionsHybridFromSettings()" ${actionsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Actions locales et distantes.</div>` : ""}</section></div></div>`;
 }
 async function analyzeActionsHybridFromSettings() {
+  return runActionsUiExclusive("analyze", async () => {
   try {
     const a = await analyzeActionsHybridState();
     const message = `Analyse Actions terminée\n\nActions locales : ${a.localCount}\nActions distantes : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}`;
@@ -17163,25 +17218,28 @@ async function analyzeActionsHybridFromSettings() {
     return a;
   } catch (error) {
     const message = error?.message || "Analyse Actions impossible.";
-    refreshActionsSyncRuntimeState({ lastError: message, state: DEOS_LINKS_SYNC_STATUS.ERROR });
+    refreshActionsSyncRuntimeState({ remoteCount: Number(deosActionsSyncRuntime.lastValidRemoteCount || deosActionsSyncRuntime.remoteCount || 0), lastError: message, state: DEOS_LINKS_SYNC_STATUS.ERROR });
     alert(`Erreur analyse Actions\n\n${message}`);
-    try { renderSettings(message); } catch (renderError) { console.error("[DEOS V5.22C] renderSettings après erreur analyse Actions", renderError); }
+    try { renderSettings(message); } catch (renderError) { console.error("[DEOS V5.22D] renderSettings après erreur analyse Actions", renderError); }
     return null;
   }
+  });
 }
 // Exposition explicite pour les boutons HTML inline (Chrome/Safari).
 window.analyzeActionsHybridFromSettings = analyzeActionsHybridFromSettings;
 async function previewActionsMigrationFromSettings() {
+  return runActionsUiExclusive("preview", async () => {
   try {
     const a = await actionsHybridRepository.analyze();
     alert(`Prévisualisation de migration Actions\n\nActions locales : ${a.localCount}\nActions distantes : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\n\nAucune écriture n'a été effectuée.`);
   } catch (error) { renderSettings(error?.message || "Prévisualisation Actions impossible."); }
+  });
 }
 async function activateActionsHybridFromSettings() {
   try { await actionsHybridRepository.activate(); renderSettings("Synchronisation pilote Actions activée. Aucune Action n'a encore été envoyée automatiquement."); }
   catch (error) { refreshActionsSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Activation Actions impossible." }); renderSettings(deosActionsSyncRuntime.lastError); }
 }
-async function syncActionsHybridFromSettings() { await actionsHybridRepository.syncNow({ silent: false, source: "manual" }); }
+async function syncActionsHybridFromSettings() { return runActionsUiExclusive("sync", () => actionsHybridRepository.syncNow({ silent: false, source: "manual" })); }
 function deactivateActionsHybridFromSettings() { actionsHybridRepository.deactivate(); renderSettings("Synchronisation pilote Actions désactivée. Les données locales et distantes sont conservées."); }
 function showActionsConflictsFromSettings() {
   const conflicts = Object.values(deosActionsSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
