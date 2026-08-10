@@ -111,6 +111,37 @@
     };
   }
 
+  function normalizeActionData(action) {
+    if (!action || typeof action !== "object" || Array.isArray(action)) {
+      throw createRemoteError("INVALID_ACTION_PAYLOAD", "Le payload distant d'une Action doit rester un objet simple.");
+    }
+    const output = {};
+    for (const [key, value] of Object.entries(action)) {
+      const normalizedKey = String(key || "").trim();
+      if (!normalizedKey || normalizedKey === "id" || normalizedKey === "clientId") continue;
+      if (normalizedKey.startsWith("__") || normalizedKey.startsWith("_sync") || RESERVED_DEOS_KEYS.has(normalizedKey)) {
+        throw createRemoteError("ACTION_PAYLOAD_FORBIDDEN", `La cle ${normalizedKey} n'est pas autorisee pour la synchronisation Actions.`);
+      }
+      output[normalizedKey] = value;
+    }
+    return clonePlainObject(output);
+  }
+
+  function normalizeActionRow(row) {
+    const data = row && row.data && typeof row.data === "object" && !Array.isArray(row.data) ? clonePlainObject(row.data) : {};
+    return {
+      remoteId: row && row.id ? String(row.id) : "",
+      clientId: row && row.client_id ? String(row.client_id) : String(data.id || ""),
+      ownerId: row && row.owner_id ? String(row.owner_id) : "",
+      workspaceId: row && row.workspace_id ? String(row.workspace_id) : "",
+      version: Number.isFinite(Number(row && row.version)) ? Number(row.version) : 0,
+      createdAt: row && row.created_at ? String(row.created_at) : "",
+      updatedAt: row && row.updated_at ? String(row.updated_at) : "",
+      deletedAt: row && row.deleted_at ? String(row.deleted_at) : "",
+      action: { id: row && row.client_id ? String(row.client_id) : String(data.id || ""), ...data }
+    };
+  }
+
   function normalizeRecord(record, expectedWorkspaceId, ownerId) {
     const payload = clonePlainObject(record.payload || {});
     validatePayloadShape(payload);
@@ -360,6 +391,79 @@
       }
       const row = Array.isArray(response.data) ? response.data[0] : response.data;
       return normalizeLinkRow(row || {});
+    }
+
+    async listActions(workspaceId) {
+      const context = this.getContext(workspaceId);
+      const response = await context.client
+        .from("deos_actions")
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .eq("workspace_id", context.workspaceId)
+        .order("updated_at", { ascending: false });
+      if (response.error) throw createRemoteError("REMOTE_ACTIONS_LIST_FAILED", response.error.message || "Lecture distante des Actions impossible.");
+      return Array.isArray(response.data) ? response.data.map(normalizeActionRow) : [];
+    }
+
+    async getAction(clientId) {
+      const context = this.getContext();
+      const response = await context.client
+        .from("deos_actions")
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .eq("workspace_id", context.workspaceId)
+        .eq("client_id", String(clientId || ""))
+        .maybeSingle();
+      if (response.error) throw createRemoteError("REMOTE_ACTION_GET_FAILED", response.error.message || "Lecture distante de l'Action impossible.");
+      return response.data ? normalizeActionRow(response.data) : null;
+    }
+
+    async createAction(action) {
+      const context = this.getContext(action && action.workspaceId);
+      this.assertWritableRole(context.role);
+      const clientId = String(action && action.id ? action.id : "").trim();
+      if (!clientId) throw createRemoteError("ACTION_CLIENT_ID_REQUIRED", "Un id local stable est requis pour créer une Action distante.");
+      const payload = normalizeActionData(action || {});
+      const response = await context.client
+        .from("deos_actions")
+        .insert({ workspace_id: context.workspaceId, owner_id: context.userId, client_id: clientId, data: payload })
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .single();
+      if (response.error) {
+        const code = String(response.error.code || "").trim();
+        if (code === "23505") throw createRemoteError("REMOTE_ACTION_EXISTS", response.error.message || "L'Action existe déjà à distance.", response.error);
+        throw createRemoteError("REMOTE_ACTION_CREATE_FAILED", response.error.message || "Création distante de l'Action impossible.", response.error);
+      }
+      return normalizeActionRow(response.data);
+    }
+
+    async updateAction(clientId, patch, expectedVersion) {
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour mettre à jour une Action distante.");
+      const payload = normalizeActionData(patch || {});
+      const response = await context.client.rpc("deos_update_action", { p_client_id: String(clientId || "").trim(), p_expected_version: version, p_data: payload });
+      if (response.error) {
+        const message = response.error.message || "Mise à jour distante de l'Action impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_ACTION_UPDATE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeActionRow(row || {});
+    }
+
+    async softDeleteAction(clientId, expectedVersion) {
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour supprimer logiquement une Action distante.");
+      const response = await context.client.rpc("deos_soft_delete_action", { p_client_id: String(clientId || "").trim(), p_expected_version: version });
+      if (response.error) {
+        const message = response.error.message || "Suppression logique distante de l'Action impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_ACTION_DELETE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeActionRow(row || {});
     }
   }
 
