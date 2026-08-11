@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.23D";
+const DEOS_VERSION = "V5.23E";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -17467,15 +17467,74 @@ function setProjectSyncMeta(clientId, patch = {}) {
   refreshProjectsSyncRuntimeState();
   return next;
 }
-function cloneProjectBusinessData(project = {}) {
-  const source = project && typeof project === "object" && !Array.isArray(project) ? project : {};
-  const forbidden = new Set(["id", "clientId", "remoteId", "remoteVersion", "lastSyncedAt", "syncStatus", "remoteUpdatedAt", "lastSyncError"]);
-  const output = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (forbidden.has(key) || key.startsWith("__") || key.startsWith("_sync")) continue;
-    output[key] = value;
+// V5.23E — Canonicalisation métier des Projets avant fingerprint/conflit.
+// Objectif : neutraliser les faux conflits causés par les différences de représentation
+// entre appareils (champ absent vs valeur vide, ordre des IDs, null/undefined, métadonnées techniques).
+const DEOS_PROJECT_RELATION_FIELDS = new Set([
+  "linkedManagers", "linkedManagerIds", "linkedFolders", "linkedActions",
+  "linkedDecisions", "linkedDocuments"
+]);
+const DEOS_PROJECT_TECHNICAL_FIELDS = new Set([
+  "id", "clientId", "remoteId", "remoteVersion", "lastSyncedAt", "syncStatus",
+  "remoteUpdatedAt", "lastSyncError", "createdAt", "updatedAt"
+]);
+
+function canonicalProjectScalar(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "boolean") return value;
+  return value;
+}
+
+function canonicalProjectStructuredValue(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return value.map(item => canonicalProjectStructuredValue(item));
   }
-  return JSON.parse(JSON.stringify(output));
+  if (typeof value === "object") {
+    const out = {};
+    Object.keys(value).sort().forEach(key => {
+      const normalized = canonicalProjectStructuredValue(value[key]);
+      // Une propriété structurée vide et une propriété absente sont équivalentes.
+      if (normalized === "" || normalized === null || normalized === undefined) return;
+      if (Array.isArray(normalized) && normalized.length === 0) return;
+      if (normalized && typeof normalized === "object" && !Array.isArray(normalized) && Object.keys(normalized).length === 0) return;
+      out[key] = normalized;
+    });
+    return out;
+  }
+  return canonicalProjectScalar(value);
+}
+
+function canonicalProjectBusinessData(project = {}) {
+  const source = project && typeof project === "object" && !Array.isArray(project) ? project : {};
+  // normalizeEntity injecte les valeurs métier par défaut de DEOS : un champ absent
+  // et sa valeur vide par défaut deviennent ainsi identiques avant comparaison.
+  const normalizedProject = normalizeEntity("projects", { ...source });
+  const output = {};
+  for (const [key, rawValue] of Object.entries(normalizedProject)) {
+    if (DEOS_PROJECT_TECHNICAL_FIELDS.has(key) || key.startsWith("__") || key.startsWith("_sync")) continue;
+    if (DEOS_PROJECT_RELATION_FIELDS.has(key)) {
+      const ids = key === "linkedManagers" || key === "linkedManagerIds"
+        ? normalizeLinkedManagerIds(ensureArray(rawValue))
+        : normalizeLinkedIdArray(ensureArray(rawValue));
+      output[key === "linkedManagerIds" ? "linkedManagers" : key] = [...new Set(ids.map(String).filter(Boolean))].sort();
+      continue;
+    }
+    if (key === "progress") {
+      output.progress = Number(rawValue || 0);
+      continue;
+    }
+    output[key] = canonicalProjectStructuredValue(rawValue);
+  }
+  // Supprime les doublons de clé issus du legacy linkedManagerIds -> linkedManagers.
+  delete output.linkedManagerIds;
+  return stableJsonValue(output);
+}
+
+function cloneProjectBusinessData(project = {}) {
+  return JSON.parse(JSON.stringify(canonicalProjectBusinessData(project)));
 }
 function projectSyncClientId(project = {}) {
   return String(project?.clientId || project?.id || "").trim();
@@ -17511,10 +17570,11 @@ function persistProjectsState(options = {}) {
   persist("projects");
   if (options.updateShadow !== false && projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
 }
-function projectFingerprint(project = {}) { return JSON.stringify(stableJsonValue(cloneProjectBusinessData(project))); }
+function projectFingerprint(project = {}) { return JSON.stringify(canonicalProjectBusinessData(project)); }
 function projectConflictFields(localProject = {}, remoteProject = {}) {
-  const a = cloneProjectBusinessData(localProject), b = cloneProjectBusinessData(remoteProject);
-  return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => JSON.stringify(a[k] ?? null) !== JSON.stringify(b[k] ?? null));
+  const a = canonicalProjectBusinessData(localProject), b = canonicalProjectBusinessData(remoteProject);
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])]
+    .filter(key => JSON.stringify(a[key]) !== JSON.stringify(b[key]));
 }
 function refreshProjectsSyncRuntimeState(patch = {}) {
   const metaByClientId = normalizeProjectsSyncMetaMap(patch.metaByClientId === undefined ? deosProjectsSyncRuntime.metaByClientId : patch.metaByClientId);
@@ -17839,7 +17899,7 @@ function renderProjectsHybridSettingsCardHtml() {
   const remoteReady = projectsSyncCanInspectRemote();
   const analysis = deosProjectsSyncRuntime.lastAnalysis;
   const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Dossiers, Projets, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
-  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.23D séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.23E séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeProjectsHybridFromSettings() {
   return runProjectsUiExclusive("analyze", async () => {
