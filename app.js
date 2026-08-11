@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.23F";
+const DEOS_VERSION = "V5.23G";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -17072,7 +17072,7 @@ function buildActionsRemotePreview(localActions, remoteRows) {
       rows: group.map(row => ({ clientId: String(row.clientId || ""), version: Number(row.version || 0), createdAt: row.createdAt || "", updatedAt: row.updatedAt || "" }))
     }));
 
-  return { localCount: locals.length, remoteCount: activeRows.length, localOnly, remoteOnly, both, conflicts, duplicateCandidates, remoteRows: ensureArray(remoteRows), generatedAt: new Date().toLocaleString("fr-FR") };
+  return { localCount: locals.length, remoteCount: activeRows.length, localOnly, remoteOnly, both, conflicts, mergeCandidates, duplicateCandidates, remoteRows: ensureArray(remoteRows), generatedAt: new Date().toLocaleString("fr-FR") };
 }
 // V5.22D — Safari/iPad : sérialisation stricte des opérations Actions.
 // Une synchronisation, une analyse ou une prévisualisation ne doivent jamais effectuer
@@ -17571,10 +17571,99 @@ function persistProjectsState(options = {}) {
   if (options.updateShadow !== false && projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
 }
 function projectFingerprint(project = {}) { return JSON.stringify(canonicalProjectBusinessData(project)); }
-function projectConflictFields(localProject = {}, remoteProject = {}) {
-  const a = canonicalProjectBusinessData(localProject), b = canonicalProjectBusinessData(remoteProject);
-  return [...new Set([...Object.keys(a), ...Object.keys(b)])]
-    .filter(key => JSON.stringify(a[key]) !== JSON.stringify(b[key]));
+
+// V5.23G — fusion non destructive des Projets.
+// Règle métier : une valeur vide/appauvrie ne doit jamais écraser une valeur renseignée.
+// Un conflit n'existe que lorsque les deux côtés portent des valeurs métier non vides et différentes.
+function projectCanonicalValueIsEmpty(value) {
+  if (value === null || value === undefined || value === "") return true;
+  if (typeof value === "number") return Number(value) === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  if (value && typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+function projectCanonicalValuesEqual(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function projectCanonicalArraySubset(localValue, remoteValue) {
+  if (!Array.isArray(localValue) || !Array.isArray(remoteValue) || localValue.length >= remoteValue.length) return false;
+  const remoteSet = new Set(remoteValue.map(item => JSON.stringify(item)));
+  return localValue.every(item => remoteSet.has(JSON.stringify(item)));
+}
+function projectValueLooksDegraded(localValue, remoteValue) {
+  if (projectCanonicalValueIsEmpty(localValue) && !projectCanonicalValueIsEmpty(remoteValue)) return true;
+  if (projectCanonicalArraySubset(localValue, remoteValue)) return true;
+  return false;
+}
+function getProjectsSyncShadowMap() {
+  const shadow = projectsSyncShadowRepository.load({ syncedAt: "", projects: [] });
+  return new Map(ensureArray(shadow.projects).map(project => [projectSyncClientId(project), project]).filter(([id]) => id));
+}
+function resolveProjectNonDestructive(localProject = {}, remoteProject = {}, baseProject = null) {
+  const localNormalized = normalizeEntity("projects", { ...(localProject || {}) });
+  const remoteNormalized = normalizeEntity("projects", { ...(remoteProject || {}) });
+  const baseNormalized = baseProject ? normalizeEntity("projects", { ...(baseProject || {}) }) : null;
+  const localCanonical = canonicalProjectBusinessData(localNormalized);
+  const remoteCanonical = canonicalProjectBusinessData(remoteNormalized);
+  const baseCanonical = baseNormalized ? canonicalProjectBusinessData(baseNormalized) : null;
+  const keys = [...new Set([...Object.keys(localCanonical), ...Object.keys(remoteCanonical), ...(baseCanonical ? Object.keys(baseCanonical) : [])])];
+  const merged = { ...localNormalized };
+  const conflictFields = [];
+  const fromRemoteFields = [];
+  const fromLocalFields = [];
+
+  for (const key of keys) {
+    const l = localCanonical[key];
+    const r = remoteCanonical[key];
+    const b = baseCanonical ? baseCanonical[key] : undefined;
+    if (projectCanonicalValuesEqual(l, r)) continue;
+
+    const lEmpty = projectCanonicalValueIsEmpty(l);
+    const rEmpty = projectCanonicalValueIsEmpty(r);
+    const lEqualsBase = baseCanonical ? projectCanonicalValuesEqual(l, b) : false;
+    const rEqualsBase = baseCanonical ? projectCanonicalValuesEqual(r, b) : false;
+
+    // Une valeur locale vide ou manifestement appauvrie ne doit jamais effacer une valeur distante riche.
+    if ((lEmpty || projectValueLooksDegraded(l, r)) && !rEmpty) {
+      merged[key] = remoteNormalized[key];
+      fromRemoteFields.push(key);
+      continue;
+    }
+    // Si le distant est vide et le local renseigné, on conserve le local.
+    if (!lEmpty && rEmpty) {
+      fromLocalFields.push(key);
+      continue;
+    }
+
+    if (baseCanonical) {
+      // Seul le distant a évolué depuis le dernier état connu : on récupère le distant.
+      if (lEqualsBase && !rEqualsBase) {
+        merged[key] = remoteNormalized[key];
+        fromRemoteFields.push(key);
+        continue;
+      }
+      // Seul le local a évolué et il ne s'est pas appauvri : on conserve le local.
+      if (rEqualsBase && !lEqualsBase) {
+        fromLocalFields.push(key);
+        continue;
+      }
+    }
+
+    // Deux valeurs métier réellement renseignées et différentes = vrai conflit.
+    conflictFields.push(key);
+  }
+
+  const clientId = projectSyncClientId(localProject) || projectSyncClientId(remoteProject);
+  const normalizedMerged = normalizeEntity("projects", { ...merged, id: clientId || merged.id, clientId: clientId || merged.clientId });
+  return {
+    merged: normalizedMerged,
+    conflictFields: [...new Set(conflictFields)],
+    fromRemoteFields: [...new Set(fromRemoteFields)],
+    fromLocalFields: [...new Set(fromLocalFields)],
+    localChanged: projectFingerprint(normalizedMerged) !== projectFingerprint(localNormalized),
+    remoteChanged: projectFingerprint(normalizedMerged) !== projectFingerprint(remoteNormalized)
+  };
+}
+function projectConflictFields(localProject = {}, remoteProject = {}, baseProject = null) {
+  return resolveProjectNonDestructive(localProject, remoteProject, baseProject).conflictFields;
 }
 function refreshProjectsSyncRuntimeState(patch = {}) {
   const metaByClientId = normalizeProjectsSyncMetaMap(patch.metaByClientId === undefined ? deosProjectsSyncRuntime.metaByClientId : patch.metaByClientId);
@@ -17619,17 +17708,19 @@ function buildProjectsRemotePreview(localProjects, remoteRows) {
   const locals = ensureArray(localProjects);
   const localMap = new Map(locals.map(project => [projectSyncClientId(project), project]).filter(([id]) => id));
   const remoteMap = new Map(activeRows.map(row => [String(row.clientId || "").trim(), row]).filter(([id]) => id));
-  const localOnly = [], remoteOnly = [], both = [], conflicts = [];
+  const localOnly = [], remoteOnly = [], both = [], conflicts = [], mergeCandidates = [];
+  const shadowMap = getProjectsSyncShadowMap();
   locals.forEach(project => {
     const clientId = projectSyncClientId(project);
     const row = remoteMap.get(clientId);
     if (!row) return localOnly.push(project);
-    both.push({ local: project, remote: row.project, remoteVersion: row.version, remoteUpdatedAt: row.updatedAt });
-    const meta = getProjectSyncMeta(clientId);
-    const localChanged = meta.lastLocalFingerprint && meta.lastLocalFingerprint !== projectFingerprint(project);
-    const remoteChanged = meta.remoteVersion > 0 && Number(row.version || 0) > Number(meta.remoteVersion || 0);
-    if ((!meta.lastLocalFingerprint && projectFingerprint(project) !== projectFingerprint(row.project)) || (localChanged && remoteChanged)) {
-      conflicts.push({ clientId, title: project.name || clientId, local: project, remote: row.project, fields: projectConflictFields(project, row.project), remoteVersion: row.version });
+    const baseProject = shadowMap.get(clientId) || null;
+    const resolution = resolveProjectNonDestructive(project, row.project, baseProject);
+    both.push({ local: project, remote: row.project, remoteVersion: row.version, remoteUpdatedAt: row.updatedAt, resolution });
+    if (resolution.conflictFields.length) {
+      conflicts.push({ clientId, title: project.name || clientId, local: project, remote: row.project, fields: resolution.conflictFields, remoteVersion: row.version });
+    } else if (resolution.localChanged || resolution.remoteChanged) {
+      mergeCandidates.push({ clientId, title: project.name || clientId, fromRemoteFields: resolution.fromRemoteFields, fromLocalFields: resolution.fromLocalFields });
     }
   });
   activeRows.forEach(row => { if (!localMap.has(String(row.clientId || "").trim())) remoteOnly.push(row.project); });
@@ -17737,6 +17828,38 @@ async function syncProjectsHybridNow(options = {}) {
     }
     let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
     let localChanged = false;
+    if (preflight.conflicts.length) {
+      throw new Error(`CONFLICTS_PROJECTS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+    }
+
+    // V5.23G — fusion non destructive des Projets déjà présents des deux côtés AVANT
+    // toute création locale. Les champs vides/appauvris sont restaurés depuis le côté riche.
+    const shadowMap = getProjectsSyncShadowMap();
+    const autoResolvedClientIds = new Set();
+    for (const [clientId, row] of remoteActiveMap.entries()) {
+      const local = byId("projects", clientId);
+      if (!local) continue;
+      const resolution = resolveProjectNonDestructive(local, row.project, shadowMap.get(clientId) || null);
+      if (resolution.conflictFields.length) {
+        setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
+        throw new Error(`CONFLICT_PROJECT_${clientId} — ${resolution.conflictFields.join(", ")}`);
+      }
+      let effectiveRow = row;
+      if (resolution.localChanged) {
+        const index = indexById("projects", clientId);
+        if (index >= 0) { state.projects[index] = resolution.merged; localChanged = true; }
+      }
+      if (resolution.remoteChanged) {
+        const updated = await withProjectsRemoteTimeout(deosRemoteAdapter.updateProject(clientId, resolution.merged, Number(row.version || 0)), `Fusion non destructive du Projet ${resolution.merged.name || clientId}`);
+        effectiveRow = { ...row, remoteId: updated.remoteId || row.remoteId, version: Number(updated.version || row.version || 0), updatedAt: updated.updatedAt || row.updatedAt, project: resolution.merged };
+        remoteActiveMap.set(clientId, effectiveRow);
+      }
+      if (resolution.localChanged || resolution.remoteChanged || getProjectSyncMeta(clientId).syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT) {
+        setProjectSyncMeta(clientId, { remoteId: effectiveRow.remoteId, remoteVersion: Number(effectiveRow.version || 0), remoteUpdatedAt: effectiveRow.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: projectFingerprint(resolution.merged), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+      }
+      autoResolvedClientIds.add(clientId);
+    }
+    if (localChanged) persistProjectsState();
 
     // V5.23D — une absence locale n'est JAMAIS interprétée comme une suppression.
     // Un soft-delete distant n'est autorisé que si la suppression a été explicitement marquée localement.
@@ -17765,6 +17888,10 @@ async function syncProjectsHybridNow(options = {}) {
       if (!clientId) continue;
       const local = byId("projects", clientId);
       const meta = getProjectSyncMeta(clientId);
+      if (!row.deletedAt && autoResolvedClientIds.has(clientId)) {
+        setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: projectFingerprint(local || row.project), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+        continue;
+      }
       if (row.deletedAt) {
         if (local && meta.remoteVersion > 0) { state.projects = state.projects.filter(item => !sameId(item.id, clientId)); localChanged = true; }
         setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "" });
@@ -17779,7 +17906,7 @@ async function syncProjectsHybridNow(options = {}) {
       const localFp = projectFingerprint(local), remoteFp = projectFingerprint(row.project);
       if (!meta.lastLocalFingerprint) {
         if (localFp !== remoteFp) {
-          setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: projectConflictFields(local, row.project) });
+          setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: projectConflictFields(local, row.project, getProjectsSyncShadowMap().get(clientId) || null) });
         } else {
           setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
         }
@@ -17788,7 +17915,7 @@ async function syncProjectsHybridNow(options = {}) {
       const localChangedSinceSync = localFp !== meta.lastLocalFingerprint;
       const remoteChangedSinceSync = Number(row.version || 0) > Number(meta.remoteVersion || 0);
       if (localChangedSinceSync && remoteChangedSinceSync) {
-        setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: projectConflictFields(local, row.project) });
+        setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: projectConflictFields(local, row.project, getProjectsSyncShadowMap().get(clientId) || null) });
         continue;
       }
       if (localChangedSinceSync && !remoteChangedSinceSync) {
@@ -17899,13 +18026,13 @@ function renderProjectsHybridSettingsCardHtml() {
   const remoteReady = projectsSyncCanInspectRemote();
   const analysis = deosProjectsSyncRuntime.lastAnalysis;
   const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Dossiers, Projets, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
-  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.23F séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.23G séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeProjectsHybridFromSettings() {
   return runProjectsUiExclusive("analyze", async () => {
   try {
     const a = await analyzeProjectsHybridState();
-    const message = `Analyse Projets terminée\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}`;
+    const message = `Analyse Projets terminée\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
     // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
     alert(message);
     renderSettings(`Analyse Projets prête: ${a.localCount} locale(s), ${a.remoteCount} distante(s).`);
@@ -17925,7 +18052,7 @@ async function previewProjectsMigrationFromSettings() {
   return runProjectsUiExclusive("preview", async () => {
   try {
     const a = await projectsHybridRepository.analyze();
-    alert(`Prévisualisation de migration Projets\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\n\nAucune écriture n'a été effectuée.`);
+    alert(`Prévisualisation de migration Projets\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
   } catch (error) { renderSettings(error?.message || "Prévisualisation Projets impossible."); }
   });
 }
@@ -17947,7 +18074,7 @@ function buildProjectConflictDiagnostic(meta = {}) {
   const remote = meta.conflictRemote?.project || meta.conflictRemote || {};
   const localCanonical = canonicalProjectBusinessData(local);
   const remoteCanonical = canonicalProjectBusinessData(remote);
-  const fields = projectConflictFields(local, remote);
+  const fields = projectConflictFields(local, remote, getProjectsSyncShadowMap().get(clientId) || null);
   const title = local.name || remote.name || clientId;
   const rows = fields.map(field => {
     const localValue = localCanonical[field];
@@ -17960,7 +18087,7 @@ function showProjectsConflictsFromSettings() {
   const conflicts = Object.values(deosProjectsSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
   if (!conflicts.length) return alert("Aucun conflit Projet détecté.");
   const details = conflicts.map(buildProjectConflictDiagnostic);
-  alert(`Diagnostic conflits Projets V5.23F (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+  alert(`Diagnostic conflits Projets V5.23G (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
 }
 
 
