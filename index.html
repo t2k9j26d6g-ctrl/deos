@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DEOS V5</title>
   <link rel="stylesheet" href="style.css?v=137" />
+
+  <style>
+    /* V5.24B — iPad/Safari : éviter le débordement horizontal de la barre latérale. */
+    .sidebar { overflow-x: hidden !important; }
+    .sidebar * { max-width: 100%; box-sizing: border-box; }
+  </style>
 </head>
 
 <body>
@@ -55,7 +61,7 @@
  <script src="config.js?v=1"></script>
   <script src="supabase-client.js?v=1"></script>
   <script src="remote-adapter.js?v=4"></script>
-  <script src="app.js?v=524F2"></script>
+  <script src="app.js?v=5241F2"></script>
 </body>
 </html>
 

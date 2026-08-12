@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.23G";
+const DEOS_VERSION = "V5.24B";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -170,6 +170,9 @@ const DEOS_STORAGE_KEYS = Object.freeze({
   sync_queue_links: "deos_sync_queue_links",
   sync_meta_actions: "deos_sync_meta_actions",
   sync_queue_actions: "deos_sync_queue_actions",
+  sync_meta_folders: "deos_sync_meta_folders",
+  sync_queue_folders: "deos_sync_queue_folders",
+  sync_shadow_folders: "deos_sync_shadow_folders",
   gc_token: "deos_gc_token",
   gc_email: "deos_gc_email"
 });
@@ -182,7 +185,10 @@ DEOS_TECHNICAL_BACKUP_KEYS = [
   DEOS_STORAGE_KEYS.sync_meta_links,
   DEOS_STORAGE_KEYS.sync_queue_links,
   DEOS_STORAGE_KEYS.sync_meta_actions,
-  DEOS_STORAGE_KEYS.sync_queue_actions
+  DEOS_STORAGE_KEYS.sync_queue_actions,
+  DEOS_STORAGE_KEYS.sync_meta_folders,
+  DEOS_STORAGE_KEYS.sync_queue_folders,
+  DEOS_STORAGE_KEYS.sync_shadow_folders
 ];
 
 const DEOS_STORAGE_PREFIX = "deos_";
@@ -499,6 +505,17 @@ const projectsSyncShadowRepository = createRepository(deosDataService, {
   }
 });
 
+const foldersSyncMetaRepository = createRepository(deosDataService, {
+  key: "sync_meta_folders", fallbackFactory: () => ({}), normalize: value => normalizeFoldersSyncMetaMap(value)
+});
+const foldersSyncQueueRepository = createRepository(deosDataService, {
+  key: "sync_queue_folders", fallbackFactory: () => [], normalize: value => normalizeFoldersSyncQueue(value)
+});
+const foldersSyncShadowRepository = createRepository(deosDataService, {
+  key: "sync_shadow_folders", fallbackFactory: () => ({ syncedAt: "", folders: [] }),
+  normalize: value => { const source = value && typeof value === "object" && !Array.isArray(value) ? value : {}; return { syncedAt: String(source.syncedAt || "").trim(), folders: normalizeCollection("folders", ensureArray(source.folders)) }; }
+});
+
 const DEOS_REMOTE_TEST_RECORD_TEMPLATES = Object.freeze([
   { label: "Test de connexion", payload: { scenario: "connectivity", device: "Navigateur principal", note: "Validation du canal distant de test.", status: "draft", client: "DEOS V5.21C" } },
   { label: "Test PC", payload: { scenario: "pc", device: "PC", note: "Validation multi-appareils sur poste principal.", status: "draft", client: "DEOS V5.21C" } },
@@ -556,6 +573,9 @@ const actionsHybridRepository = createActionsHybridRepository();
 
 let deosProjectsSyncRuntime = createProjectsSyncRuntimeState();
 const projectsHybridRepository = createProjectsHybridRepository();
+
+let deosFoldersSyncRuntime = createFoldersSyncRuntimeState();
+const foldersHybridRepository = createFoldersHybridRepository();
 
 let deosRemoteWorkspaceDialog = {
   open: false,
@@ -1749,6 +1769,7 @@ async function init() {
   initializeLinksHybridSync({ skipAutoSync: false });
   initializeActionsHybridSync({ skipAutoSync: false });
   initializeProjectsHybridSync({ skipAutoSync: false });
+  initializeFoldersHybridSync({ skipAutoSync: false });
   // V5.5 — Charger les événements externes (Google Calendar)
   state.externalCalendarEvents = externalEventsRepository.load([]);
   // V5.7 — Charger les enrichissements locaux des événements Google
@@ -6504,6 +6525,7 @@ function endFolderGraphPan() {
 }
 
 function renderFolders() {
+  restoreFoldersFromSyncShadowIfNeeded();
   document.getElementById("viewTitle").textContent = "Dossiers";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "folders"));
   const notice = folderOperationNotice ? `<p class="folder-operation-notice">${esc(folderOperationNotice)}</p>` : "";
@@ -17572,7 +17594,7 @@ function persistProjectsState(options = {}) {
 }
 function projectFingerprint(project = {}) { return JSON.stringify(canonicalProjectBusinessData(project)); }
 
-// V5.23G — fusion non destructive des Projets.
+// V5.24B — fusion non destructive des Projets.
 // Règle métier : une valeur vide/appauvrie ne doit jamais écraser une valeur renseignée.
 // Un conflit n'existe que lorsque les deux côtés portent des valeurs métier non vides et différentes.
 function projectCanonicalValueIsEmpty(value) {
@@ -17832,7 +17854,7 @@ async function syncProjectsHybridNow(options = {}) {
       throw new Error(`CONFLICTS_PROJECTS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
     }
 
-    // V5.23G — fusion non destructive des Projets déjà présents des deux côtés AVANT
+    // V5.24B — fusion non destructive des Projets déjà présents des deux côtés AVANT
     // toute création locale. Les champs vides/appauvris sont restaurés depuis le côté riche.
     const shadowMap = getProjectsSyncShadowMap();
     const autoResolvedClientIds = new Set();
@@ -18026,7 +18048,7 @@ function renderProjectsHybridSettingsCardHtml() {
   const remoteReady = projectsSyncCanInspectRemote();
   const analysis = deosProjectsSyncRuntime.lastAnalysis;
   const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Dossiers, Projets, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
-  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.23G séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="projectsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Projets</h2><p class="muted">Pilote V5.24B séparé des Liens et des Actions, avec lecture distante Projets via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${projectsSyncStatusClass()}">${esc(projectsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(projectsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Projets locaux</strong><span>${esc(String(state.projects.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Projets distants</strong><span>${esc(String(deosProjectsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosProjectsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosProjectsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosProjectsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosProjectsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Projets</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Projets terminée',analyzeProjectsHybridFromSettings)">Analyser les Projets</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Projets terminée',previewProjectsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Projets activée',activateProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Projets terminée',syncProjectsHybridFromSettings)" ${projectsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showProjectsConflictsFromSettings()" ${deosProjectsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactProjectDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Projets terminée',repairExactProjectDuplicatesFromSettings)" ${projectsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateProjectsHybridFromSettings()" ${projectsSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Projets locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeProjectsHybridFromSettings() {
   return runProjectsUiExclusive("analyze", async () => {
@@ -18087,7 +18109,744 @@ function showProjectsConflictsFromSettings() {
   const conflicts = Object.values(deosProjectsSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
   if (!conflicts.length) return alert("Aucun conflit Projet détecté.");
   const details = conflicts.map(buildProjectConflictDiagnostic);
-  alert(`Diagnostic conflits Projets V5.23G (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+  alert(`Diagnostic conflits Projets V5.24B (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+}
+
+
+
+// -- V5.24B : Synchronisation pilote Dossiers ---------------------------------
+function createFoldersSyncRuntimeState(overrides = {}) {
+  return {
+    enabled: false,
+    state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY,
+    queue: [],
+    metaByClientId: {},
+    remoteCount: 0,
+    pendingCount: 0,
+    syncedCount: 0,
+    conflictCount: 0,
+    lastSyncAt: "",
+    lastError: "",
+    lastAnalysisAt: "",
+    lastAnalysis: null,
+    currentDevice: detectLinksSyncDeviceLabel(),
+    syncing: false,
+    ...overrides
+  };
+}
+
+function createFoldersHybridRepository() {
+  return {
+    loadRuntime(options = {}) { return initializeFoldersHybridSync(options); },
+    analyze() { return analyzeFoldersHybridState(); },
+    activate() { return activateFoldersHybridSync(); },
+    deactivate() { return deactivateFoldersHybridSync(); },
+    syncNow(options = {}) { return syncFoldersHybridNow(options); }
+  };
+}
+
+function normalizeFoldersSyncSettings(value = {}) {
+  return {
+    enabled: Boolean(value.enabled),
+    activatedAt: String(value.activatedAt || "").trim(),
+    lastMode: String(value.lastMode || "").trim()
+  };
+}
+function getFoldersSyncSettings() {
+  const remote = getRemoteSyncSettings();
+  return normalizeFoldersSyncSettings({
+    enabled: Boolean(remote.foldersPilotEnabled),
+    activatedAt: remote.foldersPilotActivatedAt,
+    lastMode: remote.foldersPilotLastMode
+  });
+}
+function setFoldersSyncSettings(patch = {}) {
+  const currentRemote = getRemoteSyncSettings();
+  const next = normalizeFoldersSyncSettings({ ...getFoldersSyncSettings(), ...(patch || {}) });
+  state.settings.remoteSync = normalizeRemoteSyncSettings({
+    ...currentRemote,
+    foldersPilotEnabled: next.enabled,
+    foldersPilotActivatedAt: next.activatedAt,
+    foldersPilotLastMode: next.lastMode
+  });
+  persistSettings();
+  return next;
+}
+function foldersSyncIsEnabled() { return Boolean(getFoldersSyncSettings().enabled); }
+function foldersSyncCanInspectRemote() { return linksSyncCanInspectRemote() && deosRemoteAdapter && typeof deosRemoteAdapter.listFolders === "function"; }
+function foldersSyncCanUseRemote() { return foldersSyncIsEnabled() && foldersSyncCanInspectRemote(); }
+
+function normalizeFoldersSyncMetaEntry(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    clientId: String(source.clientId || "").trim(),
+    remoteId: String(source.remoteId || "").trim(),
+    remoteVersion: Number.isInteger(Number(source.remoteVersion)) ? Number(source.remoteVersion) : 0,
+    lastSyncedAt: String(source.lastSyncedAt || "").trim(),
+    syncStatus: String(source.syncStatus || DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY).trim(),
+    remoteUpdatedAt: String(source.remoteUpdatedAt || "").trim(),
+    lastLocalFingerprint: String(source.lastLocalFingerprint || "").trim(),
+    lastSyncError: String(source.lastSyncError || "").trim(),
+    conflictRemote: source.conflictRemote && typeof source.conflictRemote === "object" ? source.conflictRemote : null,
+    conflictFields: ensureArray(source.conflictFields).map(String),
+    deletePending: Boolean(source.deletePending)
+  };
+}
+function normalizeFoldersSyncMetaMap(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.entries(source).map(([key, entry]) => {
+    const normalized = normalizeFoldersSyncMetaEntry({ ...(entry || {}), clientId: entry?.clientId || key });
+    return normalized.clientId ? [normalized.clientId, normalized] : null;
+  }).filter(Boolean));
+}
+function normalizeFoldersSyncQueue(value = []) {
+  return ensureArray(value).map(item => ({
+    operation: item?.operation === "delete" ? "delete" : "upsert",
+    clientId: String(item?.clientId || "").trim(),
+    queuedAt: String(item?.queuedAt || "").trim(),
+    expectedVersion: Number.isInteger(Number(item?.expectedVersion)) ? Number(item.expectedVersion) : 0,
+    attempts: Number.isInteger(Number(item?.attempts)) ? Number(item.attempts) : 0,
+    lastError: String(item?.lastError || "").trim()
+  })).filter(item => item.clientId);
+}
+function getFolderSyncMeta(clientId) {
+  const key = String(clientId || "").trim();
+  return normalizeFoldersSyncMetaEntry({ ...(deosFoldersSyncRuntime.metaByClientId[key] || {}), clientId: key });
+}
+function setFolderSyncMeta(clientId, patch = {}) {
+  const key = String(clientId || "").trim();
+  if (!key) return null;
+  const next = normalizeFoldersSyncMetaEntry({ ...getFolderSyncMeta(key), ...(patch || {}), clientId: key });
+  deosFoldersSyncRuntime.metaByClientId = { ...deosFoldersSyncRuntime.metaByClientId, [key]: next };
+  foldersSyncMetaRepository.save(deosFoldersSyncRuntime.metaByClientId);
+  refreshFoldersSyncRuntimeState();
+  return next;
+}
+// V5.24B — Canonicalisation métier des Dossiers avant fingerprint/conflit.
+// Objectif : neutraliser les faux conflits causés par les différences de représentation
+// entre appareils (champ absent vs valeur vide, ordre des IDs, null/undefined, métadonnées techniques).
+const DEOS_FOLDER_RELATION_FIELDS = new Set([
+  "linkedManagers", "linkedManagerIds", "linkedFolders", "linkedActions",
+  "linkedDecisions", "linkedDocuments"
+]);
+const DEOS_FOLDER_TECHNICAL_FIELDS = new Set([
+  "id", "clientId", "remoteId", "remoteVersion", "lastSyncedAt", "syncStatus",
+  "remoteUpdatedAt", "lastSyncError", "createdAt", "updatedAt"
+]);
+
+function canonicalFolderScalar(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "boolean") return value;
+  return value;
+}
+
+function canonicalFolderStructuredValue(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return value.map(item => canonicalFolderStructuredValue(item));
+  }
+  if (typeof value === "object") {
+    const out = {};
+    Object.keys(value).sort().forEach(key => {
+      const normalized = canonicalFolderStructuredValue(value[key]);
+      // Une propriété structurée vide et une propriété absente sont équivalentes.
+      if (normalized === "" || normalized === null || normalized === undefined) return;
+      if (Array.isArray(normalized) && normalized.length === 0) return;
+      if (normalized && typeof normalized === "object" && !Array.isArray(normalized) && Object.keys(normalized).length === 0) return;
+      out[key] = normalized;
+    });
+    return out;
+  }
+  return canonicalFolderScalar(value);
+}
+
+function canonicalFolderBusinessData(folder = {}) {
+  const source = folder && typeof folder === "object" && !Array.isArray(folder) ? folder : {};
+  // normalizeEntity injecte les valeurs métier par défaut de DEOS : un champ absent
+  // et sa valeur vide par défaut deviennent ainsi identiques avant comparaison.
+  const normalizedFolder = normalizeEntity("folders", { ...source });
+  const output = {};
+  for (const [key, rawValue] of Object.entries(normalizedFolder)) {
+    if (DEOS_FOLDER_TECHNICAL_FIELDS.has(key) || key.startsWith("__") || key.startsWith("_sync")) continue;
+    if (DEOS_FOLDER_RELATION_FIELDS.has(key)) {
+      const ids = key === "linkedManagers" || key === "linkedManagerIds"
+        ? normalizeLinkedManagerIds(ensureArray(rawValue))
+        : normalizeLinkedIdArray(ensureArray(rawValue));
+      output[key === "linkedManagerIds" ? "linkedManagers" : key] = [...new Set(ids.map(String).filter(Boolean))].sort();
+      continue;
+    }
+    if (key === "progress") {
+      output.progress = Number(rawValue || 0);
+      continue;
+    }
+    output[key] = canonicalFolderStructuredValue(rawValue);
+  }
+  // Supprime les doublons de clé issus du legacy linkedManagerIds -> linkedManagers.
+  delete output.linkedManagerIds;
+  return stableJsonValue(output);
+}
+
+function cloneFolderBusinessData(folder = {}) {
+  return JSON.parse(JSON.stringify(canonicalFolderBusinessData(folder)));
+}
+function folderSyncClientId(folder = {}) {
+  return String(folder?.clientId || folder?.id || "").trim();
+}
+function ensureFolderSyncClientId(folder = {}) {
+  const clientId = folderSyncClientId(folder);
+  if (!clientId) return folder;
+  if (String(folder.clientId || "").trim() === clientId) return folder;
+  folder.clientId = clientId;
+  return folder;
+}
+
+function saveFoldersSyncShadow(folders = state.folders) {
+  const normalized = normalizeCollection("folders", ensureArray(folders));
+  foldersSyncShadowRepository.save({ syncedAt: new Date().toISOString(), folders: normalized });
+  return normalized;
+}
+
+function restoreFoldersFromSyncShadowIfNeeded(options = {}) {
+  if (!foldersSyncIsEnabled() && !options.force) return false;
+  const shadow = foldersSyncShadowRepository.load({ syncedAt: "", folders: [] });
+  const shadowFolders = ensureArray(shadow.folders);
+  if (!shadowFolders.length) return false;
+  const localIds = new Set(ensureArray(state.folders).map(folderSyncClientId).filter(Boolean));
+  const missingFromLocal = shadowFolders.filter(folder => !localIds.has(folderSyncClientId(folder)));
+  if (!missingFromLocal.length) return false;
+  state.folders = normalizeCollection("folders", [...ensureArray(state.folders), ...missingFromLocal]);
+  persist("folders");
+  return true;
+}
+
+function persistFoldersState(options = {}) {
+  persist("folders");
+  if (options.updateShadow !== false && foldersSyncIsEnabled()) saveFoldersSyncShadow(state.folders);
+}
+function folderFingerprint(folder = {}) { return JSON.stringify(canonicalFolderBusinessData(folder)); }
+
+// V5.24B — fusion non destructive des Dossiers.
+// Règle métier : une valeur vide/appauvrie ne doit jamais écraser une valeur renseignée.
+// Un conflit n'existe que lorsque les deux côtés portent des valeurs métier non vides et différentes.
+function folderCanonicalValueIsEmpty(value) {
+  if (value === null || value === undefined || value === "") return true;
+  if (typeof value === "number") return Number(value) === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  if (value && typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+function folderCanonicalValuesEqual(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function folderCanonicalArraySubset(localValue, remoteValue) {
+  if (!Array.isArray(localValue) || !Array.isArray(remoteValue) || localValue.length >= remoteValue.length) return false;
+  const remoteSet = new Set(remoteValue.map(item => JSON.stringify(item)));
+  return localValue.every(item => remoteSet.has(JSON.stringify(item)));
+}
+function folderValueLooksDegraded(localValue, remoteValue) {
+  if (folderCanonicalValueIsEmpty(localValue) && !folderCanonicalValueIsEmpty(remoteValue)) return true;
+  if (folderCanonicalArraySubset(localValue, remoteValue)) return true;
+  return false;
+}
+function getFoldersSyncShadowMap() {
+  const shadow = foldersSyncShadowRepository.load({ syncedAt: "", folders: [] });
+  return new Map(ensureArray(shadow.folders).map(folder => [folderSyncClientId(folder), folder]).filter(([id]) => id));
+}
+function resolveFolderNonDestructive(localFolder = {}, remoteFolder = {}, baseFolder = null) {
+  const localNormalized = normalizeEntity("folders", { ...(localFolder || {}) });
+  const remoteNormalized = normalizeEntity("folders", { ...(remoteFolder || {}) });
+  const baseNormalized = baseFolder ? normalizeEntity("folders", { ...(baseFolder || {}) }) : null;
+  const localCanonical = canonicalFolderBusinessData(localNormalized);
+  const remoteCanonical = canonicalFolderBusinessData(remoteNormalized);
+  const baseCanonical = baseNormalized ? canonicalFolderBusinessData(baseNormalized) : null;
+  const keys = [...new Set([...Object.keys(localCanonical), ...Object.keys(remoteCanonical), ...(baseCanonical ? Object.keys(baseCanonical) : [])])];
+  const merged = { ...localNormalized };
+  const conflictFields = [];
+  const fromRemoteFields = [];
+  const fromLocalFields = [];
+
+  for (const key of keys) {
+    const l = localCanonical[key];
+    const r = remoteCanonical[key];
+    const b = baseCanonical ? baseCanonical[key] : undefined;
+    if (folderCanonicalValuesEqual(l, r)) continue;
+
+    const lEmpty = folderCanonicalValueIsEmpty(l);
+    const rEmpty = folderCanonicalValueIsEmpty(r);
+    const lEqualsBase = baseCanonical ? folderCanonicalValuesEqual(l, b) : false;
+    const rEqualsBase = baseCanonical ? folderCanonicalValuesEqual(r, b) : false;
+
+    // Une valeur locale vide ou manifestement appauvrie ne doit jamais effacer une valeur distante riche.
+    if ((lEmpty || folderValueLooksDegraded(l, r)) && !rEmpty) {
+      merged[key] = remoteNormalized[key];
+      fromRemoteFields.push(key);
+      continue;
+    }
+    // Si le distant est vide et le local renseigné, on conserve le local.
+    if (!lEmpty && rEmpty) {
+      fromLocalFields.push(key);
+      continue;
+    }
+
+    if (baseCanonical) {
+      // Seul le distant a évolué depuis le dernier état connu : on récupère le distant.
+      if (lEqualsBase && !rEqualsBase) {
+        merged[key] = remoteNormalized[key];
+        fromRemoteFields.push(key);
+        continue;
+      }
+      // Seul le local a évolué et il ne s'est pas appauvri : on conserve le local.
+      if (rEqualsBase && !lEqualsBase) {
+        fromLocalFields.push(key);
+        continue;
+      }
+    }
+
+    // Deux valeurs métier réellement renseignées et différentes = vrai conflit.
+    conflictFields.push(key);
+  }
+
+  const clientId = folderSyncClientId(localFolder) || folderSyncClientId(remoteFolder);
+  const normalizedMerged = normalizeEntity("folders", { ...merged, id: clientId || merged.id, clientId: clientId || merged.clientId });
+  return {
+    merged: normalizedMerged,
+    conflictFields: [...new Set(conflictFields)],
+    fromRemoteFields: [...new Set(fromRemoteFields)],
+    fromLocalFields: [...new Set(fromLocalFields)],
+    localChanged: folderFingerprint(normalizedMerged) !== folderFingerprint(localNormalized),
+    remoteChanged: folderFingerprint(normalizedMerged) !== folderFingerprint(remoteNormalized)
+  };
+}
+function folderConflictFields(localFolder = {}, remoteFolder = {}, baseFolder = null) {
+  return resolveFolderNonDestructive(localFolder, remoteFolder, baseFolder).conflictFields;
+}
+function refreshFoldersSyncRuntimeState(patch = {}) {
+  const metaByClientId = normalizeFoldersSyncMetaMap(patch.metaByClientId === undefined ? deosFoldersSyncRuntime.metaByClientId : patch.metaByClientId);
+  const localCount = ensureArray(state.folders).length;
+  const conflictCount = Object.values(metaByClientId).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT).length;
+  const syncedCount = ensureArray(state.folders).filter(folder => getFolderSyncMeta(folder.id).syncStatus === DEOS_LINKS_SYNC_STATUS.SYNCED).length;
+  let nextState = foldersSyncIsEnabled() ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY;
+  if (patch.state) nextState = patch.state;
+  else if (conflictCount) nextState = DEOS_LINKS_SYNC_STATUS.CONFLICT;
+  else if (patch.syncing || deosFoldersSyncRuntime.syncing) nextState = DEOS_LINKS_SYNC_STATUS.SYNCING;
+  else if (foldersSyncIsEnabled() && navigator.onLine === false) nextState = DEOS_LINKS_SYNC_STATUS.OFFLINE;
+  else if (foldersSyncIsEnabled() && deosFoldersSyncRuntime.lastError) nextState = DEOS_LINKS_SYNC_STATUS.ERROR;
+  else if (foldersSyncIsEnabled() && localCount > 0 && syncedCount === localCount) nextState = DEOS_LINKS_SYNC_STATUS.SYNCED;
+  deosFoldersSyncRuntime = {
+    ...deosFoldersSyncRuntime,
+    enabled: foldersSyncIsEnabled(),
+    metaByClientId,
+    conflictCount,
+    syncedCount,
+    pendingCount: normalizeFoldersSyncQueue(foldersSyncQueueRepository.load([])).length,
+    currentDevice: detectLinksSyncDeviceLabel(),
+    state: nextState,
+    ...patch,
+    metaByClientId
+  };
+}
+function initializeFoldersHybridSync(options = {}) {
+  const settings = getFoldersSyncSettings();
+  deosFoldersSyncRuntime = createFoldersSyncRuntimeState({
+    enabled: settings.enabled,
+    metaByClientId: foldersSyncMetaRepository.load({}),
+    queue: foldersSyncQueueRepository.load([])
+  });
+  refreshFoldersSyncRuntimeState({ state: settings.enabled ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY });
+  if (settings.enabled) restoreFoldersFromSyncShadowIfNeeded();
+  // V5.24B — pendant le pilote Dossiers, aucune synchronisation automatique au démarrage.
+  // Cela évite qu’un rechargement ou une restauration de session amplifie un état incohérent.
+  return deosFoldersSyncRuntime;
+}
+function buildFoldersRemotePreview(localFolders, remoteRows) {
+  const activeRows = ensureArray(remoteRows).filter(row => !row.deletedAt);
+  const locals = ensureArray(localFolders);
+  const localMap = new Map(locals.map(folder => [folderSyncClientId(folder), folder]).filter(([id]) => id));
+  const remoteMap = new Map(activeRows.map(row => [String(row.clientId || "").trim(), row]).filter(([id]) => id));
+  const localOnly = [], remoteOnly = [], both = [], conflicts = [], mergeCandidates = [];
+  const shadowMap = getFoldersSyncShadowMap();
+  locals.forEach(folder => {
+    const clientId = folderSyncClientId(folder);
+    const row = remoteMap.get(clientId);
+    if (!row) return localOnly.push(folder);
+    const baseFolder = shadowMap.get(clientId) || null;
+    const resolution = resolveFolderNonDestructive(folder, row.folder, baseFolder);
+    both.push({ local: folder, remote: row.folder, remoteVersion: row.version, remoteUpdatedAt: row.updatedAt, resolution });
+    if (resolution.conflictFields.length) {
+      conflicts.push({ clientId, title: folder.name || clientId, local: folder, remote: row.folder, fields: resolution.conflictFields, remoteVersion: row.version });
+    } else if (resolution.localChanged || resolution.remoteChanged) {
+      mergeCandidates.push({ clientId, title: folder.name || clientId, fromRemoteFields: resolution.fromRemoteFields, fromLocalFields: resolution.fromLocalFields });
+    }
+  });
+  activeRows.forEach(row => { if (!localMap.has(String(row.clientId || "").trim())) remoteOnly.push(row.folder); });
+
+  // V5.22B — détection non destructive des doublons métier exacts.
+  // Deux client_id distincts avec exactement le même payload métier ne doivent jamais être amplifiés.
+  const fingerprintGroups = new Map();
+  activeRows.forEach(row => {
+    const fp = folderFingerprint(row.folder || {});
+    if (!fingerprintGroups.has(fp)) fingerprintGroups.set(fp, []);
+    fingerprintGroups.get(fp).push(row);
+  });
+  const duplicateCandidates = [...fingerprintGroups.values()]
+    .filter(group => group.length > 1)
+    .map(group => ({
+      fingerprint: folderFingerprint(group[0]?.folder || {}),
+      title: String(group[0]?.folder?.name || "Dossier sans nom"),
+      rows: group.map(row => ({ clientId: String(row.clientId || ""), version: Number(row.version || 0), createdAt: row.createdAt || "", updatedAt: row.updatedAt || "" }))
+    }));
+
+  return { localCount: locals.length, remoteCount: activeRows.length, localOnly, remoteOnly, both, conflicts, duplicateCandidates, remoteRows: ensureArray(remoteRows), generatedAt: new Date().toLocaleString("fr-FR") };
+}
+// V5.24B — Safari/iPad : sérialisation stricte des opérations Folders.
+// Une synchronisation, une analyse ou une prévisualisation ne doivent jamais effectuer
+// des lectures Supabase concurrentes depuis l'interface.
+let deosFoldersUiOperationPromise = null;
+let deosFoldersUiOperationKind = "";
+
+function withFoldersRemoteTimeout(promise, operationLabel, timeoutMs = 20000) {
+  return withLinksRemoteTimeout(promise, operationLabel, timeoutMs);
+}
+
+function setFoldersSyncUiBusy(busy) {
+  const card = document.getElementById("foldersHybridSyncSettingsCard");
+  if (!card) return;
+  card.querySelectorAll("button").forEach(button => {
+    if (busy) {
+      if (!button.dataset.deosFoldersWasDisabled) button.dataset.deosFoldersWasDisabled = button.disabled ? "1" : "0";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    } else {
+      const wasDisabled = button.dataset.deosFoldersWasDisabled === "1";
+      delete button.dataset.deosFoldersWasDisabled;
+      button.removeAttribute("aria-busy");
+      button.disabled = wasDisabled;
+    }
+  });
+}
+
+async function runFoldersUiExclusive(kind, task) {
+  // Un second clic de synchronisation rejoint l'opération déjà en cours : aucune
+  // seconde synchronisation n'est créée et aucun appel Supabase parallèle ne part.
+  if (deosFoldersUiOperationPromise && kind === "sync") return deosFoldersUiOperationPromise;
+
+  // Une analyse/prévisualisation demandée pendant une synchro attend proprement la fin
+  // de l'opération précédente avant de démarrer sa propre lecture distante.
+  if (deosFoldersUiOperationPromise) {
+    try { await deosFoldersUiOperationPromise; } catch (_) { /* l'opération suivante peut diagnostiquer l'état */ }
+  }
+
+  setFoldersSyncUiBusy(true);
+  deosFoldersUiOperationKind = kind;
+  const operation = Promise.resolve().then(task);
+  deosFoldersUiOperationPromise = operation;
+  try {
+    return await operation;
+  } finally {
+    if (deosFoldersUiOperationPromise === operation) {
+      deosFoldersUiOperationPromise = null;
+      deosFoldersUiOperationKind = "";
+    }
+    setFoldersSyncUiBusy(false);
+  }
+}
+
+async function analyzeFoldersHybridState() {
+  const remoteRows = foldersSyncCanInspectRemote() ? await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Lecture des Dossiers distants") : [];
+  const analysis = buildFoldersRemotePreview(state.folders, remoteRows);
+  refreshFoldersSyncRuntimeState({ remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysisAt: analysis.generatedAt, lastAnalysis: analysis, lastError: "" });
+  return analysis;
+}
+async function activateFoldersHybridSync() {
+  setFoldersSyncSettings({ enabled: true, activatedAt: new Date().toISOString(), lastMode: "activated" });
+  refreshFoldersSyncRuntimeState({ state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY, lastError: "" });
+  return deosFoldersSyncRuntime;
+}
+function deactivateFoldersHybridSync() {
+  setFoldersSyncSettings({ enabled: false, lastMode: "deactivated" });
+  refreshFoldersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" });
+  return deosFoldersSyncRuntime;
+}
+async function syncFoldersHybridNow(options = {}) {
+  if (deosFoldersSyncRuntime.syncing) return deosFoldersSyncRuntime;
+  if (!foldersSyncIsEnabled()) { refreshFoldersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" }); return deosFoldersSyncRuntime; }
+  if (!foldersSyncCanUseRemote()) {
+    refreshFoldersSyncRuntimeState({ state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: navigator.onLine === false ? "Le navigateur est hors ligne." : "Connexion distante Dossiers indisponible." });
+    return deosFoldersSyncRuntime;
+  }
+  refreshFoldersSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
+  try {
+    let remoteRows = await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Lecture des Dossiers distants");
+    const preflight = buildFoldersRemotePreview(state.folders, remoteRows);
+    if (preflight.duplicateCandidates.length) {
+      throw new Error(`DUPLICATES_PROJECTS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
+    }
+    let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
+    let localChanged = false;
+    if (preflight.conflicts.length) {
+      throw new Error(`CONFLICTS_PROJECTS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+    }
+
+    // V5.24B — fusion non destructive des Dossiers déjà présents des deux côtés AVANT
+    // toute création locale. Les champs vides/appauvris sont restaurés depuis le côté riche.
+    const shadowMap = getFoldersSyncShadowMap();
+    const autoResolvedClientIds = new Set();
+    for (const [clientId, row] of remoteActiveMap.entries()) {
+      const local = byId("folders", clientId);
+      if (!local) continue;
+      const resolution = resolveFolderNonDestructive(local, row.folder, shadowMap.get(clientId) || null);
+      if (resolution.conflictFields.length) {
+        setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
+        throw new Error(`CONFLICT_PROJECT_${clientId} — ${resolution.conflictFields.join(", ")}`);
+      }
+      let effectiveRow = row;
+      if (resolution.localChanged) {
+        const index = indexById("folders", clientId);
+        if (index >= 0) { state.folders[index] = resolution.merged; localChanged = true; }
+      }
+      if (resolution.remoteChanged) {
+        const updated = await withFoldersRemoteTimeout(deosRemoteAdapter.updateFolder(clientId, resolution.merged, Number(row.version || 0)), `Fusion non destructive du Dossier ${resolution.merged.name || clientId}`);
+        effectiveRow = { ...row, remoteId: updated.remoteId || row.remoteId, version: Number(updated.version || row.version || 0), updatedAt: updated.updatedAt || row.updatedAt, folder: resolution.merged };
+        remoteActiveMap.set(clientId, effectiveRow);
+      }
+      if (resolution.localChanged || resolution.remoteChanged || getFolderSyncMeta(clientId).syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT) {
+        setFolderSyncMeta(clientId, { remoteId: effectiveRow.remoteId, remoteVersion: Number(effectiveRow.version || 0), remoteUpdatedAt: effectiveRow.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: folderFingerprint(resolution.merged), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+      }
+      autoResolvedClientIds.add(clientId);
+    }
+    if (localChanged) persistFoldersState();
+
+    // V5.24B — une absence locale n'est JAMAIS interprétée comme une suppression.
+    // Un soft-delete distant n'est autorisé que si la suppression a été explicitement marquée localement.
+    for (const [clientId, meta] of Object.entries(deosFoldersSyncRuntime.metaByClientId || {})) {
+      if (meta.deletePending && !byId("folders", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId) && meta.syncStatus !== DEOS_LINKS_SYNC_STATUS.CONFLICT) {
+        const deleted = await withFoldersRemoteTimeout(deosRemoteAdapter.softDeleteFolder(clientId, Number(remoteActiveMap.get(clientId).version || meta.remoteVersion)), `Suppression logique du Dossier ${clientId}`);
+        setFolderSyncMeta(clientId, { remoteVersion: Number(deleted.version || 0), remoteUpdatedAt: deleted.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "", deletePending: false });
+      }
+    }
+
+    remoteRows = await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Actualisation des Dossiers distants");
+    remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
+
+    // Créations locales nouvelles.
+    for (const folder of ensureArray(state.folders)) {
+      ensureFolderSyncClientId(folder);
+      const clientId = folderSyncClientId(folder);
+      if (!clientId || remoteActiveMap.has(clientId)) continue;
+      const created = await withFoldersRemoteTimeout(deosRemoteAdapter.createFolder({ ...folder, id: clientId, clientId }), `Création du Dossier ${folder.name || clientId}`);
+      setFolderSyncMeta(clientId, { remoteId: created.remoteId, remoteVersion: Number(created.version || 0), remoteUpdatedAt: created.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: folderFingerprint(folder), conflictRemote: null, conflictFields: [] });
+    }
+
+    remoteRows = await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Rafraîchissement des Dossiers distants");
+    for (const row of remoteRows) {
+      const clientId = String(row.clientId || "");
+      if (!clientId) continue;
+      const local = byId("folders", clientId);
+      const meta = getFolderSyncMeta(clientId);
+      if (!row.deletedAt && autoResolvedClientIds.has(clientId)) {
+        setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: folderFingerprint(local || row.folder), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+        continue;
+      }
+      if (row.deletedAt) {
+        if (local && meta.remoteVersion > 0) { state.folders = state.folders.filter(item => !sameId(item.id, clientId)); localChanged = true; }
+        setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "" });
+        continue;
+      }
+      if (!local) {
+        state.folders.push(normalizeEntity("folders", { ...row.folder, id: clientId, clientId }));
+        localChanged = true;
+        setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: folderFingerprint(row.folder), conflictRemote: null, conflictFields: [] });
+        continue;
+      }
+      const localFp = folderFingerprint(local), remoteFp = folderFingerprint(row.folder);
+      if (!meta.lastLocalFingerprint) {
+        if (localFp !== remoteFp) {
+          setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: folderConflictFields(local, row.folder, getFoldersSyncShadowMap().get(clientId) || null) });
+        } else {
+          setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
+        }
+        continue;
+      }
+      const localChangedSinceSync = localFp !== meta.lastLocalFingerprint;
+      const remoteChangedSinceSync = Number(row.version || 0) > Number(meta.remoteVersion || 0);
+      if (localChangedSinceSync && remoteChangedSinceSync) {
+        setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: folderConflictFields(local, row.folder, getFoldersSyncShadowMap().get(clientId) || null) });
+        continue;
+      }
+      if (localChangedSinceSync && !remoteChangedSinceSync) {
+        const updated = await withFoldersRemoteTimeout(deosRemoteAdapter.updateFolder(clientId, local, Number(row.version || meta.remoteVersion)), `Mise à jour du Dossier ${local.name || clientId}`);
+        setFolderSyncMeta(clientId, { remoteId: updated.remoteId, remoteVersion: Number(updated.version || 0), remoteUpdatedAt: updated.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
+        continue;
+      }
+      if (!localChangedSinceSync && remoteChangedSinceSync && localFp !== remoteFp) {
+        const index = indexById("folders", clientId);
+        if (index >= 0) { state.folders[index] = normalizeEntity("folders", { ...row.folder, id: clientId, clientId }); localChanged = true; }
+      }
+      setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: folderFingerprint(byId("folders", clientId) || row.folder), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+    }
+    if (localChanged) persistFoldersState();
+    else if (foldersSyncIsEnabled()) saveFoldersSyncShadow(state.folders);
+    const persistedFolders = saved("folders", []);
+    if (persistedFolders.length !== state.folders.length) {
+      throw new Error(`PERSISTENCE_PROJECTS_INCOMPLETE — ${state.folders.length} Dossier(s) en mémoire mais ${persistedFolders.length} relu(s) dans le stockage local.`);
+    }
+    const analysis = buildFoldersRemotePreview(state.folders, await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Analyse finale des Dossiers"));
+    refreshFoldersSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
+  } catch (error) {
+    refreshFoldersSyncRuntimeState({ syncing: false, remoteCount: Number(deosFoldersSyncRuntime.lastValidRemoteCount || deosFoldersSyncRuntime.remoteCount || 0), state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Synchronisation Dossiers impossible." });
+    console.error("[DEOS V5.24B PROJECTS SYNC]", error);
+  }
+  if (!options.silent && currentView === "settings") renderSettings(deosFoldersSyncRuntime.lastError || "Synchronisation Dossiers actualisée.");
+  return deosFoldersSyncRuntime;
+}
+function foldersSyncStatusLabel(status = deosFoldersSyncRuntime.state) { return linksSyncStatusLabel(status); }
+function foldersSyncStatusClass(status = deosFoldersSyncRuntime.state) { return linksSyncStatusClass(status); }
+
+async function previewExactFolderDuplicatesFromSettings() {
+  try {
+    const analysis = await analyzeFoldersHybridState();
+    if (!analysis.duplicateCandidates.length) {
+      alert("Aucun doublon exact de Dossier détecté à distance.");
+      return;
+    }
+    const lines = analysis.duplicateCandidates.map((group, index) => {
+      const ids = group.rows.map(row => row.clientId).join("\n    - ");
+      return `${index + 1}. ${group.title}\n    - ${ids}`;
+    });
+    alert(`Doublons exacts détectés : ${analysis.duplicateCandidates.length} groupe(s)\n\n${lines.join("\n\n")}\n\nAucune donnée n’a été modifiée.`);
+  } catch (error) {
+    alert(error?.message || "Diagnostic des doublons Dossiers impossible.");
+  }
+}
+
+async function repairExactFolderDuplicatesFromSettings() {
+  if (!foldersSyncCanUseRemote()) {
+    alert("Activez d’abord le pilote Dossiers et vérifiez la connexion Supabase.");
+    return;
+  }
+  const analysis = await analyzeFoldersHybridState();
+  if (!analysis.duplicateCandidates.length) {
+    alert("Aucun doublon exact de Dossier à réparer.");
+    return;
+  }
+  const ok = confirm(`Réparer ${analysis.duplicateCandidates.length} groupe(s) de doublons exacts ?\n\nSeuls les enregistrements dont le contenu métier est strictement identique seront consolidés. Un exemplaire canonique sera conservé et les doublons distants seront supprimés logiquement (soft delete).`);
+  if (!ok) return;
+
+  refreshFoldersSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
+  try {
+    const remoteRows = await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Lecture des doublons Dossiers");
+    const activeRows = remoteRows.filter(row => !row.deletedAt);
+    const groups = new Map();
+    activeRows.forEach(row => {
+      const fp = folderFingerprint(row.folder || {});
+      if (!groups.has(fp)) groups.set(fp, []);
+      groups.get(fp).push(row);
+    });
+
+    let localChanged = false;
+    let repairedRemote = 0;
+    let repairedLocal = 0;
+    for (const group of [...groups.values()].filter(rows => rows.length > 1)) {
+      const sorted = [...group].sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.clientId || "").localeCompare(String(b.clientId || "")));
+      const canonical = sorted[0];
+      const duplicateIds = new Set(sorted.slice(1).map(row => String(row.clientId || "")));
+
+      for (const duplicate of sorted.slice(1)) {
+        await withFoldersRemoteTimeout(deosRemoteAdapter.softDeleteFolder(duplicate.clientId, Number(duplicate.version || 0)), `Suppression logique du doublon ${duplicate.clientId}`);
+        repairedRemote += 1;
+      }
+
+      const localSameFp = state.folders.filter(folder => folderFingerprint(folder) === folderFingerprint(canonical.folder || {}));
+      if (localSameFp.length > 1) {
+        const canonicalLocal = localSameFp.find(folder => folderSyncClientId(folder) === String(canonical.clientId || "")) || localSameFp[0];
+        const keepObject = canonicalLocal;
+        const removeIds = new Set(localSameFp.filter(folder => folder !== keepObject).map(folder => folderSyncClientId(folder)));
+        const before = state.folders.length;
+        state.folders = state.folders.filter(folder => !removeIds.has(folderSyncClientId(folder)));
+        repairedLocal += before - state.folders.length;
+        localChanged = localChanged || before !== state.folders.length;
+      }
+    }
+    if (localChanged) persist("folders");
+    const finalAnalysis = await analyzeFoldersHybridState();
+    refreshFoldersSyncRuntimeState({ syncing: false, remoteCount: finalAnalysis.remoteCount, lastValidRemoteCount: finalAnalysis.remoteCount, lastAnalysis: finalAnalysis, lastAnalysisAt: finalAnalysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: finalAnalysis.duplicateCandidates.length ? DEOS_LINKS_SYNC_STATUS.ERROR : DEOS_LINKS_SYNC_STATUS.SYNC_READY });
+    renderSettings(`Réparation terminée : ${repairedRemote} doublon(s) distant(s) supprimé(s) logiquement, ${repairedLocal} doublon(s) local(aux) retiré(s).`);
+  } catch (error) {
+    refreshFoldersSyncRuntimeState({ syncing: false, state: DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Réparation des doublons Dossiers impossible." });
+    renderSettings(deosFoldersSyncRuntime.lastError);
+  }
+}
+
+function renderFoldersHybridSettingsCardHtml() {
+  const remoteReady = foldersSyncCanInspectRemote();
+  const analysis = deosFoldersSyncRuntime.lastAnalysis;
+  const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Projets, Dossiers, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
+  return `<div id="foldersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Dossiers</h2><p class="muted">Pilote V5.24B séparé des Liens et des Actions, avec lecture distante Dossiers via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${foldersSyncStatusClass()}">${esc(foldersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(foldersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Dossiers locaux</strong><span>${esc(String(state.folders.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dossiers distants</strong><span>${esc(String(deosFoldersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosFoldersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosFoldersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosFoldersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosFoldersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Dossiers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Dossiers terminée',analyzeFoldersHybridFromSettings)">Analyser les Dossiers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Dossiers terminée',previewFoldersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Dossiers activée',activateFoldersHybridFromSettings)" ${foldersSyncIsEnabled() ? "disabled" : ""}>Activer la synchronisation</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Dossiers terminée',syncFoldersHybridFromSettings)" ${foldersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showFoldersConflictsFromSettings()" ${deosFoldersSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactFolderDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Dossiers terminée',repairExactFolderDuplicatesFromSettings)" ${foldersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button><button class="danger" type="button" onclick="deactivateFoldersHybridFromSettings()" ${foldersSyncIsEnabled() ? "" : "disabled"}>Désactiver la synchronisation</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Dossiers locaux et distants.</div>` : ""}</section></div></div>`;
+}
+async function analyzeFoldersHybridFromSettings() {
+  return runFoldersUiExclusive("analyze", async () => {
+  try {
+    const a = await analyzeFoldersHybridState();
+    const message = `Analyse Dossiers terminée\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
+    // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
+    alert(message);
+    renderSettings(`Analyse Dossiers prête: ${a.localCount} locale(s), ${a.remoteCount} distante(s).`);
+    return a;
+  } catch (error) {
+    const message = error?.message || "Analyse Dossiers impossible.";
+    refreshFoldersSyncRuntimeState({ remoteCount: Number(deosFoldersSyncRuntime.lastValidRemoteCount || deosFoldersSyncRuntime.remoteCount || 0), lastError: message, state: DEOS_LINKS_SYNC_STATUS.ERROR });
+    alert(`Erreur analyse Folders\n\n${message}`);
+    try { renderSettings(message); } catch (renderError) { console.error("[DEOS V5.24B] renderSettings après erreur analyse Folders", renderError); }
+    return null;
+  }
+  });
+}
+// Exposition explicite pour les boutons HTML inline (Chrome/Safari).
+window.analyzeFoldersHybridFromSettings = analyzeFoldersHybridFromSettings;
+async function previewFoldersMigrationFromSettings() {
+  return runFoldersUiExclusive("preview", async () => {
+  try {
+    const a = await foldersHybridRepository.analyze();
+    alert(`Prévisualisation de migration Dossiers\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
+  } catch (error) {
+    const message = error?.message || "Prévisualisation Dossiers impossible.";
+    alert(`Erreur prévisualisation Dossiers\n\n${message}`);
+    renderSettings(message);
+  }
+  });
+}
+async function activateFoldersHybridFromSettings() {
+  try { await foldersHybridRepository.activate(); renderSettings("Synchronisation pilote Dossiers activée. Aucune Folder n'a encore été envoyée automatiquement."); }
+  catch (error) { refreshFoldersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Activation Dossiers impossible." }); renderSettings(deosFoldersSyncRuntime.lastError); }
+}
+async function syncFoldersHybridFromSettings() { return runFoldersUiExclusive("sync", () => foldersHybridRepository.syncNow({ silent: false, source: "manual" })); }
+function deactivateFoldersHybridFromSettings() { foldersHybridRepository.deactivate(); renderSettings("Synchronisation pilote Dossiers désactivée. Les données locales et distantes sont conservées."); }
+function folderConflictDiagnosticValue(value) {
+  if (value === undefined) return "<absent>";
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  try { return JSON.stringify(value); } catch (_) { return String(value); }
+}
+function buildFolderConflictDiagnostic(meta = {}) {
+  const clientId = String(meta.clientId || "");
+  const local = byId("folders", clientId) || {};
+  const remote = meta.conflictRemote?.folder || meta.conflictRemote || {};
+  const localCanonical = canonicalFolderBusinessData(local);
+  const remoteCanonical = canonicalFolderBusinessData(remote);
+  const fields = folderConflictFields(local, remote, getFoldersSyncShadowMap().get(clientId) || null);
+  const title = local.name || remote.name || clientId;
+  const rows = fields.map(field => {
+    const localValue = localCanonical[field];
+    const remoteValue = remoteCanonical[field];
+    return `${field}\n  LOCAL   : ${folderConflictDiagnosticValue(localValue)}\n  DISTANT : ${folderConflictDiagnosticValue(remoteValue)}`;
+  });
+  return `${title} [${clientId}]\n${rows.length ? rows.join("\n") : "Aucune différence métier après canonicalisation."}`;
+}
+function showFoldersConflictsFromSettings() {
+  const conflicts = Object.values(deosFoldersSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
+  if (!conflicts.length) return alert("Aucun conflit Dossier détecté.");
+  const details = conflicts.map(buildFolderConflictDiagnostic);
+  alert(`Diagnostic conflits Dossiers V5.24B (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
 }
 
 
@@ -18116,6 +18875,9 @@ function getDefaultRemoteSyncSettings() {
       projectsPilotEnabled: false,
       projectsPilotActivatedAt: "",
       projectsPilotLastMode: "",
+      foldersPilotEnabled: false,
+      foldersPilotActivatedAt: "",
+      foldersPilotLastMode: "",
       debug: false
     };
   return {
@@ -18153,6 +18915,9 @@ function normalizeRemoteSyncSettings(value = {}) {
     projectsPilotEnabled: Boolean(merged.projectsPilotEnabled),
     projectsPilotActivatedAt: String(merged.projectsPilotActivatedAt || "").trim(),
     projectsPilotLastMode: String(merged.projectsPilotLastMode || "").trim(),
+    foldersPilotEnabled: Boolean(merged.foldersPilotEnabled),
+    foldersPilotActivatedAt: String(merged.foldersPilotActivatedAt || "").trim(),
+    foldersPilotLastMode: String(merged.foldersPilotLastMode || "").trim(),
     debug: Boolean(merged.debug)
   };
 }
@@ -19103,6 +19868,9 @@ function mountRemoteSettingsCard() {
   }
   if (!document.getElementById("projectsHybridSyncSettingsCard")) {
     root.insertAdjacentHTML("beforeend", renderProjectsHybridSettingsCardHtml());
+  }
+  if (!document.getElementById("foldersHybridSyncSettingsCard")) {
+    root.insertAdjacentHTML("beforeend", renderFoldersHybridSettingsCardHtml());
   }
   applyRemoteTechnicalFieldPresentation();
   renderRemoteAuthOverlay();
