@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.24C";
+const DEOS_VERSION = "V5.24D";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -13,6 +13,7 @@ function ensureDeosAsyncFeedbackUi() {
       .deos-toast{background:#111827;color:#fff;padding:11px 14px;border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.24);font-size:14px;line-height:1.35;opacity:0;transform:translateY(8px);transition:opacity .18s ease,transform .18s ease}
       .deos-toast.show{opacity:1;transform:translateY(0)}
       .deos-toast.success{background:#166534}.deos-toast.error{background:#991b1b}.deos-toast.info{background:#1f2937}
+      #linksHybridSyncSettingsCard,#actionsHybridSyncSettingsCard,#projectsHybridSyncSettingsCard,#foldersHybridSyncSettingsCard{scroll-margin-top:14px}
     `;
     document.head.appendChild(style);
   }
@@ -22,6 +23,18 @@ function ensureDeosAsyncFeedbackUi() {
     stack.id = "deosToastStack";
     stack.setAttribute("aria-live", "polite");
     document.body.appendChild(stack);
+  }
+  // V5.24D — sur les écrans étroits/iPad, un clic dans un pilote de synchronisation
+  // recentre doucement l'action en cours afin d'éviter l'usage manuel de l'ascenseur.
+  if (!document.documentElement.dataset.deosSyncAutoScrollBound) {
+    document.documentElement.dataset.deosSyncAutoScrollBound = "1";
+    document.addEventListener("click", event => {
+      const button = event.target?.closest?.(
+        "#linksHybridSyncSettingsCard button,#actionsHybridSyncSettingsCard button,#projectsHybridSyncSettingsCard button,#foldersHybridSyncSettingsCard button"
+      );
+      if (!button || button.disabled) return;
+      try { button.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" }); } catch (_) {}
+    }, true);
   }
   return stack;
 }
@@ -18504,7 +18517,7 @@ function buildFoldersRemotePreview(localFolders, remoteRows) {
     ? `Compteur détaillé incohérent : both.length=${both.length}, compteur fonctionnel=${matchedCount}.`
     : "";
   if (analysisConsistencyWarning) {
-    console.warn("[DEOS V5.24C FOLDERS ANALYSIS]", analysisConsistencyWarning, {
+    console.warn("[DEOS V5.24D FOLDERS ANALYSIS]", analysisConsistencyWarning, {
       localCount: locals.length,
       remoteCount: activeRows.length,
       localOnlyCount: localOnly.length,
@@ -18792,17 +18805,35 @@ async function repairExactFolderDuplicatesFromSettings() {
   }
 }
 
+function foldersAnalysisMatchedCount(analysis = {}) {
+  // V5.24D — compteur d'affichage déterministe.
+  // L'identité locale = localOnly + présents des deux côtés est indépendante
+  // de la collection détaillée `both`, qui a montré une incohérence Safari/iPad.
+  const localCount = Number(analysis.localCount || 0);
+  const localOnlyCount = ensureArray(analysis.localOnly).length;
+  const computed = Math.max(0, localCount - localOnlyCount);
+  const detailed = ensureArray(analysis.both).length;
+  if (computed !== detailed) {
+    console.warn("[DEOS V5.24D FOLDERS MATCH COUNT]", {
+      localCount, localOnlyCount, computed, detailed,
+      remoteCount: Number(analysis.remoteCount || 0),
+      remoteOnlyCount: ensureArray(analysis.remoteOnly).length
+    });
+  }
+  return computed;
+}
+
 function renderFoldersHybridSettingsCardHtml() {
   const remoteReady = foldersSyncCanInspectRemote();
   const analysis = deosFoldersSyncRuntime.lastAnalysis;
   const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Projets, Dossiers, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
-  return `<div id="foldersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Dossiers</h2><p class="muted">Pilote V5.24C séparé des Liens et des Actions, avec lecture distante Dossiers via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${foldersSyncStatusClass()}">${esc(foldersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(foldersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Dossiers locaux</strong><span>${esc(String(state.folders.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dossiers distants</strong><span>${esc(String(deosFoldersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosFoldersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosFoldersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosFoldersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosFoldersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Dossiers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Dossiers terminée',analyzeFoldersHybridFromSettings)">Analyser les Dossiers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Dossiers terminée',previewFoldersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${foldersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateFoldersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Dossiers activée',activateFoldersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Dossiers terminée',syncFoldersHybridFromSettings)" ${foldersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showFoldersConflictsFromSettings()" ${deosFoldersSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactFolderDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Dossiers terminée',repairExactFolderDuplicatesFromSettings)" ${foldersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Dossiers locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="foldersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Dossiers</h2><p class="muted">Pilote V5.24D séparé des Liens et des Actions, avec lecture distante Dossiers via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${foldersSyncStatusClass()}">${esc(foldersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(foldersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Dossiers locaux</strong><span>${esc(String(state.folders.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dossiers distants</strong><span>${esc(String(deosFoldersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosFoldersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosFoldersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosFoldersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosFoldersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Dossiers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Dossiers terminée',analyzeFoldersHybridFromSettings)">Analyser les Dossiers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Dossiers terminée',previewFoldersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${foldersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateFoldersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Dossiers activée',activateFoldersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Dossiers terminée',syncFoldersHybridFromSettings)" ${foldersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showFoldersConflictsFromSettings()" ${deosFoldersSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactFolderDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Dossiers terminée',repairExactFolderDuplicatesFromSettings)" ${foldersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Dossiers locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeFoldersHybridFromSettings() {
   return runFoldersUiExclusive("analyze", async () => {
   try {
     const a = await analyzeFoldersHybridState();
-    const message = `Analyse Dossiers terminée\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.matchedCount ?? a.both.length}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
+    const message = `Analyse Dossiers terminée\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${foldersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
     // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
     alert(message);
     renderSettings(`Analyse Dossiers prête: ${a.localCount} locale(s), ${a.remoteCount} distante(s).`);
@@ -18811,7 +18842,7 @@ async function analyzeFoldersHybridFromSettings() {
     const message = error?.message || "Analyse Dossiers impossible.";
     refreshFoldersSyncRuntimeState({ remoteCount: Number(deosFoldersSyncRuntime.lastValidRemoteCount || deosFoldersSyncRuntime.remoteCount || 0), lastError: message, state: DEOS_LINKS_SYNC_STATUS.ERROR });
     alert(`Erreur analyse Folders\n\n${message}`);
-    try { renderSettings(message); } catch (renderError) { console.error("[DEOS V5.24C] renderSettings après erreur analyse Folders", renderError); }
+    try { renderSettings(message); } catch (renderError) { console.error("[DEOS V5.24D] renderSettings après erreur analyse Folders", renderError); }
     return null;
   }
   });
@@ -18822,7 +18853,7 @@ async function previewFoldersMigrationFromSettings() {
   return runFoldersUiExclusive("preview", async () => {
   try {
     const a = await foldersHybridRepository.analyze();
-    alert(`Prévisualisation de migration Dossiers\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.matchedCount ?? a.both.length}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
+    alert(`Prévisualisation de migration Dossiers\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${foldersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
   } catch (error) {
     const message = error?.message || "Prévisualisation Dossiers impossible.";
     alert(`Erreur prévisualisation Dossiers\n\n${message}`);
