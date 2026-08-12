@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.24D";
+const DEOS_VERSION = "V5.25A";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -13,7 +13,7 @@ function ensureDeosAsyncFeedbackUi() {
       .deos-toast{background:#111827;color:#fff;padding:11px 14px;border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.24);font-size:14px;line-height:1.35;opacity:0;transform:translateY(8px);transition:opacity .18s ease,transform .18s ease}
       .deos-toast.show{opacity:1;transform:translateY(0)}
       .deos-toast.success{background:#166534}.deos-toast.error{background:#991b1b}.deos-toast.info{background:#1f2937}
-      #linksHybridSyncSettingsCard,#actionsHybridSyncSettingsCard,#projectsHybridSyncSettingsCard,#foldersHybridSyncSettingsCard{scroll-margin-top:14px}
+      #linksHybridSyncSettingsCard,#actionsHybridSyncSettingsCard,#projectsHybridSyncSettingsCard,#foldersHybridSyncSettingsCard,#managersHybridSyncSettingsCard{scroll-margin-top:14px}
     `;
     document.head.appendChild(style);
   }
@@ -30,7 +30,7 @@ function ensureDeosAsyncFeedbackUi() {
     document.documentElement.dataset.deosSyncAutoScrollBound = "1";
     document.addEventListener("click", event => {
       const button = event.target?.closest?.(
-        "#linksHybridSyncSettingsCard button,#actionsHybridSyncSettingsCard button,#projectsHybridSyncSettingsCard button,#foldersHybridSyncSettingsCard button"
+        "#linksHybridSyncSettingsCard button,#actionsHybridSyncSettingsCard button,#projectsHybridSyncSettingsCard button,#foldersHybridSyncSettingsCard button,#managersHybridSyncSettingsCard button"
       );
       if (!button || button.disabled) return;
       try { button.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" }); } catch (_) {}
@@ -529,6 +529,17 @@ const foldersSyncShadowRepository = createRepository(deosDataService, {
   normalize: value => { const source = value && typeof value === "object" && !Array.isArray(value) ? value : {}; return { syncedAt: String(source.syncedAt || "").trim(), folders: normalizeCollection("folders", ensureArray(source.folders)) }; }
 });
 
+const managersSyncMetaRepository = createRepository(deosDataService, {
+  key: "sync_meta_managers", fallbackFactory: () => ({}), normalize: value => normalizeManagersSyncMetaMap(value)
+});
+const managersSyncQueueRepository = createRepository(deosDataService, {
+  key: "sync_queue_managers", fallbackFactory: () => [], normalize: value => normalizeManagersSyncQueue(value)
+});
+const managersSyncShadowRepository = createRepository(deosDataService, {
+  key: "sync_shadow_managers", fallbackFactory: () => ({ syncedAt: "", managers: [] }),
+  normalize: value => { const source = value && typeof value === "object" && !Array.isArray(value) ? value : {}; return { syncedAt: String(source.syncedAt || "").trim(), managers: normalizeCollection("managers", ensureArray(source.managers)) }; }
+});
+
 const DEOS_REMOTE_TEST_RECORD_TEMPLATES = Object.freeze([
   { label: "Test de connexion", payload: { scenario: "connectivity", device: "Navigateur principal", note: "Validation du canal distant de test.", status: "draft", client: "DEOS V5.21C" } },
   { label: "Test PC", payload: { scenario: "pc", device: "PC", note: "Validation multi-appareils sur poste principal.", status: "draft", client: "DEOS V5.21C" } },
@@ -589,6 +600,9 @@ const projectsHybridRepository = createProjectsHybridRepository();
 
 let deosFoldersSyncRuntime = createFoldersSyncRuntimeState();
 const foldersHybridRepository = createFoldersHybridRepository();
+
+let deosManagersSyncRuntime = createManagersSyncRuntimeState();
+const managersHybridRepository = createManagersHybridRepository();
 
 let deosRemoteWorkspaceDialog = {
   open: false,
@@ -1783,6 +1797,7 @@ async function init() {
   initializeActionsHybridSync({ skipAutoSync: false });
   initializeProjectsHybridSync({ skipAutoSync: false });
   initializeFoldersHybridSync({ skipAutoSync: false });
+  initializeManagersHybridSync({ skipAutoSync: false });
   // V5.5 — Charger les événements externes (Google Calendar)
   state.externalCalendarEvents = externalEventsRepository.load([]);
   // V5.7 — Charger les enrichissements locaux des événements Google
@@ -17356,7 +17371,7 @@ async function analyzeActionsHybridFromSettings() {
   return runActionsUiExclusive("analyze", async () => {
   try {
     const a = await analyzeActionsHybridState();
-    const message = `Analyse Actions terminée\n\nActions locales : ${a.localCount}\nActions distantes : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}`;
+    const message = `Analyse Actions terminée\n\nActions locales : ${a.localCount}\nActions distantes : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}`;
     // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
     alert(message);
     renderSettings(`Analyse Actions prête: ${a.localCount} locale(s), ${a.remoteCount} distante(s).`);
@@ -17376,7 +17391,7 @@ async function previewActionsMigrationFromSettings() {
   return runActionsUiExclusive("preview", async () => {
   try {
     const a = await actionsHybridRepository.analyze();
-    alert(`Prévisualisation de migration Actions\n\nActions locales : ${a.localCount}\nActions distantes : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\n\nAucune écriture n'a été effectuée.`);
+    alert(`Prévisualisation de migration Actions\n\nActions locales : ${a.localCount}\nActions distantes : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\n\nAucune écriture n'a été effectuée.`);
   } catch (error) { renderSettings(error?.message || "Prévisualisation Actions impossible."); }
   });
 }
@@ -17859,12 +17874,12 @@ async function syncProjectsHybridNow(options = {}) {
     let remoteRows = await withProjectsRemoteTimeout(deosRemoteAdapter.listProjects(), "Lecture des Projets distants");
     const preflight = buildProjectsRemotePreview(state.projects, remoteRows);
     if (preflight.duplicateCandidates.length) {
-      throw new Error(`DUPLICATES_PROJECTS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
+      throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
     }
     let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
     let localChanged = false;
     if (preflight.conflicts.length) {
-      throw new Error(`CONFLICTS_PROJECTS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
     }
 
     // V5.24B — fusion non destructive des Projets déjà présents des deux côtés AVANT
@@ -17877,7 +17892,7 @@ async function syncProjectsHybridNow(options = {}) {
       const resolution = resolveProjectNonDestructive(local, row.project, shadowMap.get(clientId) || null);
       if (resolution.conflictFields.length) {
         setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
-        throw new Error(`CONFLICT_PROJECT_${clientId} — ${resolution.conflictFields.join(", ")}`);
+        throw new Error(`CONFLICT_MANAGER_${clientId} — ${resolution.conflictFields.join(", ")}`);
       }
       let effectiveRow = row;
       if (resolution.localChanged) {
@@ -17968,7 +17983,7 @@ async function syncProjectsHybridNow(options = {}) {
     else if (projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
     const persistedProjects = saved("projects", []);
     if (persistedProjects.length !== state.projects.length) {
-      throw new Error(`PERSISTENCE_PROJECTS_INCOMPLETE — ${state.projects.length} Projet(s) en mémoire mais ${persistedProjects.length} relu(s) dans le stockage local.`);
+      throw new Error(`PERSISTENCE_MANAGERS_INCOMPLETE — ${state.projects.length} Projet(s) en mémoire mais ${persistedProjects.length} relu(s) dans le stockage local.`);
     }
     const analysis = buildProjectsRemotePreview(state.projects, await withProjectsRemoteTimeout(deosRemoteAdapter.listProjects(), "Analyse finale des Projets"));
     refreshProjectsSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
@@ -18067,7 +18082,7 @@ async function analyzeProjectsHybridFromSettings() {
   return runProjectsUiExclusive("analyze", async () => {
   try {
     const a = await analyzeProjectsHybridState();
-    const message = `Analyse Projets terminée\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
+    const message = `Analyse Projets terminée\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
     // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
     alert(message);
     renderSettings(`Analyse Projets prête: ${a.localCount} locale(s), ${a.remoteCount} distante(s).`);
@@ -18087,7 +18102,7 @@ async function previewProjectsMigrationFromSettings() {
   return runProjectsUiExclusive("preview", async () => {
   try {
     const a = await projectsHybridRepository.analyze();
-    alert(`Prévisualisation de migration Projets\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
+    alert(`Prévisualisation de migration Projets\n\nProjets locaux : ${a.localCount}\nProjets distants : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${a.both.length}\nConflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
   } catch (error) { renderSettings(error?.message || "Prévisualisation Projets impossible."); }
   });
 }
@@ -18607,12 +18622,12 @@ async function syncFoldersHybridNow(options = {}) {
     let remoteRows = await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Lecture des Dossiers distants");
     const preflight = buildFoldersRemotePreview(state.folders, remoteRows);
     if (preflight.duplicateCandidates.length) {
-      throw new Error(`DUPLICATES_PROJECTS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
+      throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
     }
     let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
     let localChanged = false;
     if (preflight.conflicts.length) {
-      throw new Error(`CONFLICTS_PROJECTS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
     }
 
     // V5.24B — fusion non destructive des Dossiers déjà présents des deux côtés AVANT
@@ -18625,7 +18640,7 @@ async function syncFoldersHybridNow(options = {}) {
       const resolution = resolveFolderNonDestructive(local, row.folder, shadowMap.get(clientId) || null);
       if (resolution.conflictFields.length) {
         setFolderSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
-        throw new Error(`CONFLICT_PROJECT_${clientId} — ${resolution.conflictFields.join(", ")}`);
+        throw new Error(`CONFLICT_MANAGER_${clientId} — ${resolution.conflictFields.join(", ")}`);
       }
       let effectiveRow = row;
       if (resolution.localChanged) {
@@ -18716,7 +18731,7 @@ async function syncFoldersHybridNow(options = {}) {
     else if (foldersSyncIsEnabled()) saveFoldersSyncShadow(state.folders);
     const persistedFolders = saved("folders", []);
     if (persistedFolders.length !== state.folders.length) {
-      throw new Error(`PERSISTENCE_PROJECTS_INCOMPLETE — ${state.folders.length} Dossier(s) en mémoire mais ${persistedFolders.length} relu(s) dans le stockage local.`);
+      throw new Error(`PERSISTENCE_MANAGERS_INCOMPLETE — ${state.folders.length} Dossier(s) en mémoire mais ${persistedFolders.length} relu(s) dans le stockage local.`);
     }
     const analysis = buildFoldersRemotePreview(state.folders, await withFoldersRemoteTimeout(deosRemoteAdapter.listFolders(), "Analyse finale des Dossiers"));
     refreshFoldersSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
@@ -18833,7 +18848,7 @@ async function analyzeFoldersHybridFromSettings() {
   return runFoldersUiExclusive("analyze", async () => {
   try {
     const a = await analyzeFoldersHybridState();
-    const message = `Analyse Dossiers terminée\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${foldersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
+    const message = `Analyse Dossiers terminée\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${foldersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
     // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
     alert(message);
     renderSettings(`Analyse Dossiers prête: ${a.localCount} locale(s), ${a.remoteCount} distante(s).`);
@@ -18853,7 +18868,7 @@ async function previewFoldersMigrationFromSettings() {
   return runFoldersUiExclusive("preview", async () => {
   try {
     const a = await foldersHybridRepository.analyze();
-    alert(`Prévisualisation de migration Dossiers\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locales : ${a.localOnly.length}\nUniquement distantes : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${foldersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
+    alert(`Prévisualisation de migration Dossiers\n\nDossiers locaux : ${a.localCount}\nDossiers distants : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésentes des deux côtés : ${foldersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
   } catch (error) {
     const message = error?.message || "Prévisualisation Dossiers impossible.";
     alert(`Erreur prévisualisation Dossiers\n\n${message}`);
@@ -18896,6 +18911,771 @@ function showFoldersConflictsFromSettings() {
 }
 
 
+
+// -- V5.25A : Synchronisation pilote Managers ---------------------------------
+function createManagersSyncRuntimeState(overrides = {}) {
+  return {
+    enabled: false,
+    state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY,
+    queue: [],
+    metaByClientId: {},
+    remoteCount: 0,
+    pendingCount: 0,
+    syncedCount: 0,
+    conflictCount: 0,
+    lastSyncAt: "",
+    lastError: "",
+    lastAnalysisAt: "",
+    lastAnalysis: null,
+    currentDevice: detectLinksSyncDeviceLabel(),
+    syncing: false,
+    ...overrides
+  };
+}
+
+function createManagersHybridRepository() {
+  return {
+    loadRuntime(options = {}) { return initializeManagersHybridSync(options); },
+    analyze() { return analyzeManagersHybridState(); },
+    activate() { return activateManagersHybridSync(); },
+    deactivate() { return deactivateManagersHybridSync(); },
+    syncNow(options = {}) { return syncManagersHybridNow(options); }
+  };
+}
+
+function normalizeManagersSyncSettings(value = {}) {
+  return {
+    enabled: Boolean(value.enabled),
+    activatedAt: String(value.activatedAt || "").trim(),
+    lastMode: String(value.lastMode || "").trim()
+  };
+}
+function getManagersSyncSettings() {
+  const remote = getRemoteSyncSettings();
+  return normalizeManagersSyncSettings({
+    enabled: Boolean(remote.managersPilotEnabled),
+    activatedAt: remote.managersPilotActivatedAt,
+    lastMode: remote.managersPilotLastMode
+  });
+}
+function setManagersSyncSettings(patch = {}) {
+  const currentRemote = getRemoteSyncSettings();
+  const next = normalizeManagersSyncSettings({ ...getManagersSyncSettings(), ...(patch || {}) });
+  state.settings.remoteSync = normalizeRemoteSyncSettings({
+    ...currentRemote,
+    managersPilotEnabled: next.enabled,
+    managersPilotActivatedAt: next.activatedAt,
+    managersPilotLastMode: next.lastMode
+  });
+  persistSettings();
+  return next;
+}
+function managersSyncIsEnabled() { return Boolean(getManagersSyncSettings().enabled); }
+function managersSyncCanInspectRemote() { return linksSyncCanInspectRemote() && deosRemoteAdapter && typeof deosRemoteAdapter.listManagers === "function"; }
+function managersSyncCanUseRemote() { return managersSyncIsEnabled() && managersSyncCanInspectRemote(); }
+
+function normalizeManagersSyncMetaEntry(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    clientId: String(source.clientId || "").trim(),
+    remoteId: String(source.remoteId || "").trim(),
+    remoteVersion: Number.isInteger(Number(source.remoteVersion)) ? Number(source.remoteVersion) : 0,
+    lastSyncedAt: String(source.lastSyncedAt || "").trim(),
+    syncStatus: String(source.syncStatus || DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY).trim(),
+    remoteUpdatedAt: String(source.remoteUpdatedAt || "").trim(),
+    lastLocalFingerprint: String(source.lastLocalFingerprint || "").trim(),
+    lastSyncError: String(source.lastSyncError || "").trim(),
+    conflictRemote: source.conflictRemote && typeof source.conflictRemote === "object" ? source.conflictRemote : null,
+    conflictFields: ensureArray(source.conflictFields).map(String),
+    deletePending: Boolean(source.deletePending)
+  };
+}
+function normalizeManagersSyncMetaMap(value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.entries(source).map(([key, entry]) => {
+    const normalized = normalizeManagersSyncMetaEntry({ ...(entry || {}), clientId: entry?.clientId || key });
+    return normalized.clientId ? [normalized.clientId, normalized] : null;
+  }).filter(Boolean));
+}
+function normalizeManagersSyncQueue(value = []) {
+  return ensureArray(value).map(item => ({
+    operation: item?.operation === "delete" ? "delete" : "upsert",
+    clientId: String(item?.clientId || "").trim(),
+    queuedAt: String(item?.queuedAt || "").trim(),
+    expectedVersion: Number.isInteger(Number(item?.expectedVersion)) ? Number(item.expectedVersion) : 0,
+    attempts: Number.isInteger(Number(item?.attempts)) ? Number(item.attempts) : 0,
+    lastError: String(item?.lastError || "").trim()
+  })).filter(item => item.clientId);
+}
+function getManagerSyncMeta(clientId) {
+  const key = String(clientId || "").trim();
+  return normalizeManagersSyncMetaEntry({ ...(deosManagersSyncRuntime.metaByClientId[key] || {}), clientId: key });
+}
+function setManagerSyncMeta(clientId, patch = {}) {
+  const key = String(clientId || "").trim();
+  if (!key) return null;
+  const next = normalizeManagersSyncMetaEntry({ ...getManagerSyncMeta(key), ...(patch || {}), clientId: key });
+  deosManagersSyncRuntime.metaByClientId = { ...deosManagersSyncRuntime.metaByClientId, [key]: next };
+  managersSyncMetaRepository.save(deosManagersSyncRuntime.metaByClientId);
+  refreshManagersSyncRuntimeState();
+  return next;
+}
+// V5.25A — Canonicalisation métier des Managers avant fingerprint/conflit.
+// Objectif : neutraliser les faux conflits causés par les différences de représentation
+// entre appareils (champ absent vs valeur vide, ordre des IDs, null/undefined, métadonnées techniques).
+const DEOS_MANAGER_RELATION_FIELDS = new Set([
+  "linkedActions", "linkedProjects", "linkedDecisions", "linkedFolders"
+]);
+const DEOS_MANAGER_TECHNICAL_FIELDS = new Set([
+  "id", "clientId", "remoteId", "remoteVersion", "lastSyncedAt", "syncStatus",
+  "remoteUpdatedAt", "lastSyncError", "createdAt", "updatedAt"
+]);
+
+function canonicalManagerScalar(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "boolean") return value;
+  return value;
+}
+
+function canonicalManagerStructuredValue(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return value.map(item => canonicalManagerStructuredValue(item));
+  }
+  if (typeof value === "object") {
+    const out = {};
+    Object.keys(value).sort().forEach(key => {
+      const normalized = canonicalManagerStructuredValue(value[key]);
+      // Une propriété structurée vide et une propriété absente sont équivalentes.
+      if (normalized === "" || normalized === null || normalized === undefined) return;
+      if (Array.isArray(normalized) && normalized.length === 0) return;
+      if (normalized && typeof normalized === "object" && !Array.isArray(normalized) && Object.keys(normalized).length === 0) return;
+      out[key] = normalized;
+    });
+    return out;
+  }
+  return canonicalManagerScalar(value);
+}
+
+function canonicalManagerBusinessData(manager = {}) {
+  const source = manager && typeof manager === "object" && !Array.isArray(manager) ? manager : {};
+  // normalizeEntity injecte les valeurs métier par défaut de DEOS : un champ absent
+  // et sa valeur vide par défaut deviennent ainsi identiques avant comparaison.
+  const normalizedManager = normalizeEntity("managers", { ...source });
+  const output = {};
+  for (const [key, rawValue] of Object.entries(normalizedManager)) {
+    if (DEOS_MANAGER_TECHNICAL_FIELDS.has(key) || key.startsWith("__") || key.startsWith("_sync")) continue;
+    if (DEOS_MANAGER_RELATION_FIELDS.has(key)) {
+      const ids = normalizeLinkedIdArray(ensureArray(rawValue));
+      output[key] = [...new Set(ids.map(String).filter(Boolean))].sort();
+      continue;
+    }
+    if (key === "progress") {
+      output.progress = Number(rawValue || 0);
+      continue;
+    }
+    output[key] = canonicalManagerStructuredValue(rawValue);
+  }
+  return stableJsonValue(output);
+}
+
+function cloneManagerBusinessData(manager = {}) {
+  return JSON.parse(JSON.stringify(canonicalManagerBusinessData(manager)));
+}
+function managerSyncClientId(manager = {}) {
+  return String(manager?.clientId || manager?.id || "").trim();
+}
+function ensureManagerSyncClientId(manager = {}) {
+  const clientId = managerSyncClientId(manager);
+  if (!clientId) return manager;
+  if (String(manager.clientId || "").trim() === clientId) return manager;
+  manager.clientId = clientId;
+  return manager;
+}
+
+function saveManagersSyncShadow(managers = state.managers) {
+  const normalized = normalizeCollection("managers", ensureArray(managers));
+  managersSyncShadowRepository.save({ syncedAt: new Date().toISOString(), managers: normalized });
+  return normalized;
+}
+
+function restoreManagersFromSyncShadowIfNeeded(options = {}) {
+  if (!managersSyncIsEnabled() && !options.force) return false;
+  const shadow = managersSyncShadowRepository.load({ syncedAt: "", managers: [] });
+  const shadowManagers = ensureArray(shadow.managers);
+  if (!shadowManagers.length) return false;
+  const localIds = new Set(ensureArray(state.managers).map(managerSyncClientId).filter(Boolean));
+  const missingFromLocal = shadowManagers.filter(manager => !localIds.has(managerSyncClientId(manager)));
+  if (!missingFromLocal.length) return false;
+  state.managers = normalizeCollection("managers", [...ensureArray(state.managers), ...missingFromLocal]);
+  persist("managers");
+  return true;
+}
+
+function persistManagersState(options = {}) {
+  persist("managers");
+  if (options.updateShadow !== false && managersSyncIsEnabled()) saveManagersSyncShadow(state.managers);
+}
+function managerFingerprint(manager = {}) { return JSON.stringify(canonicalManagerBusinessData(manager)); }
+
+// V5.25A — fusion non destructive des Managers.
+// Règle métier : une valeur vide/appauvrie ne doit jamais écraser une valeur renseignée.
+// Un conflit n'existe que lorsque les deux côtés portent des valeurs métier non vides et différentes.
+function managerCanonicalValueIsEmpty(value) {
+  if (value === null || value === undefined || value === "") return true;
+  if (typeof value === "number") return Number(value) === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  if (value && typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+function managerCanonicalValuesEqual(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function managerCanonicalArraySubset(localValue, remoteValue) {
+  if (!Array.isArray(localValue) || !Array.isArray(remoteValue) || localValue.length >= remoteValue.length) return false;
+  const remoteSet = new Set(remoteValue.map(item => JSON.stringify(item)));
+  return localValue.every(item => remoteSet.has(JSON.stringify(item)));
+}
+function managerValueLooksDegraded(localValue, remoteValue) {
+  if (managerCanonicalValueIsEmpty(localValue) && !managerCanonicalValueIsEmpty(remoteValue)) return true;
+  if (managerCanonicalArraySubset(localValue, remoteValue)) return true;
+  return false;
+}
+function getManagersSyncShadowMap() {
+  const shadow = managersSyncShadowRepository.load({ syncedAt: "", managers: [] });
+  return new Map(ensureArray(shadow.managers).map(manager => [managerSyncClientId(manager), manager]).filter(([id]) => id));
+}
+function resolveManagerNonDestructive(localManager = {}, remoteManager = {}, baseManager = null) {
+  const localNormalized = normalizeEntity("managers", { ...(localManager || {}) });
+  const remoteNormalized = normalizeEntity("managers", { ...(remoteManager || {}) });
+  const baseNormalized = baseManager ? normalizeEntity("managers", { ...(baseManager || {}) }) : null;
+  const localCanonical = canonicalManagerBusinessData(localNormalized);
+  const remoteCanonical = canonicalManagerBusinessData(remoteNormalized);
+  const baseCanonical = baseNormalized ? canonicalManagerBusinessData(baseNormalized) : null;
+  const keys = [...new Set([...Object.keys(localCanonical), ...Object.keys(remoteCanonical), ...(baseCanonical ? Object.keys(baseCanonical) : [])])];
+  const merged = { ...localNormalized };
+  const conflictFields = [];
+  const fromRemoteFields = [];
+  const fromLocalFields = [];
+
+  for (const key of keys) {
+    const l = localCanonical[key];
+    const r = remoteCanonical[key];
+    const b = baseCanonical ? baseCanonical[key] : undefined;
+    if (managerCanonicalValuesEqual(l, r)) continue;
+
+    const lEmpty = managerCanonicalValueIsEmpty(l);
+    const rEmpty = managerCanonicalValueIsEmpty(r);
+    const lEqualsBase = baseCanonical ? managerCanonicalValuesEqual(l, b) : false;
+    const rEqualsBase = baseCanonical ? managerCanonicalValuesEqual(r, b) : false;
+
+    // Une valeur locale vide ou manifestement appauvrie ne doit jamais effacer une valeur distante riche.
+    if ((lEmpty || managerValueLooksDegraded(l, r)) && !rEmpty) {
+      merged[key] = remoteNormalized[key];
+      fromRemoteFields.push(key);
+      continue;
+    }
+    // Si le distant est vide et le local renseigné, on conserve le local.
+    if (!lEmpty && rEmpty) {
+      fromLocalFields.push(key);
+      continue;
+    }
+
+    if (baseCanonical) {
+      // Seul le distant a évolué depuis le dernier état connu : on récupère le distant.
+      if (lEqualsBase && !rEqualsBase) {
+        merged[key] = remoteNormalized[key];
+        fromRemoteFields.push(key);
+        continue;
+      }
+      // Seul le local a évolué et il ne s'est pas appauvri : on conserve le local.
+      if (rEqualsBase && !lEqualsBase) {
+        fromLocalFields.push(key);
+        continue;
+      }
+    }
+
+    // Deux valeurs métier réellement renseignées et différentes = vrai conflit.
+    conflictFields.push(key);
+  }
+
+  const clientId = managerSyncClientId(localManager) || managerSyncClientId(remoteManager);
+  const normalizedMerged = normalizeEntity("managers", { ...merged, id: clientId || merged.id, clientId: clientId || merged.clientId });
+  return {
+    merged: normalizedMerged,
+    conflictFields: [...new Set(conflictFields)],
+    fromRemoteFields: [...new Set(fromRemoteFields)],
+    fromLocalFields: [...new Set(fromLocalFields)],
+    localChanged: managerFingerprint(normalizedMerged) !== managerFingerprint(localNormalized),
+    remoteChanged: managerFingerprint(normalizedMerged) !== managerFingerprint(remoteNormalized)
+  };
+}
+function managerConflictFields(localManager = {}, remoteManager = {}, baseManager = null) {
+  return resolveManagerNonDestructive(localManager, remoteManager, baseManager).conflictFields;
+}
+function refreshManagersSyncRuntimeState(patch = {}) {
+  const metaByClientId = normalizeManagersSyncMetaMap(patch.metaByClientId === undefined ? deosManagersSyncRuntime.metaByClientId : patch.metaByClientId);
+  const localCount = ensureArray(state.managers).length;
+  const conflictCount = Object.values(metaByClientId).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT).length;
+  const syncedCount = ensureArray(state.managers).filter(manager => getManagerSyncMeta(manager.id).syncStatus === DEOS_LINKS_SYNC_STATUS.SYNCED).length;
+  let nextState = managersSyncIsEnabled() ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY;
+  if (patch.state) nextState = patch.state;
+  else if (conflictCount) nextState = DEOS_LINKS_SYNC_STATUS.CONFLICT;
+  else if (patch.syncing || deosManagersSyncRuntime.syncing) nextState = DEOS_LINKS_SYNC_STATUS.SYNCING;
+  else if (managersSyncIsEnabled() && navigator.onLine === false) nextState = DEOS_LINKS_SYNC_STATUS.OFFLINE;
+  else if (managersSyncIsEnabled() && deosManagersSyncRuntime.lastError) nextState = DEOS_LINKS_SYNC_STATUS.ERROR;
+  else if (managersSyncIsEnabled() && localCount > 0 && syncedCount === localCount) nextState = DEOS_LINKS_SYNC_STATUS.SYNCED;
+  deosManagersSyncRuntime = {
+    ...deosManagersSyncRuntime,
+    enabled: managersSyncIsEnabled(),
+    metaByClientId,
+    conflictCount,
+    syncedCount,
+    pendingCount: normalizeManagersSyncQueue(managersSyncQueueRepository.load([])).length,
+    currentDevice: detectLinksSyncDeviceLabel(),
+    state: nextState,
+    ...patch,
+    metaByClientId
+  };
+}
+function initializeManagersHybridSync(options = {}) {
+  const settings = getManagersSyncSettings();
+  deosManagersSyncRuntime = createManagersSyncRuntimeState({
+    enabled: settings.enabled,
+    metaByClientId: managersSyncMetaRepository.load({}),
+    queue: managersSyncQueueRepository.load([])
+  });
+  refreshManagersSyncRuntimeState({ state: settings.enabled ? DEOS_LINKS_SYNC_STATUS.SYNC_READY : DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY });
+  if (settings.enabled) restoreManagersFromSyncShadowIfNeeded();
+  // V5.25A — pendant le pilote Managers, aucune synchronisation automatique au démarrage.
+  // Cela évite qu’un rechargement ou une restauration de session amplifie un état incohérent.
+  return deosManagersSyncRuntime;
+}
+function buildManagersRemotePreview(localManagers, remoteRows) {
+  const activeRows = ensureArray(remoteRows).filter(row => !row.deletedAt);
+  const locals = ensureArray(localManagers);
+  const localMap = new Map(locals.map(manager => [managerSyncClientId(manager), manager]).filter(([id]) => id));
+  const remoteMap = new Map(activeRows.map(row => [String(row.clientId || "").trim(), row]).filter(([id]) => id));
+  const localOnly = [], remoteOnly = [], both = [], conflicts = [], mergeCandidates = [];
+  const shadowMap = getManagersSyncShadowMap();
+  locals.forEach(manager => {
+    const clientId = managerSyncClientId(manager);
+    const row = remoteMap.get(clientId);
+    if (!row) return localOnly.push(manager);
+    const baseManager = shadowMap.get(clientId) || null;
+    const resolution = resolveManagerNonDestructive(manager, row.manager, baseManager);
+    both.push({ local: manager, remote: row.manager, remoteVersion: row.version, remoteUpdatedAt: row.updatedAt, resolution });
+    if (resolution.conflictFields.length) {
+      conflicts.push({ clientId, title: manager.name || clientId, local: manager, remote: row.manager, fields: resolution.conflictFields, remoteVersion: row.version });
+    } else if (resolution.localChanged || resolution.remoteChanged) {
+      mergeCandidates.push({ clientId, title: manager.name || clientId, fromRemoteFields: resolution.fromRemoteFields, fromLocalFields: resolution.fromLocalFields });
+    }
+  });
+  activeRows.forEach(row => { if (!localMap.has(String(row.clientId || "").trim())) remoteOnly.push(row.manager); });
+
+  // V5.22B — détection non destructive des doublons métier exacts.
+  // Deux client_id distincts avec exactement le même payload métier ne doivent jamais être amplifiés.
+  const fingerprintGroups = new Map();
+  activeRows.forEach(row => {
+    const fp = managerFingerprint(row.manager || {});
+    if (!fingerprintGroups.has(fp)) fingerprintGroups.set(fp, []);
+    fingerprintGroups.get(fp).push(row);
+  });
+  const duplicateCandidates = [...fingerprintGroups.values()]
+    .filter(group => group.length > 1)
+    .map(group => ({
+      fingerprint: managerFingerprint(group[0]?.manager || {}),
+      title: String(group[0]?.manager?.name || "Manager sans nom"),
+      rows: group.map(row => ({ clientId: String(row.clientId || ""), version: Number(row.version || 0), createdAt: row.createdAt || "", updatedAt: row.updatedAt || "" }))
+    }));
+
+  // V5.25A — compteur fonctionnel indépendant de la collection détaillée `both`.
+  // Identité attendue : locaux = uniquement locaux + présents des deux côtés.
+  // Si Safari/iPad renvoie malgré tout une longueur `both` incohérente, on l'expose en diagnostic console.
+  const matchedCount = Math.max(0, locals.length - localOnly.length);
+  const analysisConsistencyWarning = matchedCount !== both.length
+    ? `Compteur détaillé incohérent : both.length=${both.length}, compteur fonctionnel=${matchedCount}.`
+    : "";
+  if (analysisConsistencyWarning) {
+    console.warn("[DEOS V5.25A MANAGERS ANALYSIS]", analysisConsistencyWarning, {
+      localCount: locals.length,
+      remoteCount: activeRows.length,
+      localOnlyCount: localOnly.length,
+      remoteOnlyCount: remoteOnly.length
+    });
+  }
+  return { localCount: locals.length, remoteCount: activeRows.length, localOnly, remoteOnly, both, matchedCount, analysisConsistencyWarning, conflicts, duplicateCandidates, remoteRows: ensureArray(remoteRows), generatedAt: new Date().toLocaleString("fr-FR") };
+}
+// V5.25A — Safari/iPad : sérialisation stricte des opérations Managers.
+// Une synchronisation, une analyse ou une prévisualisation ne doivent jamais effectuer
+// des lectures Supabase concurrentes depuis l'interface.
+let deosManagersUiOperationPromise = null;
+let deosManagersUiOperationKind = "";
+
+function withManagersRemoteTimeout(promise, operationLabel, timeoutMs = 20000) {
+  return withLinksRemoteTimeout(promise, operationLabel, timeoutMs);
+}
+
+function setManagersSyncUiBusy(busy) {
+  const card = document.getElementById("managersHybridSyncSettingsCard");
+  if (!card) return;
+  card.querySelectorAll("button").forEach(button => {
+    if (busy) {
+      if (!button.dataset.deosManagersWasDisabled) button.dataset.deosManagersWasDisabled = button.disabled ? "1" : "0";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    } else {
+      const wasDisabled = button.dataset.deosManagersWasDisabled === "1";
+      delete button.dataset.deosManagersWasDisabled;
+      button.removeAttribute("aria-busy");
+      button.disabled = wasDisabled;
+    }
+  });
+}
+
+async function runManagersUiExclusive(kind, task) {
+  // Un second clic de synchronisation rejoint l'opération déjà en cours : aucune
+  // seconde synchronisation n'est créée et aucun appel Supabase parallèle ne part.
+  if (deosManagersUiOperationPromise && kind === "sync") return deosManagersUiOperationPromise;
+
+  // Une analyse/prévisualisation demandée pendant une synchro attend proprement la fin
+  // de l'opération précédente avant de démarrer sa propre lecture distante.
+  if (deosManagersUiOperationPromise) {
+    try { await deosManagersUiOperationPromise; } catch (_) { /* l'opération suivante peut diagnostiquer l'état */ }
+  }
+
+  setManagersSyncUiBusy(true);
+  deosManagersUiOperationKind = kind;
+  const operation = Promise.resolve().then(task);
+  deosManagersUiOperationPromise = operation;
+  try {
+    return await operation;
+  } finally {
+    if (deosManagersUiOperationPromise === operation) {
+      deosManagersUiOperationPromise = null;
+      deosManagersUiOperationKind = "";
+    }
+    setManagersSyncUiBusy(false);
+  }
+}
+
+async function analyzeManagersHybridState() {
+  const remoteRows = managersSyncCanInspectRemote() ? await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Lecture des Managers distants") : [];
+  const analysis = buildManagersRemotePreview(state.managers, remoteRows);
+  refreshManagersSyncRuntimeState({ remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysisAt: analysis.generatedAt, lastAnalysis: analysis, lastError: "" });
+  return analysis;
+}
+async function activateManagersHybridSync() {
+  setManagersSyncSettings({ enabled: true, activatedAt: new Date().toISOString(), lastMode: "activated" });
+  refreshManagersSyncRuntimeState({ state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY, lastError: "" });
+  return deosManagersSyncRuntime;
+}
+function deactivateManagersHybridSync() {
+  setManagersSyncSettings({ enabled: false, lastMode: "deactivated" });
+  refreshManagersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" });
+  return deosManagersSyncRuntime;
+}
+async function syncManagersHybridNow(options = {}) {
+  if (deosManagersSyncRuntime.syncing) return deosManagersSyncRuntime;
+  if (!managersSyncIsEnabled()) { refreshManagersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" }); return deosManagersSyncRuntime; }
+  if (!managersSyncCanUseRemote()) {
+    refreshManagersSyncRuntimeState({ state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: navigator.onLine === false ? "Le navigateur est hors ligne." : "Connexion distante Managers indisponible." });
+    return deosManagersSyncRuntime;
+  }
+  refreshManagersSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
+  try {
+    let remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Lecture des Managers distants");
+    const preflight = buildManagersRemotePreview(state.managers, remoteRows);
+    if (preflight.duplicateCandidates.length) {
+      throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
+    }
+    let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
+    let localChanged = false;
+    if (preflight.conflicts.length) {
+      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+    }
+
+    // V5.25A — fusion non destructive des Managers déjà présents des deux côtés AVANT
+    // toute création locale. Les champs vides/appauvris sont restaurés depuis le côté riche.
+    const shadowMap = getManagersSyncShadowMap();
+    const autoResolvedClientIds = new Set();
+    for (const [clientId, row] of remoteActiveMap.entries()) {
+      const local = byId("managers", clientId);
+      if (!local) continue;
+      const resolution = resolveManagerNonDestructive(local, row.manager, shadowMap.get(clientId) || null);
+      if (resolution.conflictFields.length) {
+        setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
+        throw new Error(`CONFLICT_MANAGER_${clientId} — ${resolution.conflictFields.join(", ")}`);
+      }
+      let effectiveRow = row;
+      if (resolution.localChanged) {
+        const index = indexById("managers", clientId);
+        if (index >= 0) { state.managers[index] = resolution.merged; localChanged = true; }
+      }
+      if (resolution.remoteChanged) {
+        const updated = await withManagersRemoteTimeout(deosRemoteAdapter.updateManager(clientId, resolution.merged, Number(row.version || 0)), `Fusion non destructive du Manager ${resolution.merged.name || clientId}`);
+        effectiveRow = { ...row, remoteId: updated.remoteId || row.remoteId, version: Number(updated.version || row.version || 0), updatedAt: updated.updatedAt || row.updatedAt, manager: resolution.merged };
+        remoteActiveMap.set(clientId, effectiveRow);
+      }
+      if (resolution.localChanged || resolution.remoteChanged || getManagerSyncMeta(clientId).syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT) {
+        setManagerSyncMeta(clientId, { remoteId: effectiveRow.remoteId, remoteVersion: Number(effectiveRow.version || 0), remoteUpdatedAt: effectiveRow.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(resolution.merged), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+      }
+      autoResolvedClientIds.add(clientId);
+    }
+    if (localChanged) persistManagersState();
+
+    // V5.25A — une absence locale n'est JAMAIS interprétée comme une suppression.
+    // Un soft-delete distant n'est autorisé que si la suppression a été explicitement marquée localement.
+    for (const [clientId, meta] of Object.entries(deosManagersSyncRuntime.metaByClientId || {})) {
+      if (meta.deletePending && !byId("managers", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId) && meta.syncStatus !== DEOS_LINKS_SYNC_STATUS.CONFLICT) {
+        const deleted = await withManagersRemoteTimeout(deosRemoteAdapter.softDeleteManager(clientId, Number(remoteActiveMap.get(clientId).version || meta.remoteVersion)), `Suppression logique du Manager ${clientId}`);
+        setManagerSyncMeta(clientId, { remoteVersion: Number(deleted.version || 0), remoteUpdatedAt: deleted.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "", deletePending: false });
+      }
+    }
+
+    remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Actualisation des Managers distants");
+    remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
+
+    // Créations locales nouvelles.
+    for (const manager of ensureArray(state.managers)) {
+      ensureManagerSyncClientId(manager);
+      const clientId = managerSyncClientId(manager);
+      if (!clientId || remoteActiveMap.has(clientId)) continue;
+      const created = await withManagersRemoteTimeout(deosRemoteAdapter.createManager({ ...manager, id: clientId, clientId }), `Création du Manager ${manager.name || clientId}`);
+      setManagerSyncMeta(clientId, { remoteId: created.remoteId, remoteVersion: Number(created.version || 0), remoteUpdatedAt: created.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(manager), conflictRemote: null, conflictFields: [] });
+    }
+
+    remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Rafraîchissement des Managers distants");
+    for (const row of remoteRows) {
+      const clientId = String(row.clientId || "");
+      if (!clientId) continue;
+      const local = byId("managers", clientId);
+      const meta = getManagerSyncMeta(clientId);
+      if (!row.deletedAt && autoResolvedClientIds.has(clientId)) {
+        setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(local || row.manager), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+        continue;
+      }
+      if (row.deletedAt) {
+        if (local && meta.remoteVersion > 0) { state.managers = state.managers.filter(item => !sameId(item.id, clientId)); localChanged = true; }
+        setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "" });
+        continue;
+      }
+      if (!local) {
+        state.managers.push(normalizeEntity("managers", { ...row.manager, id: clientId, clientId }));
+        localChanged = true;
+        setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(row.manager), conflictRemote: null, conflictFields: [] });
+        continue;
+      }
+      const localFp = managerFingerprint(local), remoteFp = managerFingerprint(row.manager);
+      if (!meta.lastLocalFingerprint) {
+        if (localFp !== remoteFp) {
+          setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: managerConflictFields(local, row.manager, getManagersSyncShadowMap().get(clientId) || null) });
+        } else {
+          setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
+        }
+        continue;
+      }
+      const localChangedSinceSync = localFp !== meta.lastLocalFingerprint;
+      const remoteChangedSinceSync = Number(row.version || 0) > Number(meta.remoteVersion || 0);
+      if (localChangedSinceSync && remoteChangedSinceSync) {
+        setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: managerConflictFields(local, row.manager, getManagersSyncShadowMap().get(clientId) || null) });
+        continue;
+      }
+      if (localChangedSinceSync && !remoteChangedSinceSync) {
+        const updated = await withManagersRemoteTimeout(deosRemoteAdapter.updateManager(clientId, local, Number(row.version || meta.remoteVersion)), `Mise à jour du Manager ${local.name || clientId}`);
+        setManagerSyncMeta(clientId, { remoteId: updated.remoteId, remoteVersion: Number(updated.version || 0), remoteUpdatedAt: updated.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
+        continue;
+      }
+      if (!localChangedSinceSync && remoteChangedSinceSync && localFp !== remoteFp) {
+        const index = indexById("managers", clientId);
+        if (index >= 0) { state.managers[index] = normalizeEntity("managers", { ...row.manager, id: clientId, clientId }); localChanged = true; }
+      }
+      setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(byId("managers", clientId) || row.manager), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+    }
+    if (localChanged) persistManagersState();
+    else if (managersSyncIsEnabled()) saveManagersSyncShadow(state.managers);
+    const persistedManagers = saved("managers", []);
+    if (persistedManagers.length !== state.managers.length) {
+      throw new Error(`PERSISTENCE_MANAGERS_INCOMPLETE — ${state.managers.length} Manager(s) en mémoire mais ${persistedManagers.length} relu(s) dans le stockage local.`);
+    }
+    const analysis = buildManagersRemotePreview(state.managers, await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Analyse finale des Managers"));
+    refreshManagersSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
+  } catch (error) {
+    refreshManagersSyncRuntimeState({ syncing: false, remoteCount: Number(deosManagersSyncRuntime.lastValidRemoteCount || deosManagersSyncRuntime.remoteCount || 0), state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Synchronisation Managers impossible." });
+    console.error("[DEOS V5.25A MANAGERS SYNC]", error);
+  }
+  if (!options.silent && currentView === "settings") renderSettings(deosManagersSyncRuntime.lastError || "Synchronisation Managers actualisée.");
+  return deosManagersSyncRuntime;
+}
+function managersSyncStatusLabel(status = deosManagersSyncRuntime.state) { return linksSyncStatusLabel(status); }
+function managersSyncStatusClass(status = deosManagersSyncRuntime.state) { return linksSyncStatusClass(status); }
+
+async function previewExactManagerDuplicatesFromSettings() {
+  try {
+    const analysis = await analyzeManagersHybridState();
+    if (!analysis.duplicateCandidates.length) {
+      alert("Aucun doublon exact de Manager détecté à distance.");
+      return;
+    }
+    const lines = analysis.duplicateCandidates.map((group, index) => {
+      const ids = group.rows.map(row => row.clientId).join("\n    - ");
+      return `${index + 1}. ${group.title}\n    - ${ids}`;
+    });
+    alert(`Doublons exacts détectés : ${analysis.duplicateCandidates.length} groupe(s)\n\n${lines.join("\n\n")}\n\nAucune donnée n’a été modifiée.`);
+  } catch (error) {
+    alert(error?.message || "Diagnostic des doublons Managers impossible.");
+  }
+}
+
+async function repairExactManagerDuplicatesFromSettings() {
+  if (!managersSyncCanUseRemote()) {
+    alert("Activez d’abord le pilote Managers et vérifiez la connexion Supabase.");
+    return;
+  }
+  const analysis = await analyzeManagersHybridState();
+  if (!analysis.duplicateCandidates.length) {
+    alert("Aucun doublon exact de Manager à réparer.");
+    return;
+  }
+  const ok = confirm(`Réparer ${analysis.duplicateCandidates.length} groupe(s) de doublons exacts ?\n\nSeuls les enregistrements dont le contenu métier est strictement identique seront consolidés. Un exemplaire canonique sera conservé et les doublons distants seront supprimés logiquement (soft delete).`);
+  if (!ok) return;
+
+  refreshManagersSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
+  try {
+    const remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Lecture des doublons Managers");
+    const activeRows = remoteRows.filter(row => !row.deletedAt);
+    const groups = new Map();
+    activeRows.forEach(row => {
+      const fp = managerFingerprint(row.manager || {});
+      if (!groups.has(fp)) groups.set(fp, []);
+      groups.get(fp).push(row);
+    });
+
+    let localChanged = false;
+    let repairedRemote = 0;
+    let repairedLocal = 0;
+    for (const group of [...groups.values()].filter(rows => rows.length > 1)) {
+      const sorted = [...group].sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.clientId || "").localeCompare(String(b.clientId || "")));
+      const canonical = sorted[0];
+      const duplicateIds = new Set(sorted.slice(1).map(row => String(row.clientId || "")));
+
+      for (const duplicate of sorted.slice(1)) {
+        await withManagersRemoteTimeout(deosRemoteAdapter.softDeleteManager(duplicate.clientId, Number(duplicate.version || 0)), `Suppression logique du doublon ${duplicate.clientId}`);
+        repairedRemote += 1;
+      }
+
+      const localSameFp = state.managers.filter(manager => managerFingerprint(manager) === managerFingerprint(canonical.manager || {}));
+      if (localSameFp.length > 1) {
+        const canonicalLocal = localSameFp.find(manager => managerSyncClientId(manager) === String(canonical.clientId || "")) || localSameFp[0];
+        const keepObject = canonicalLocal;
+        const removeIds = new Set(localSameFp.filter(manager => manager !== keepObject).map(manager => managerSyncClientId(manager)));
+        const before = state.managers.length;
+        state.managers = state.managers.filter(manager => !removeIds.has(managerSyncClientId(manager)));
+        repairedLocal += before - state.managers.length;
+        localChanged = localChanged || before !== state.managers.length;
+      }
+    }
+    if (localChanged) persist("managers");
+    const finalAnalysis = await analyzeManagersHybridState();
+    refreshManagersSyncRuntimeState({ syncing: false, remoteCount: finalAnalysis.remoteCount, lastValidRemoteCount: finalAnalysis.remoteCount, lastAnalysis: finalAnalysis, lastAnalysisAt: finalAnalysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: finalAnalysis.duplicateCandidates.length ? DEOS_LINKS_SYNC_STATUS.ERROR : DEOS_LINKS_SYNC_STATUS.SYNC_READY });
+    renderSettings(`Réparation terminée : ${repairedRemote} doublon(s) distant(s) supprimé(s) logiquement, ${repairedLocal} doublon(s) local(aux) retiré(s).`);
+  } catch (error) {
+    refreshManagersSyncRuntimeState({ syncing: false, state: DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Réparation des doublons Managers impossible." });
+    renderSettings(deosManagersSyncRuntime.lastError);
+  }
+}
+
+function managersAnalysisMatchedCount(analysis = {}) {
+  // V5.25A — compteur d'affichage déterministe.
+  // L'identité locale = localOnly + présents des deux côtés est indépendante
+  // de la collection détaillée `both`, qui a montré une incohérence Safari/iPad.
+  const localCount = Number(analysis.localCount || 0);
+  const localOnlyCount = ensureArray(analysis.localOnly).length;
+  const computed = Math.max(0, localCount - localOnlyCount);
+  const detailed = ensureArray(analysis.both).length;
+  if (computed !== detailed) {
+    console.warn("[DEOS V5.25A MANAGERS MATCH COUNT]", {
+      localCount, localOnlyCount, computed, detailed,
+      remoteCount: Number(analysis.remoteCount || 0),
+      remoteOnlyCount: ensureArray(analysis.remoteOnly).length
+    });
+  }
+  return computed;
+}
+
+function renderManagersHybridSettingsCardHtml() {
+  const remoteReady = managersSyncCanInspectRemote();
+  const analysis = deosManagersSyncRuntime.lastAnalysis;
+  const warning = "Seuls les Managers sont concernés par ce pilote. Liens, Actions, Projets et Dossiers conservent leurs pilotes séparés ; les autres catégories restent locales.";
+  return `<div id="managersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Managers</h2><p class="muted">Pilote V5.25A dédié aux Managers, avec lecture distante via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${managersSyncStatusClass()}">${esc(managersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(managersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Managers locaux</strong><span>${esc(String(state.managers.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Managers distants</strong><span>${esc(String(deosManagersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosManagersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosManagersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosManagersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosManagersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Managers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Managers terminée',analyzeManagersHybridFromSettings)">Analyser les Managers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Managers terminée',previewManagersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${managersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateManagersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Managers activée',activateManagersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Managers terminée',syncManagersHybridFromSettings)" ${managersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showManagersConflictsFromSettings()" ${deosManagersSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactManagerDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Managers terminée',repairExactManagerDuplicatesFromSettings)" ${managersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Managers locaux et distants.</div>` : ""}</section></div></div>`;
+}
+async function analyzeManagersHybridFromSettings() {
+  return runManagersUiExclusive("analyze", async () => {
+  try {
+    const a = await analyzeManagersHybridState();
+    const message = `Analyse Managers terminée\n\nManagers locaux : ${a.localCount}\nManagers distants : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésents des deux côtés : ${managersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}`;
+    // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
+    alert(message);
+    renderSettings(`Analyse Managers prête: ${a.localCount} local(aux), ${a.remoteCount} distant(s).`);
+    return a;
+  } catch (error) {
+    const message = error?.message || "Analyse Managers impossible.";
+    refreshManagersSyncRuntimeState({ remoteCount: Number(deosManagersSyncRuntime.lastValidRemoteCount || deosManagersSyncRuntime.remoteCount || 0), lastError: message, state: DEOS_LINKS_SYNC_STATUS.ERROR });
+    alert(`Erreur analyse Managers\n\n${message}`);
+    try { renderSettings(message); } catch (renderError) { console.error("[DEOS V5.25A] renderSettings après erreur analyse Managers", renderError); }
+    return null;
+  }
+  });
+}
+// Exposition explicite pour les boutons HTML inline (Chrome/Safari).
+window.analyzeManagersHybridFromSettings = analyzeManagersHybridFromSettings;
+async function previewManagersMigrationFromSettings() {
+  return runManagersUiExclusive("preview", async () => {
+  try {
+    const a = await managersHybridRepository.analyze();
+    alert(`Prévisualisation de migration Managers\n\nManagers locaux : ${a.localCount}\nManagers distants : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésents des deux côtés : ${managersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons potentiels : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\n\nAucune écriture n'a été effectuée.`);
+  } catch (error) {
+    const message = error?.message || "Prévisualisation Managers impossible.";
+    alert(`Erreur prévisualisation Managers\n\n${message}`);
+    renderSettings(message);
+  }
+  });
+}
+async function activateManagersHybridFromSettings() {
+  try { await managersHybridRepository.activate(); renderSettings("Synchronisation pilote Managers activée. Aucun Manager n'a encore été envoyé automatiquement."); }
+  catch (error) { refreshManagersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Activation Managers impossible." }); renderSettings(deosManagersSyncRuntime.lastError); }
+}
+async function syncManagersHybridFromSettings() { return runManagersUiExclusive("sync", () => managersHybridRepository.syncNow({ silent: false, source: "manual" })); }
+function deactivateManagersHybridFromSettings() { managersHybridRepository.deactivate(); renderSettings("Synchronisation pilote Managers désactivée. Les données locales et distantes sont conservées."); }
+function managerConflictDiagnosticValue(value) {
+  if (value === undefined) return "<absent>";
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  try { return JSON.stringify(value); } catch (_) { return String(value); }
+}
+function buildManagerConflictDiagnostic(meta = {}) {
+  const clientId = String(meta.clientId || "");
+  const local = byId("managers", clientId) || {};
+  const remote = meta.conflictRemote?.manager || meta.conflictRemote || {};
+  const localCanonical = canonicalManagerBusinessData(local);
+  const remoteCanonical = canonicalManagerBusinessData(remote);
+  const fields = managerConflictFields(local, remote, getManagersSyncShadowMap().get(clientId) || null);
+  const title = local.name || remote.name || clientId;
+  const rows = fields.map(field => {
+    const localValue = localCanonical[field];
+    const remoteValue = remoteCanonical[field];
+    return `${field}\n  LOCAL   : ${managerConflictDiagnosticValue(localValue)}\n  DISTANT : ${managerConflictDiagnosticValue(remoteValue)}`;
+  });
+  return `${title} [${clientId}]\n${rows.length ? rows.join("\n") : "Aucune différence métier après canonicalisation."}`;
+}
+function showManagersConflictsFromSettings() {
+  const conflicts = Object.values(deosManagersSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
+  if (!conflicts.length) return alert("Aucun conflit Manager détecté.");
+  const details = conflicts.map(buildManagerConflictDiagnostic);
+  alert(`Diagnostic conflits Managers V5.25A (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+}
+
+
 function defaultRemoteAuthRedirectUrl() {
   if (!["http:", "https:"].includes(window.location.protocol)) return "";
   return `${window.location.origin}${window.location.pathname}`;
@@ -18924,6 +19704,9 @@ function getDefaultRemoteSyncSettings() {
       foldersPilotEnabled: false,
       foldersPilotActivatedAt: "",
       foldersPilotLastMode: "",
+      managersPilotEnabled: false,
+      managersPilotActivatedAt: "",
+      managersPilotLastMode: "",
       debug: false
     };
   return {
@@ -18939,6 +19722,15 @@ function getDefaultRemoteSyncSettings() {
     actionsPilotEnabled: Boolean(base.actionsPilotEnabled),
     actionsPilotActivatedAt: String(base.actionsPilotActivatedAt || "").trim(),
     actionsPilotLastMode: String(base.actionsPilotLastMode || "").trim(),
+    projectsPilotEnabled: Boolean(base.projectsPilotEnabled),
+    projectsPilotActivatedAt: String(base.projectsPilotActivatedAt || "").trim(),
+    projectsPilotLastMode: String(base.projectsPilotLastMode || "").trim(),
+    foldersPilotEnabled: Boolean(base.foldersPilotEnabled),
+    foldersPilotActivatedAt: String(base.foldersPilotActivatedAt || "").trim(),
+    foldersPilotLastMode: String(base.foldersPilotLastMode || "").trim(),
+    managersPilotEnabled: Boolean(base.managersPilotEnabled),
+    managersPilotActivatedAt: String(base.managersPilotActivatedAt || "").trim(),
+    managersPilotLastMode: String(base.managersPilotLastMode || "").trim(),
     debug: Boolean(base.debug)
   };
 }
@@ -18964,6 +19756,9 @@ function normalizeRemoteSyncSettings(value = {}) {
     foldersPilotEnabled: Boolean(merged.foldersPilotEnabled),
     foldersPilotActivatedAt: String(merged.foldersPilotActivatedAt || "").trim(),
     foldersPilotLastMode: String(merged.foldersPilotLastMode || "").trim(),
+    managersPilotEnabled: Boolean(merged.managersPilotEnabled),
+    managersPilotActivatedAt: String(merged.managersPilotActivatedAt || "").trim(),
+    managersPilotLastMode: String(merged.managersPilotLastMode || "").trim(),
     debug: Boolean(merged.debug)
   };
 }
@@ -19917,6 +20712,9 @@ function mountRemoteSettingsCard() {
   }
   if (!document.getElementById("foldersHybridSyncSettingsCard")) {
     root.insertAdjacentHTML("beforeend", renderFoldersHybridSettingsCardHtml());
+  }
+  if (!document.getElementById("managersHybridSyncSettingsCard")) {
+    root.insertAdjacentHTML("beforeend", renderManagersHybridSettingsCardHtml());
   }
   applyRemoteTechnicalFieldPresentation();
   renderRemoteAuthOverlay();

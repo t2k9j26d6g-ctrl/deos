@@ -217,6 +217,38 @@
     };
   }
 
+  function normalizeManagerData(manager) {
+    if (!manager || typeof manager !== "object" || Array.isArray(manager)) {
+      throw createRemoteError("INVALID_MANAGER_PAYLOAD", "Le payload distant d'un Manager doit rester un objet simple.");
+    }
+    const output = {};
+    for (const [key, value] of Object.entries(manager)) {
+      const normalizedKey = String(key || "").trim();
+      if (!normalizedKey || normalizedKey === "id" || normalizedKey === "clientId") continue;
+      // `actions` est un champ métier légitime de la fiche Manager.
+      if (normalizedKey.startsWith("__") || normalizedKey.startsWith("_sync") || (RESERVED_DEOS_KEYS.has(normalizedKey) && normalizedKey !== "actions")) {
+        throw createRemoteError("MANAGER_PAYLOAD_FORBIDDEN", `La cle ${normalizedKey} n'est pas autorisee pour la synchronisation Managers.`);
+      }
+      output[normalizedKey] = value;
+    }
+    return clonePlainObject(output);
+  }
+
+  function normalizeManagerRow(row) {
+    const data = row && row.data && typeof row.data === "object" && !Array.isArray(row.data) ? clonePlainObject(row.data) : {};
+    return {
+      remoteId: row && row.id ? String(row.id) : "",
+      clientId: row && row.client_id ? String(row.client_id) : String(data.id || ""),
+      ownerId: row && row.owner_id ? String(row.owner_id) : "",
+      workspaceId: row && row.workspace_id ? String(row.workspace_id) : "",
+      version: Number.isFinite(Number(row && row.version)) ? Number(row.version) : 0,
+      createdAt: row && row.created_at ? String(row.created_at) : "",
+      updatedAt: row && row.updated_at ? String(row.updated_at) : "",
+      deletedAt: row && row.deleted_at ? String(row.deleted_at) : "",
+      manager: { id: row && row.client_id ? String(row.client_id) : String(data.id || ""), ...data }
+    };
+  }
+
   function normalizeRecord(record, expectedWorkspaceId, ownerId) {
     const payload = clonePlainObject(record.payload || {});
     validatePayloadShape(payload);
@@ -693,6 +725,77 @@ class SupabaseRemoteAdapter {
       }
       const row = Array.isArray(response.data) ? response.data[0] : response.data;
       return normalizeFolderRow(row || {});
+    }
+
+    async listManagers(workspaceId) {
+      const context = this.getContext(workspaceId);
+      const response = await context.client.rpc("deos_list_managers");
+      if (response.error) {
+        throw createRemoteError("REMOTE_MANAGERS_LIST_FAILED", response.error.message || "Lecture distante des Managers impossible.", response.error);
+      }
+      return Array.isArray(response.data) ? response.data.map(normalizeManagerRow) : [];
+    }
+
+    async getManager(clientId) {
+      const context = this.getContext();
+      const response = await context.client
+        .from("deos_managers")
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .eq("workspace_id", context.workspaceId)
+        .eq("client_id", String(clientId || ""))
+        .maybeSingle();
+      if (response.error) throw createRemoteError("REMOTE_MANAGER_GET_FAILED", response.error.message || "Lecture distante du Manager impossible.", response.error);
+      return response.data ? normalizeManagerRow(response.data) : null;
+    }
+
+    async createManager(manager) {
+      const context = this.getContext(manager && manager.workspaceId);
+      this.assertWritableRole(context.role);
+      const clientId = String(manager && (manager.clientId || manager.id) ? (manager.clientId || manager.id) : "").trim();
+      if (!clientId) throw createRemoteError("MANAGER_CLIENT_ID_REQUIRED", "Un id local stable est requis pour créer un Manager distant.");
+      const payload = normalizeManagerData(manager || {});
+      const response = await context.client
+        .from("deos_managers")
+        .insert({ workspace_id: context.workspaceId, owner_id: context.userId, client_id: clientId, data: payload })
+        .select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version")
+        .single();
+      if (response.error) {
+        const code = String(response.error.code || "").trim();
+        if (code === "23505") throw createRemoteError("REMOTE_MANAGER_EXISTS", response.error.message || "Le Manager existe déjà à distance.", response.error);
+        throw createRemoteError("REMOTE_MANAGER_CREATE_FAILED", response.error.message || "Création distante du Manager impossible.", response.error);
+      }
+      return normalizeManagerRow(response.data);
+    }
+
+    async updateManager(clientId, patch, expectedVersion) {
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour mettre à jour un Manager distant.");
+      const payload = normalizeManagerData(patch || {});
+      const response = await context.client.rpc("deos_update_manager", { p_client_id: String(clientId || "").trim(), p_expected_version: version, p_data: payload });
+      if (response.error) {
+        const message = response.error.message || "Mise à jour distante du Manager impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_MANAGER_UPDATE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeManagerRow(row || {});
+    }
+
+    async softDeleteManager(clientId, expectedVersion) {
+      const context = this.getContext();
+      this.assertWritableRole(context.role);
+      const version = Number(expectedVersion);
+      if (!Number.isInteger(version) || version < 1) throw createRemoteError("EXPECTED_VERSION_REQUIRED", "La version attendue est obligatoire pour supprimer logiquement un Manager distant.");
+      const response = await context.client.rpc("deos_soft_delete_manager", { p_client_id: String(clientId || "").trim(), p_expected_version: version });
+      if (response.error) {
+        const message = response.error.message || "Suppression logique distante du Manager impossible.";
+        if (/CONFLICT/i.test(message)) throw createRemoteError("CONFLICT", message, response.error);
+        throw createRemoteError("REMOTE_MANAGER_DELETE_FAILED", message, response.error);
+      }
+      const row = Array.isArray(response.data) ? response.data[0] : response.data;
+      return normalizeManagerRow(row || {});
     }
   }
 
