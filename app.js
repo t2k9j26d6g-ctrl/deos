@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.25C";
+const DEOS_VERSION = "V5.25D";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -538,6 +538,30 @@ const managersSyncQueueRepository = createRepository(deosDataService, {
 const managersSyncShadowRepository = createRepository(deosDataService, {
   key: "sync_shadow_managers", fallbackFactory: () => ({ syncedAt: "", managers: [] }),
   normalize: value => { const source = value && typeof value === "object" && !Array.isArray(value) ? value : {}; return { syncedAt: String(source.syncedAt || "").trim(), managers: normalizeCollection("managers", ensureArray(source.managers)) }; }
+});
+
+const managersConflictChoicesRepository = createRepository(deosDataService, {
+  key: "sync_conflict_choices_managers",
+  fallbackFactory: () => ({}),
+  normalize: value => {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const out = {};
+    Object.entries(source).forEach(([key, raw]) => {
+      const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+      const choices = {};
+      Object.entries(item.choices || {}).forEach(([field, side]) => {
+        if (side === "local" || side === "remote") choices[String(field)] = side;
+      });
+      out[String(key)] = {
+        remoteClientId: String(item.remoteClientId || key),
+        localFingerprint: String(item.localFingerprint || ""),
+        remoteFingerprint: String(item.remoteFingerprint || ""),
+        choices,
+        updatedAt: String(item.updatedAt || "")
+      };
+    });
+    return out;
+  }
 });
 
 const DEOS_REMOTE_TEST_RECORD_TEMPLATES = Object.freeze([
@@ -17876,35 +17900,11 @@ async function syncProjectsHybridNow(options = {}) {
     if (preflight.duplicateCandidates.length) {
       throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
     }
-
-    // V5.25B — avant toute création distante, rapproche les Managers uniques portant
-    // le même nom normalisé et adopte l'identifiant Supabase. Cela évite que les
-    // anciens IDs iPad soient envoyés comme de nouveaux Managers.
-    let identityRekeyChanged = false;
-    for (const match of ensureArray(preflight.both).filter(item => item.matchedBy === "name" && !sameId(item.localClientId, item.remoteClientId))) {
-      const remoteRow = ensureArray(remoteRows).find(row => sameId(row.clientId, match.remoteClientId) && !row.deletedAt);
-      const localManager = ensureArray(state.managers).find(manager => sameId(managerSyncClientId(manager), match.localClientId));
-      if (!remoteRow || !localManager) continue;
-      const adopted = adoptRemoteManagerClientId(localManager, remoteRow);
-      if (adopted.changed) identityRekeyChanged = true;
-    }
-    if (identityRekeyChanged) {
-      persistManagersState({ updateShadow: false });
-      // Les objets contenant des références Managers ont été remappés ; on persiste
-      // uniquement les catégories locales déjà chargées, sans aucune écriture distante.
-      ["folders","projects","actions","decisions","journal","documents","performance","agenda"].forEach(name => {
-        if (state[name] !== undefined) persist(name);
-      });
-      remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Vérification des identifiants Managers après rapprochement");
-    }
-
-    const normalizedPreflight = buildManagersRemotePreview(state.managers, remoteRows);
-    if (normalizedPreflight.conflicts.length) {
-      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${normalizedPreflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
-    }
-
     let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
-    let localChanged = identityRekeyChanged;
+    let localChanged = false;
+    if (preflight.conflicts.length) {
+      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+    }
 
     // V5.24B — fusion non destructive des Projets déjà présents des deux côtés AVANT
     // toute création locale. Les champs vides/appauvris sont restaurés depuis le côté riche.
@@ -19319,6 +19319,85 @@ function resolveManagerNonDestructive(localManager = {}, remoteManager = {}, bas
 function managerConflictFields(localManager = {}, remoteManager = {}, baseManager = null) {
   return resolveManagerNonDestructive(localManager, remoteManager, baseManager).conflictFields;
 }
+
+// V5.25D — choix explicites par champ pour la première fusion multi-appareils Managers.
+// Les choix restent locaux tant qu'aucune synchronisation n'est lancée et sont
+// invalidés automatiquement si l'une des deux fiches change entre-temps.
+function managerConflictChoiceKey(localClientId, remoteClientId) {
+  return String(remoteClientId || localClientId || "").trim();
+}
+function getManagerConflictChoiceEntry(localManager = {}, remoteManager = {}, localClientId = "", remoteClientId = "") {
+  const key = managerConflictChoiceKey(localClientId || managerSyncClientId(localManager), remoteClientId || managerSyncClientId(remoteManager));
+  if (!key) return { key: "", valid: false, entry: null };
+  const all = managersConflictChoicesRepository.load({});
+  const entry = all[key];
+  if (!entry) return { key, valid: false, entry: null };
+  const valid = entry.localFingerprint === managerFingerprint(localManager) && entry.remoteFingerprint === managerFingerprint(remoteManager);
+  return { key, valid, entry: valid ? entry : null };
+}
+function saveManagerConflictFieldChoice(conflict, field, side) {
+  if (!conflict || !field || !["local", "remote"].includes(side)) return false;
+  const local = conflict.local || {};
+  const remote = conflict.remote || {};
+  const key = managerConflictChoiceKey(conflict.localClientId, conflict.remoteClientId);
+  if (!key) return false;
+  const all = managersConflictChoicesRepository.load({});
+  const previous = all[key] || {};
+  const localFingerprint = managerFingerprint(local);
+  const remoteFingerprint = managerFingerprint(remote);
+  const samePair = previous.localFingerprint === localFingerprint && previous.remoteFingerprint === remoteFingerprint;
+  all[key] = {
+    remoteClientId: String(conflict.remoteClientId || key),
+    localFingerprint,
+    remoteFingerprint,
+    choices: { ...(samePair ? previous.choices : {}), [field]: side },
+    updatedAt: new Date().toISOString()
+  };
+  managersConflictChoicesRepository.save(all);
+  return true;
+}
+function saveManagerConflictAllChoices(conflict, side) {
+  if (!conflict || !["local", "remote"].includes(side)) return false;
+  ensureArray(conflict.fields).forEach(field => saveManagerConflictFieldChoice(conflict, field, side));
+  return true;
+}
+function clearManagerConflictChoice(localClientId = "", remoteClientId = "") {
+  const key = managerConflictChoiceKey(localClientId, remoteClientId);
+  if (!key) return;
+  const all = managersConflictChoicesRepository.load({});
+  if (all[key]) { delete all[key]; managersConflictChoicesRepository.save(all); }
+}
+function resolveManagerWithApprovedChoices(localManager = {}, remoteManager = {}, baseManager = null, identity = {}) {
+  const baseResolution = resolveManagerNonDestructive(localManager, remoteManager, baseManager);
+  if (!baseResolution.conflictFields.length) return { ...baseResolution, resolvedConflictFields: [], unresolvedConflictFields: [] };
+  const localClientId = String(identity.localClientId || managerSyncClientId(localManager) || "");
+  const remoteClientId = String(identity.remoteClientId || managerSyncClientId(remoteManager) || localClientId);
+  const stored = getManagerConflictChoiceEntry(localManager, remoteManager, localClientId, remoteClientId);
+  if (!stored.valid || !stored.entry) return { ...baseResolution, resolvedConflictFields: [], unresolvedConflictFields: [...baseResolution.conflictFields] };
+  const localNormalized = normalizeEntity("managers", { ...(localManager || {}) });
+  const remoteNormalized = normalizeEntity("managers", { ...(remoteManager || {}) });
+  const merged = { ...baseResolution.merged };
+  const unresolved = [];
+  const resolved = [];
+  for (const field of baseResolution.conflictFields) {
+    const side = stored.entry.choices?.[field];
+    if (side === "local") { merged[field] = localNormalized[field]; resolved.push(field); }
+    else if (side === "remote") { merged[field] = remoteNormalized[field]; resolved.push(field); }
+    else unresolved.push(field);
+  }
+  const preferredId = remoteClientId || localClientId || managerSyncClientId(merged);
+  const normalizedMerged = normalizeEntity("managers", { ...merged, id: preferredId, clientId: preferredId });
+  return {
+    ...baseResolution,
+    merged: normalizedMerged,
+    conflictFields: unresolved,
+    resolvedConflictFields: resolved,
+    unresolvedConflictFields: unresolved,
+    localChanged: managerFingerprint(normalizedMerged) !== managerFingerprint(localNormalized),
+    remoteChanged: managerFingerprint(normalizedMerged) !== managerFingerprint(remoteNormalized),
+    approvedByUser: resolved.length > 0 && unresolved.length === 0
+  };
+}
 function refreshManagersSyncRuntimeState(patch = {}) {
   const metaByClientId = normalizeManagersSyncMetaMap(patch.metaByClientId === undefined ? deosManagersSyncRuntime.metaByClientId : patch.metaByClientId);
   const localCount = ensureArray(state.managers).length;
@@ -19389,7 +19468,7 @@ function buildManagersRemotePreview(localManagers, remoteRows) {
     const remoteClientId = String(row.clientId || "").trim();
     matchedRemoteIds.add(remoteClientId);
     const baseManager = shadowMap.get(remoteClientId) || shadowMap.get(localId) || null;
-    const resolution = resolveManagerNonDestructive(manager, row.manager, baseManager);
+    const resolution = resolveManagerWithApprovedChoices(manager, row.manager, baseManager, { localClientId: localId, remoteClientId });
     const match = {
       local: manager,
       remote: row.manager,
@@ -19431,7 +19510,9 @@ function buildManagersRemotePreview(localManagers, remoteRows) {
         matchedBy,
         identityRekeyRequired: matchedBy === "name" && !sameId(localId, remoteClientId),
         fromRemoteFields: resolution.fromRemoteFields,
-        fromLocalFields: resolution.fromLocalFields
+        fromLocalFields: resolution.fromLocalFields,
+        resolvedConflictFields: ensureArray(resolution.resolvedConflictFields),
+        approvedByUser: Boolean(resolution.approvedByUser)
       });
     }
   });
@@ -19541,6 +19622,7 @@ function deactivateManagersHybridSync() {
   refreshManagersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" });
   return deosManagersSyncRuntime;
 }
+
 async function syncManagersHybridNow(options = {}) {
   if (deosManagersSyncRuntime.syncing) return deosManagersSyncRuntime;
   if (!managersSyncIsEnabled()) { refreshManagersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" }); return deosManagersSyncRuntime; }
@@ -19551,24 +19633,44 @@ async function syncManagersHybridNow(options = {}) {
   refreshManagersSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
   try {
     let remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Lecture des Managers distants");
-    const preflight = buildManagersRemotePreview(state.managers, remoteRows);
+    let preflight = buildManagersRemotePreview(state.managers, remoteRows);
     if (preflight.duplicateCandidates.length) {
-      throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
+      throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ».`);
     }
-    let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
-    let localChanged = false;
     if (preflight.conflicts.length) {
-      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} conflit(s) non résolu(s). Utilisez « Résoudre les conflits » avant toute écriture.`);
     }
 
-    // V5.25B — fusion non destructive des Managers déjà présents des deux côtés AVANT
-    // toute création locale. Les champs vides/appauvris sont restaurés depuis le côté riche.
+    let identityRekeyChanged = false;
+    for (const match of ensureArray(preflight.both).filter(item => item.matchedBy === "name" && !sameId(item.localClientId, item.remoteClientId))) {
+      const remoteRow = ensureArray(remoteRows).find(row => sameId(row.clientId, match.remoteClientId) && !row.deletedAt);
+      const localManager = ensureArray(state.managers).find(manager => sameId(managerSyncClientId(manager), match.localClientId));
+      if (!remoteRow || !localManager) continue;
+      const adopted = adoptRemoteManagerClientId(localManager, remoteRow);
+      if (adopted.changed) identityRekeyChanged = true;
+    }
+    if (identityRekeyChanged) {
+      persistManagersState({ updateShadow: false });
+      ["folders", "projects", "actions", "decisions", "journal", "documents", "performance", "agenda"].forEach(name => {
+        if (state[name] !== undefined) persist(name);
+      });
+      remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Vérification des identifiants Managers après rapprochement");
+    }
+
+    preflight = buildManagersRemotePreview(state.managers, remoteRows);
+    if (preflight.conflicts.length) {
+      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} conflit(s) restent non résolu(s) après rapprochement.`);
+    }
+
+    let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
+    let localChanged = identityRekeyChanged;
     const shadowMap = getManagersSyncShadowMap();
     const autoResolvedClientIds = new Set();
+
     for (const [clientId, row] of remoteActiveMap.entries()) {
       const local = byId("managers", clientId);
       if (!local) continue;
-      const resolution = resolveManagerNonDestructive(local, row.manager, shadowMap.get(clientId) || null);
+      const resolution = resolveManagerWithApprovedChoices(local, row.manager, shadowMap.get(clientId) || null, { localClientId: clientId, remoteClientId: clientId });
       if (resolution.conflictFields.length) {
         setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
         throw new Error(`CONFLICT_MANAGER_${clientId} — ${resolution.conflictFields.join(", ")}`);
@@ -19579,19 +19681,16 @@ async function syncManagersHybridNow(options = {}) {
         if (index >= 0) { state.managers[index] = resolution.merged; localChanged = true; }
       }
       if (resolution.remoteChanged) {
-        const updated = await withManagersRemoteTimeout(deosRemoteAdapter.updateManager(clientId, resolution.merged, Number(row.version || 0)), `Fusion non destructive du Manager ${resolution.merged.name || clientId}`);
+        const updated = await withManagersRemoteTimeout(deosRemoteAdapter.updateManager(clientId, resolution.merged, Number(row.version || 0)), `Fusion contrôlée du Manager ${resolution.merged.name || clientId}`);
         effectiveRow = { ...row, remoteId: updated.remoteId || row.remoteId, version: Number(updated.version || row.version || 0), updatedAt: updated.updatedAt || row.updatedAt, manager: resolution.merged };
         remoteActiveMap.set(clientId, effectiveRow);
       }
-      if (resolution.localChanged || resolution.remoteChanged || getManagerSyncMeta(clientId).syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT) {
-        setManagerSyncMeta(clientId, { remoteId: effectiveRow.remoteId, remoteVersion: Number(effectiveRow.version || 0), remoteUpdatedAt: effectiveRow.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(resolution.merged), lastSyncError: "", conflictRemote: null, conflictFields: [] });
-      }
+      setManagerSyncMeta(clientId, { remoteId: effectiveRow.remoteId, remoteVersion: Number(effectiveRow.version || 0), remoteUpdatedAt: effectiveRow.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(resolution.merged), lastSyncError: "", conflictRemote: null, conflictFields: [] });
+      clearManagerConflictChoice(clientId, clientId);
       autoResolvedClientIds.add(clientId);
     }
     if (localChanged) persistManagersState();
 
-    // V5.25B — une absence locale n'est JAMAIS interprétée comme une suppression.
-    // Un soft-delete distant n'est autorisé que si la suppression a été explicitement marquée localement.
     for (const [clientId, meta] of Object.entries(deosManagersSyncRuntime.metaByClientId || {})) {
       if (meta.deletePending && !byId("managers", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId) && meta.syncStatus !== DEOS_LINKS_SYNC_STATUS.CONFLICT) {
         const deleted = await withManagersRemoteTimeout(deosRemoteAdapter.softDeleteManager(clientId, Number(remoteActiveMap.get(clientId).version || meta.remoteVersion)), `Suppression logique du Manager ${clientId}`);
@@ -19602,7 +19701,6 @@ async function syncManagersHybridNow(options = {}) {
     remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Actualisation des Managers distants");
     remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
 
-    // Créations locales nouvelles.
     for (const manager of ensureArray(state.managers)) {
       ensureManagerSyncClientId(manager);
       const clientId = managerSyncClientId(manager);
@@ -19635,7 +19733,12 @@ async function syncManagersHybridNow(options = {}) {
       const localFp = managerFingerprint(local), remoteFp = managerFingerprint(row.manager);
       if (!meta.lastLocalFingerprint) {
         if (localFp !== remoteFp) {
-          setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: managerConflictFields(local, row.manager, getManagersSyncShadowMap().get(clientId) || null) });
+          const resolution = resolveManagerWithApprovedChoices(local, row.manager, getManagersSyncShadowMap().get(clientId) || null, { localClientId: clientId, remoteClientId: clientId });
+          if (resolution.conflictFields.length) {
+            setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
+          } else {
+            setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
+          }
         } else {
           setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: localFp, conflictRemote: null, conflictFields: [] });
         }
@@ -19668,7 +19771,7 @@ async function syncManagersHybridNow(options = {}) {
     refreshManagersSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
   } catch (error) {
     refreshManagersSyncRuntimeState({ syncing: false, remoteCount: Number(deosManagersSyncRuntime.lastValidRemoteCount || deosManagersSyncRuntime.remoteCount || 0), state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Synchronisation Managers impossible." });
-    console.error("[DEOS V5.25B MANAGERS SYNC]", error);
+    console.error("[DEOS V5.25D MANAGERS SYNC]", error);
   }
   if (!options.silent && currentView === "settings") renderSettings(deosManagersSyncRuntime.lastError || "Synchronisation Managers actualisée.");
   return deosManagersSyncRuntime;
@@ -19773,7 +19876,7 @@ function renderManagersHybridSettingsCardHtml() {
   const remoteReady = managersSyncCanInspectRemote();
   const analysis = deosManagersSyncRuntime.lastAnalysis;
   const warning = "Seuls les Managers sont concernés par ce pilote. Liens, Actions, Projets et Dossiers conservent leurs pilotes séparés ; les autres catégories restent locales.";
-  return `<div id="managersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Managers</h2><p class="muted">Pilote V5.25C dédié aux Managers, avec lecture distante via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${managersSyncStatusClass()}">${esc(managersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(managersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Managers locaux</strong><span>${esc(String(state.managers.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Managers distants</strong><span>${esc(String(deosManagersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosManagersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosManagersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosManagersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosManagersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Managers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Managers terminée',analyzeManagersHybridFromSettings)">Analyser les Managers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Managers terminée',previewManagersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${managersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateManagersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Managers activée',activateManagersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Managers terminée',syncManagersHybridFromSettings)" ${managersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showManagersConflictsFromSettings()" ${(deosManagersSyncRuntime.conflictCount || ensureArray(analysis?.conflicts).length) ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactManagerDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Managers terminée',repairExactManagerDuplicatesFromSettings)" ${managersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Managers locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="managersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Managers</h2><p class="muted">Pilote V5.25D dédié aux Managers, avec lecture distante via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${managersSyncStatusClass()}">${esc(managersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(managersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Managers locaux</strong><span>${esc(String(state.managers.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Managers distants</strong><span>${esc(String(deosManagersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosManagersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosManagersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosManagersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosManagersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Managers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Managers terminée',analyzeManagersHybridFromSettings)">Analyser les Managers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Managers terminée',previewManagersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${managersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateManagersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Managers activée',activateManagersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Managers terminée',syncManagersHybridFromSettings)" ${managersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showManagersConflictsFromSettings()" ${(deosManagersSyncRuntime.conflictCount || ensureArray(analysis?.conflicts).length) ? "" : "disabled"}>Voir les conflits</button><button class="action" type="button" onclick="openManagersConflictResolutionDialog(0)" ${ensureArray(analysis?.conflicts).length ? "" : "disabled"}>Résoudre les conflits</button><button class="secondary" type="button" onclick="previewExactManagerDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Managers terminée',repairExactManagerDuplicatesFromSettings)" ${managersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Managers locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeManagersHybridFromSettings() {
   return runManagersUiExclusive("analyze", async () => {
@@ -19834,6 +19937,71 @@ function buildManagerConflictDiagnostic(meta = {}) {
   });
   return `${title} [${clientId}]\n${rows.length ? rows.join("\n") : "Aucune différence métier après canonicalisation."}`;
 }
+
+let deosManagersConflictDialogIndex = 0;
+function managersConflictForDialog(index = deosManagersConflictDialogIndex) {
+  const conflicts = ensureArray(deosManagersSyncRuntime.lastAnalysis?.conflicts);
+  if (!conflicts.length) return null;
+  const safeIndex = Math.min(Math.max(Number(index || 0), 0), conflicts.length - 1);
+  return { conflict: conflicts[safeIndex], index: safeIndex, total: conflicts.length };
+}
+function managerConflictChoiceForField(conflict, field) {
+  const stored = getManagerConflictChoiceEntry(conflict?.local || {}, conflict?.remote || {}, conflict?.localClientId || "", conflict?.remoteClientId || "");
+  return stored.valid ? String(stored.entry?.choices?.[field] || "") : "";
+}
+function managerConflictDisplayValue(value) {
+  const raw = managerConflictDiagnosticValue(value);
+  return raw.length > 600 ? `${raw.slice(0, 600)}…` : raw;
+}
+function closeManagersConflictResolutionDialog() { document.getElementById("managersConflictResolutionOverlay")?.remove(); }
+function renderManagersConflictResolutionDialog() {
+  closeManagersConflictResolutionDialog();
+  const data = managersConflictForDialog();
+  if (!data) { alert("Aucun conflit Manager à résoudre dans la dernière analyse."); return; }
+  const { conflict, index, total } = data;
+  const localCanonical = canonicalManagerBusinessData(conflict.local || {});
+  const remoteCanonical = canonicalManagerBusinessData(conflict.remote || {});
+  const fields = ensureArray(conflict.fields);
+  const selectedCount = fields.filter(field => ["local", "remote"].includes(managerConflictChoiceForField(conflict, field))).length;
+  const root = document.getElementById("app");
+  if (!root) return;
+  const rows = fields.map(field => {
+    const choice = managerConflictChoiceForField(conflict, field);
+    const encodedClientId = encodeURIComponent(conflict.remoteClientId || conflict.localClientId || "");
+    const encodedField = encodeURIComponent(field);
+    return `<div class="card" style="margin:10px 0;padding:12px"><strong>${esc(field)}</strong><div class="settings-card-grid" style="margin-top:8px"><section class="settings-card-block"><h3>Local iPad</h3><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px">${esc(managerConflictDisplayValue(localCanonical[field]))}</pre><button class="${choice === "local" ? "action" : "secondary"}" type="button" onclick="chooseManagerConflictField('${encodedClientId}','${encodedField}','local')">${choice === "local" ? "✓ " : ""}Conserver LOCAL</button></section><section class="settings-card-block"><h3>Supabase / PC</h3><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px">${esc(managerConflictDisplayValue(remoteCanonical[field]))}</pre><button class="${choice === "remote" ? "action" : "secondary"}" type="button" onclick="chooseManagerConflictField('${encodedClientId}','${encodedField}','remote')">${choice === "remote" ? "✓ " : ""}Conserver SUPABASE</button></section></div></div>`;
+  }).join("");
+  root.insertAdjacentHTML("beforeend", `<div id="managersConflictResolutionOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel" style="max-width:960px"><div class="modal-head"><h2>Fusion Manager — ${esc(conflict.title || conflict.local?.name || conflict.remote?.name || "Manager")}</h2><button class="icon-close" type="button" onclick="closeManagersConflictResolutionDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">Manager ${index + 1}/${total} · ${selectedCount}/${fields.length} champ(s) arbitré(s). Aucun choix n'est envoyé à Supabase à ce stade.</p><div class="row-actions"><button class="secondary" type="button" onclick="chooseAllManagerConflictFields('local')">Tout conserver LOCAL</button><button class="secondary" type="button" onclick="chooseAllManagerConflictFields('remote')">Tout conserver SUPABASE</button></div>${rows}<div class="row-actions"><button class="secondary" type="button" onclick="previousManagerConflictDialog()" ${index <= 0 ? "disabled" : ""}>← Précédent</button><button class="secondary" type="button" onclick="nextManagerConflictDialog()" ${index >= total - 1 ? "disabled" : ""}>Suivant →</button><button class="action" type="button" onclick="reanalyzeManagersAfterConflictChoices()">Ré-analyser les Managers</button><button class="secondary" type="button" onclick="closeManagersConflictResolutionDialog()">Fermer</button></div></div></div></div>`);
+}
+function openManagersConflictResolutionDialog(index = 0) { deosManagersConflictDialogIndex = Number(index || 0); renderManagersConflictResolutionDialog(); }
+function chooseManagerConflictField(encodedClientId, encodedField, side) {
+  const clientId = decodeURIComponent(String(encodedClientId || ""));
+  const field = decodeURIComponent(String(encodedField || ""));
+  const conflicts = ensureArray(deosManagersSyncRuntime.lastAnalysis?.conflicts);
+  const conflict = conflicts.find(item => sameId(item.remoteClientId || item.localClientId, clientId));
+  if (!conflict) return alert("Conflit Manager introuvable dans la dernière analyse.");
+  saveManagerConflictFieldChoice(conflict, field, side);
+  renderManagersConflictResolutionDialog();
+}
+function chooseAllManagerConflictFields(side) {
+  const data = managersConflictForDialog();
+  if (!data) return;
+  saveManagerConflictAllChoices(data.conflict, side);
+  renderManagersConflictResolutionDialog();
+}
+function previousManagerConflictDialog() { deosManagersConflictDialogIndex = Math.max(0, deosManagersConflictDialogIndex - 1); renderManagersConflictResolutionDialog(); }
+function nextManagerConflictDialog() {
+  const total = ensureArray(deosManagersSyncRuntime.lastAnalysis?.conflicts).length;
+  deosManagersConflictDialogIndex = Math.min(Math.max(0, total - 1), deosManagersConflictDialogIndex + 1);
+  renderManagersConflictResolutionDialog();
+}
+async function reanalyzeManagersAfterConflictChoices() {
+  closeManagersConflictResolutionDialog();
+  const analysis = await analyzeManagersHybridFromSettings();
+  if (analysis && analysis.conflicts.length) alert(`${analysis.conflicts.length} conflit(s) Manager restent à arbitrer.`);
+  else if (analysis) alert("Tous les conflits Managers sont désormais arbitrés localement. Aucune écriture distante n'a encore été effectuée.");
+}
+
 function showManagersConflictsFromSettings() {
   const analysisConflicts = ensureArray(deosManagersSyncRuntime.lastAnalysis?.conflicts);
   if (analysisConflicts.length) {
@@ -19850,14 +20018,23 @@ function showManagersConflictsFromSettings() {
       const rows = fields.map(field => `${field}\n  LOCAL   : ${managerConflictDiagnosticValue(localCanonical[field])}\n  DISTANT : ${managerConflictDiagnosticValue(remoteCanonical[field])}`);
       return `${title}${ids ? `\n${ids}` : ""}\n${rows.length ? rows.join("\n") : "Aucune différence métier après canonicalisation."}`;
     });
-    return alert(`Diagnostic conflits Managers V5.25C (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+    return alert(`Diagnostic conflits Managers V5.25D (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
   }
   const conflicts = Object.values(deosManagersSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
   if (!conflicts.length) return alert("Aucun conflit Manager détecté.");
   const details = conflicts.map(buildManagerConflictDiagnostic);
-  return alert(`Diagnostic conflits Managers V5.25C (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+  return alert(`Diagnostic conflits Managers V5.25D (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
 }
 
+
+
+window.openManagersConflictResolutionDialog = openManagersConflictResolutionDialog;
+window.closeManagersConflictResolutionDialog = closeManagersConflictResolutionDialog;
+window.chooseManagerConflictField = chooseManagerConflictField;
+window.chooseAllManagerConflictFields = chooseAllManagerConflictFields;
+window.previousManagerConflictDialog = previousManagerConflictDialog;
+window.nextManagerConflictDialog = nextManagerConflictDialog;
+window.reanalyzeManagersAfterConflictChoices = reanalyzeManagersAfterConflictChoices;
 
 function defaultRemoteAuthRedirectUrl() {
   if (!["http:", "https:"].includes(window.location.protocol)) return "";
