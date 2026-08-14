@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.25E";
+const DEOS_VERSION = "V5.25F";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -19320,7 +19320,7 @@ function managerConflictFields(localManager = {}, remoteManager = {}, baseManage
   return resolveManagerNonDestructive(localManager, remoteManager, baseManager).conflictFields;
 }
 
-// V5.25E — choix explicites par champ pour la première fusion multi-appareils Managers.
+// V5.25F — choix explicites par champ pour la première fusion multi-appareils Managers.
 // Les choix restent locaux tant qu'aucune synchronisation n'est lancée et sont
 // invalidés automatiquement si l'une des deux fiches change entre-temps.
 function managerConflictChoiceKey(localClientId, remoteClientId) {
@@ -19368,7 +19368,7 @@ function clearManagerConflictChoice(localClientId = "", remoteClientId = "") {
   if (all[key]) { delete all[key]; managersConflictChoicesRepository.save(all); }
 }
 
-// V5.25E — fusion intelligente uniquement pour les champs réellement combinables.
+// V5.25F — fusion intelligente uniquement pour les champs réellement combinables.
 // Les champs monovalués (nom, rôle, statut, priorité...) restent obligatoirement
 // soumis à un choix LOCAL ou SUPABASE.
 const DEOS_MANAGER_MERGEABLE_TEXT_FIELDS = new Set(["note", "notes", "comment", "comments", "description"]);
@@ -19820,7 +19820,7 @@ async function syncManagersHybridNow(options = {}) {
     refreshManagersSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
   } catch (error) {
     refreshManagersSyncRuntimeState({ syncing: false, remoteCount: Number(deosManagersSyncRuntime.lastValidRemoteCount || deosManagersSyncRuntime.remoteCount || 0), state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.ERROR, lastError: error?.message || "Synchronisation Managers impossible." });
-    console.error("[DEOS V5.25E MANAGERS SYNC]", error);
+    console.error("[DEOS V5.25F MANAGERS SYNC]", error);
   }
   if (!options.silent && currentView === "settings") renderSettings(deosManagersSyncRuntime.lastError || "Synchronisation Managers actualisée.");
   return deosManagersSyncRuntime;
@@ -19925,7 +19925,7 @@ function renderManagersHybridSettingsCardHtml() {
   const remoteReady = managersSyncCanInspectRemote();
   const analysis = deosManagersSyncRuntime.lastAnalysis;
   const warning = "Seuls les Managers sont concernés par ce pilote. Liens, Actions, Projets et Dossiers conservent leurs pilotes séparés ; les autres catégories restent locales.";
-  return `<div id="managersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Managers</h2><p class="muted">Pilote V5.25E dédié aux Managers, avec lecture distante via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${managersSyncStatusClass()}">${esc(managersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(managersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Managers locaux</strong><span>${esc(String(state.managers.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Managers distants</strong><span>${esc(String(deosManagersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosManagersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosManagersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosManagersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosManagersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Managers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Managers terminée',analyzeManagersHybridFromSettings)">Analyser les Managers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Managers terminée',previewManagersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${managersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateManagersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Managers activée',activateManagersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Managers terminée',syncManagersHybridFromSettings)" ${managersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showManagersConflictsFromSettings()" ${(deosManagersSyncRuntime.conflictCount || ensureArray(analysis?.conflicts).length) ? "" : "disabled"}>Voir les conflits</button><button class="action" type="button" onclick="openManagersConflictResolutionDialog(0)" ${ensureArray(analysis?.conflicts).length ? "" : "disabled"}>Résoudre les conflits</button><button class="secondary" type="button" onclick="previewExactManagerDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Managers terminée',repairExactManagerDuplicatesFromSettings)" ${managersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Managers locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="managersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Managers</h2><p class="muted">Pilote V5.25F dédié aux Managers, avec lecture distante via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${managersSyncStatusClass()}">${esc(managersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(managersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Managers locaux</strong><span>${esc(String(state.managers.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Managers distants</strong><span>${esc(String(deosManagersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosManagersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosManagersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosManagersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosManagersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Managers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Managers terminée',analyzeManagersHybridFromSettings)">Analyser les Managers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Managers terminée',previewManagersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${managersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateManagersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Managers activée',activateManagersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Managers terminée',syncManagersHybridFromSettings)" ${managersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showManagersConflictsFromSettings()" ${(deosManagersSyncRuntime.conflictCount || ensureArray(analysis?.conflicts).length) ? "" : "disabled"}>Voir les conflits</button><button class="action" type="button" onclick="openManagersConflictResolutionDialog(0)" ${ensureArray(analysis?.conflicts).length ? "" : "disabled"}>Résoudre les conflits</button><button class="secondary" type="button" onclick="previewExactManagerDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Managers terminée',repairExactManagerDuplicatesFromSettings)" ${managersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Managers locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeManagersHybridFromSettings() {
   return runManagersUiExclusive("analyze", async () => {
@@ -20024,7 +20024,24 @@ function renderManagersConflictResolutionDialog() {
   }).join("");
   root.insertAdjacentHTML("beforeend", `<div id="managersConflictResolutionOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel" style="max-width:960px"><div class="modal-head"><h2>Fusion Manager — ${esc(conflict.title || conflict.local?.name || conflict.remote?.name || "Manager")}</h2><button class="icon-close" type="button" onclick="closeManagersConflictResolutionDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">Manager ${index + 1}/${total} · ${selectedCount}/${fields.length} champ(s) arbitré(s). Aucun choix n'est envoyé à Supabase à ce stade.</p><div class="row-actions"><button class="secondary" type="button" onclick="chooseAllManagerConflictFields('local')">Tout conserver LOCAL</button><button class="secondary" type="button" onclick="chooseAllManagerConflictFields('remote')">Tout conserver SUPABASE</button><button class="secondary" type="button" onclick="chooseAllMergeableManagerConflictFields()">Fusionner tous les champs compatibles</button></div>${rows}<div class="row-actions"><button class="secondary" type="button" onclick="previousManagerConflictDialog()" ${index <= 0 ? "disabled" : ""}>← Précédent</button><button class="secondary" type="button" onclick="nextManagerConflictDialog()" ${index >= total - 1 ? "disabled" : ""}>Suivant →</button><button class="action" type="button" onclick="reanalyzeManagersAfterConflictChoices()">Ré-analyser les Managers</button><button class="secondary" type="button" onclick="closeManagersConflictResolutionDialog()">Fermer</button></div></div></div></div>`);
 }
-function openManagersConflictResolutionDialog(index = 0) { deosManagersConflictDialogIndex = Number(index || 0); renderManagersConflictResolutionDialog(); }
+async function openManagersConflictResolutionDialog(index = 0) {
+  deosManagersConflictDialogIndex = Number(index || 0);
+  try {
+    // V5.25F — Safari/iPad peut perdre lastAnalysis lors du rerender de Paramètres.
+    // On refait donc une lecture distante fraîche au moment d'ouvrir le résolveur.
+    // Aucune écriture n'est effectuée par cette analyse.
+    const analysis = await analyzeManagersHybridState();
+    if (!ensureArray(analysis?.conflicts).length) {
+      alert("Aucun conflit Manager à résoudre dans l’analyse fraîche.");
+      try { renderSettings(`Analyse Managers actualisée: ${analysis.localCount} local(aux), ${analysis.remoteCount} distant(s), 0 conflit.`); } catch (_) {}
+      return;
+    }
+    renderManagersConflictResolutionDialog();
+  } catch (error) {
+    const message = error?.message || "Impossible de relire les conflits Managers.";
+    alert(`Erreur ouverture des conflits Managers\n\n${message}`);
+  }
+}
 function chooseManagerConflictField(encodedClientId, encodedField, side) {
   const clientId = decodeURIComponent(String(encodedClientId || ""));
   const field = decodeURIComponent(String(encodedField || ""));
@@ -20075,12 +20092,12 @@ function showManagersConflictsFromSettings() {
       const rows = fields.map(field => `${field}\n  LOCAL   : ${managerConflictDiagnosticValue(localCanonical[field])}\n  DISTANT : ${managerConflictDiagnosticValue(remoteCanonical[field])}`);
       return `${title}${ids ? `\n${ids}` : ""}\n${rows.length ? rows.join("\n") : "Aucune différence métier après canonicalisation."}`;
     });
-    return alert(`Diagnostic conflits Managers V5.25E (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+    return alert(`Diagnostic conflits Managers V5.25F (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
   }
   const conflicts = Object.values(deosManagersSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
   if (!conflicts.length) return alert("Aucun conflit Manager détecté.");
   const details = conflicts.map(buildManagerConflictDiagnostic);
-  return alert(`Diagnostic conflits Managers V5.25E (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+  return alert(`Diagnostic conflits Managers V5.25F (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
 }
 
 
