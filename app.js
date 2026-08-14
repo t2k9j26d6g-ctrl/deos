@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.25I";
+const DEOS_VERSION = "V5.26A";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -21860,6 +21860,105 @@ function settingsPreviewHtml(data = identity) {
   return `<div class="settings-preview">${logo}<div><strong>${esc(data.appName || "DEOS")}</strong><span>${esc(data.siteName || "")}</span>${org}<small>${esc(data.directorName || "")}${data.directorRole ? " · " + esc(data.directorRole) : ""}</small></div></div>`;
 }
 
+
+const DEOS_SETTINGS_ACCORDION_STATE_KEY = "deos_settings_accordion_state_v526a";
+
+function settingsAccordionReadState() {
+  try {
+    const raw = localStorage.getItem(DEOS_SETTINGS_ACCORDION_STATE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function settingsAccordionWriteState(stateMap) {
+  try {
+    localStorage.setItem(DEOS_SETTINGS_ACCORDION_STATE_KEY, JSON.stringify(stateMap || {}));
+  } catch (_) {}
+}
+
+function settingsAccordionKey(card, index) {
+  const explicit = String(card?.id || "").trim();
+  if (explicit) return explicit;
+  const title = String(card?.querySelector("h2")?.textContent || `section-${index + 1}`)
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return title || `section-${index + 1}`;
+}
+
+function toggleSettingsAccordion(key) {
+  const card = document.querySelector(`[data-settings-accordion-key="${CSS.escape(String(key || ""))}"]`);
+  if (!card) return;
+  const body = card.querySelector(":scope > .settings-accordion-body");
+  const toggle = card.querySelector(":scope > .settings-accordion-toggle");
+  if (!body || !toggle) return;
+
+  const willOpen = body.hidden;
+  body.hidden = !willOpen;
+  card.classList.toggle("is-open", willOpen);
+  toggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  const chevron = toggle.querySelector(".settings-accordion-chevron");
+  if (chevron) chevron.textContent = willOpen ? "▴" : "▾";
+
+  const stateMap = settingsAccordionReadState();
+  stateMap[key] = willOpen;
+  settingsAccordionWriteState(stateMap);
+}
+
+function enhanceSettingsAccordions() {
+  if (currentView !== "settings") return;
+  const root = document.getElementById("app");
+  if (!root) return;
+
+  const stateMap = settingsAccordionReadState();
+  const cards = [
+    ...root.querySelectorAll(":scope > .grid.two > .settings-card, :scope > .settings-card")
+  ];
+
+  cards.forEach((card, index) => {
+    if (card.classList.contains("settings-hero") || card.dataset.settingsAccordionReady === "1") return;
+
+    const sourceTitle = card.querySelector("h2");
+    if (!sourceTitle) return;
+
+    const title = String(sourceTitle.textContent || `Section ${index + 1}`).trim();
+    const key = settingsAccordionKey(card, index);
+    const defaultOpen = title === "Identité";
+    const isOpen = Object.prototype.hasOwnProperty.call(stateMap, key)
+      ? Boolean(stateMap[key])
+      : defaultOpen;
+
+    const children = Array.from(card.childNodes);
+    const body = document.createElement("div");
+    body.className = "settings-accordion-body";
+    children.forEach(node => body.appendChild(node));
+
+    sourceTitle.classList.add("settings-accordion-source-title");
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "settings-accordion-toggle";
+    toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    toggle.setAttribute("onclick", `toggleSettingsAccordion(${JSON.stringify(key)})`);
+    toggle.innerHTML = `<span class="settings-accordion-title">${esc(title)}</span><span class="settings-accordion-chevron" aria-hidden="true">${isOpen ? "▴" : "▾"}</span>`;
+
+    body.hidden = !isOpen;
+    card.classList.toggle("is-open", isOpen);
+    card.dataset.settingsAccordionReady = "1";
+    card.dataset.settingsAccordionKey = key;
+
+    card.appendChild(toggle);
+    card.appendChild(body);
+  });
+}
+window.toggleSettingsAccordion = toggleSettingsAccordion;
+
 function renderSettings(message = "") {
   document.getElementById("viewTitle").textContent = "Paramètres";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
@@ -21872,6 +21971,7 @@ const renderSettingsBase = renderSettings;
 renderSettings = function renderSettingsWithRemote(message = "") {
   renderSettingsBase(message);
   mountRemoteSettingsCard();
+  enhanceSettingsAccordions();
 };
 
 function readSettingsForm() {

@@ -10,6 +10,64 @@
     /* V5.24D — iPad/Safari : conserver la correction du débordement horizontal de la barre latérale. */
     .sidebar { overflow-x: hidden !important; }
     .sidebar * { max-width: 100%; box-sizing: border-box; }
+
+    /* V5.26A — Paramètres en accordéons, état mémorisé par appareil. */
+    .settings-card[data-settings-accordion-ready="1"] {
+      padding-top: 0;
+      overflow: hidden;
+    }
+    .settings-accordion-toggle {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 4px 14px;
+      font: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    .settings-accordion-title {
+      font-size: 1.05rem;
+      font-weight: 800;
+      line-height: 1.25;
+    }
+    .settings-accordion-chevron {
+      flex: 0 0 auto;
+      min-width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: rgba(127,127,127,.12);
+      font-weight: 800;
+    }
+    .settings-accordion-body {
+      padding-top: 2px;
+    }
+    .settings-accordion-body[hidden] {
+      display: none !important;
+    }
+    .settings-accordion-source-title {
+      display: none !important;
+    }
+    .settings-card[data-settings-accordion-ready="1"].is-open .settings-accordion-toggle {
+      border-bottom: 1px solid rgba(127,127,127,.16);
+      margin-bottom: 14px;
+    }
+    @media (max-width: 900px) {
+      .settings-accordion-toggle {
+        padding: 16px 2px 12px;
+      }
+      .settings-accordion-title {
+        font-size: 1rem;
+      }
+    }
+
   </style>
 </head>
 
@@ -61,7 +119,7 @@
  <script src="config.js?v=1"></script>
   <script src="supabase-client.js?v=1"></script>
   <script src="remote-adapter.js?v=5"></script>
-  <script src="app.js?v=525I"></script>
+  <script src="app.js?v=526A"></script>
 </body>
 </html>
 
