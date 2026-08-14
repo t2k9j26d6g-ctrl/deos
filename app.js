@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.25F";
+const DEOS_VERSION = "V5.25G";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -19988,8 +19988,9 @@ function buildManagerConflictDiagnostic(meta = {}) {
 }
 
 let deosManagersConflictDialogIndex = 0;
+let deosManagersConflictDialogAnalysis = null;
 function managersConflictForDialog(index = deosManagersConflictDialogIndex) {
-  const conflicts = ensureArray(deosManagersSyncRuntime.lastAnalysis?.conflicts);
+  const conflicts = ensureArray((deosManagersConflictDialogAnalysis || deosManagersSyncRuntime.lastAnalysis)?.conflicts);
   if (!conflicts.length) return null;
   const safeIndex = Math.min(Math.max(Number(index || 0), 0), conflicts.length - 1);
   return { conflict: conflicts[safeIndex], index: safeIndex, total: conflicts.length };
@@ -20027,10 +20028,11 @@ function renderManagersConflictResolutionDialog() {
 async function openManagersConflictResolutionDialog(index = 0) {
   deosManagersConflictDialogIndex = Number(index || 0);
   try {
-    // V5.25F — Safari/iPad peut perdre lastAnalysis lors du rerender de Paramètres.
-    // On refait donc une lecture distante fraîche au moment d'ouvrir le résolveur.
-    // Aucune écriture n'est effectuée par cette analyse.
+    // V5.25G — le résolveur conserve sa propre copie de l'analyse.
+    // Safari/iPad peut rerendre Paramètres et remplacer l'état runtime entre deux clics.
+    // La copie dédiée évite donc que les 7 conflits disparaissent entre l'analyse et la modale.
     const analysis = await analyzeManagersHybridState();
+    deosManagersConflictDialogAnalysis = analysis;
     if (!ensureArray(analysis?.conflicts).length) {
       alert("Aucun conflit Manager à résoudre dans l’analyse fraîche.");
       try { renderSettings(`Analyse Managers actualisée: ${analysis.localCount} local(aux), ${analysis.remoteCount} distant(s), 0 conflit.`); } catch (_) {}
@@ -20045,7 +20047,7 @@ async function openManagersConflictResolutionDialog(index = 0) {
 function chooseManagerConflictField(encodedClientId, encodedField, side) {
   const clientId = decodeURIComponent(String(encodedClientId || ""));
   const field = decodeURIComponent(String(encodedField || ""));
-  const conflicts = ensureArray(deosManagersSyncRuntime.lastAnalysis?.conflicts);
+  const conflicts = ensureArray((deosManagersConflictDialogAnalysis || deosManagersSyncRuntime.lastAnalysis)?.conflicts);
   const conflict = conflicts.find(item => sameId(item.remoteClientId || item.localClientId, clientId));
   if (!conflict) return alert("Conflit Manager introuvable dans la dernière analyse.");
   saveManagerConflictFieldChoice(conflict, field, side);
@@ -20065,13 +20067,14 @@ function chooseAllMergeableManagerConflictFields() {
 }
 function previousManagerConflictDialog() { deosManagersConflictDialogIndex = Math.max(0, deosManagersConflictDialogIndex - 1); renderManagersConflictResolutionDialog(); }
 function nextManagerConflictDialog() {
-  const total = ensureArray(deosManagersSyncRuntime.lastAnalysis?.conflicts).length;
+  const total = ensureArray((deosManagersConflictDialogAnalysis || deosManagersSyncRuntime.lastAnalysis)?.conflicts).length;
   deosManagersConflictDialogIndex = Math.min(Math.max(0, total - 1), deosManagersConflictDialogIndex + 1);
   renderManagersConflictResolutionDialog();
 }
 async function reanalyzeManagersAfterConflictChoices() {
   closeManagersConflictResolutionDialog();
   const analysis = await analyzeManagersHybridFromSettings();
+  if (analysis) deosManagersConflictDialogAnalysis = analysis;
   if (analysis && analysis.conflicts.length) alert(`${analysis.conflicts.length} conflit(s) Manager restent à arbitrer.`);
   else if (analysis) alert("Tous les conflits Managers sont désormais arbitrés localement. Aucune écriture distante n'a encore été effectuée.");
 }
@@ -20092,12 +20095,12 @@ function showManagersConflictsFromSettings() {
       const rows = fields.map(field => `${field}\n  LOCAL   : ${managerConflictDiagnosticValue(localCanonical[field])}\n  DISTANT : ${managerConflictDiagnosticValue(remoteCanonical[field])}`);
       return `${title}${ids ? `\n${ids}` : ""}\n${rows.length ? rows.join("\n") : "Aucune différence métier après canonicalisation."}`;
     });
-    return alert(`Diagnostic conflits Managers V5.25F (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+    return alert(`Diagnostic conflits Managers V5.25G (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
   }
   const conflicts = Object.values(deosManagersSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
   if (!conflicts.length) return alert("Aucun conflit Manager détecté.");
   const details = conflicts.map(buildManagerConflictDiagnostic);
-  return alert(`Diagnostic conflits Managers V5.25F (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+  return alert(`Diagnostic conflits Managers V5.25G (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
 }
 
 
