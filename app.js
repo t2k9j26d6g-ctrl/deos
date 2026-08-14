@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.25H";
+const DEOS_VERSION = "V5.25I";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -19931,6 +19931,8 @@ async function analyzeManagersHybridFromSettings() {
   return runManagersUiExclusive("analyze", async () => {
   try {
     const a = await analyzeManagersHybridState();
+    deosManagersConflictDialogAnalysis = a;
+    saveManagersLastAnalysisSnapshot(a);
     const message = `Analyse Managers terminée\n\nManagers locaux : ${a.localCount}\nManagers distants : ${a.remoteCount}\nUniquement locaux : ${a.localOnly.length}\nUniquement distants : ${a.remoteOnly.length}\nPrésents des deux côtés : ${managersAnalysisMatchedCount(a)}\n${a.analysisConsistencyWarning ? `Diagnostic technique : ${a.analysisConsistencyWarning}\n` : ""}Conflits potentiels : ${a.conflicts.length}\nDoublons exacts : ${a.duplicateCandidates.length}\nFusions non destructives proposées : ${a.mergeCandidates?.length || 0}\nRapprochements par nom unique : ${a.identityMatches?.length || 0}`;
     // V5.22C : retour visible avant tout rerender, afin qu'un éventuel problème d'affichage ne masque jamais le résultat de lecture distante.
     alert(message);
@@ -19989,6 +19991,30 @@ function buildManagerConflictDiagnostic(meta = {}) {
 
 let deosManagersConflictDialogIndex = 0;
 let deosManagersConflictDialogAnalysis = null;
+const DEOS_MANAGERS_LAST_ANALYSIS_KEY = "deos_managers_last_analysis_v525i";
+function saveManagersLastAnalysisSnapshot(analysis) {
+  try {
+    if (!analysis) return;
+    const snapshot = {
+      ...analysis,
+      generatedAt: analysis.generatedAt || new Date().toISOString()
+    };
+    sessionStorage.setItem(DEOS_MANAGERS_LAST_ANALYSIS_KEY, JSON.stringify(snapshot));
+  } catch (error) {
+    console.warn("[DEOS V5.25I] sauvegarde analyse Managers impossible", error);
+  }
+}
+function loadManagersLastAnalysisSnapshot() {
+  try {
+    const raw = sessionStorage.getItem(DEOS_MANAGERS_LAST_ANALYSIS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && Array.isArray(parsed.conflicts) ? parsed : null;
+  } catch (error) {
+    console.warn("[DEOS V5.25I] lecture analyse Managers impossible", error);
+    return null;
+  }
+}
 function managersConflictForDialog(index = deosManagersConflictDialogIndex) {
   const conflicts = ensureArray((deosManagersConflictDialogAnalysis || deosManagersSyncRuntime.lastAnalysis)?.conflicts);
   if (!conflicts.length) return null;
@@ -20030,7 +20056,7 @@ function openManagersConflictResolutionDialog(index = 0) {
   try {
     // V5.25H — utilise strictement la dernière analyse déjà affichée.
     // Aucune nouvelle lecture distante n'est déclenchée au clic.
-    const analysis = deosManagersSyncRuntime.lastAnalysis || deosManagersConflictDialogAnalysis;
+    const analysis = deosManagersSyncRuntime.lastAnalysis || deosManagersConflictDialogAnalysis || loadManagersLastAnalysisSnapshot();
     if (!ensureArray(analysis?.conflicts).length) {
       alert("Aucun conflit Manager disponible dans la dernière analyse. Relancez d’abord « Analyser les Managers ».");
       return;
@@ -20093,12 +20119,12 @@ function showManagersConflictsFromSettings() {
       const rows = fields.map(field => `${field}\n  LOCAL   : ${managerConflictDiagnosticValue(localCanonical[field])}\n  DISTANT : ${managerConflictDiagnosticValue(remoteCanonical[field])}`);
       return `${title}${ids ? `\n${ids}` : ""}\n${rows.length ? rows.join("\n") : "Aucune différence métier après canonicalisation."}`;
     });
-    return alert(`Diagnostic conflits Managers V5.25H (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+    return alert(`Diagnostic conflits Managers V5.25I (${analysisConflicts.length})\n\n${details.join("\n\n---\n\n")}`);
   }
   const conflicts = Object.values(deosManagersSyncRuntime.metaByClientId || {}).filter(meta => meta.syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT);
   if (!conflicts.length) return alert("Aucun conflit Manager détecté.");
   const details = conflicts.map(buildManagerConflictDiagnostic);
-  return alert(`Diagnostic conflits Managers V5.25H (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
+  return alert(`Diagnostic conflits Managers V5.25I (${conflicts.length})\n\n${details.join("\n\n---\n\n")}`);
 }
 
 
