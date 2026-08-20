@@ -1,0 +1,10 @@
+DEOS V5.27B — TEST
+
+1. Vérifier que To-Do et CR V5.27A sont toujours OK.
+2. Sans connexion : Paramètres affiche les cartes Décisions/Documents, sans écriture distante.
+3. Après migrations Supabase + connexion : Analyser Décisions, Analyser Documents.
+4. Activer Décisions, synchroniser, vérifier sur un second appareil.
+5. Activer Documents, synchroniser, vérifier sur un second appareil.
+6. Créer/modifier une Décision et un CR puis vérifier la remontée sur l'autre appareil.
+
+Ne pas publier avant validation.
