@@ -1,0 +1,16 @@
+DEOS V5.28B TEST — Correctif import GPO PDF
+
+Objectif
+- Corriger l'import du Guide de la performance opérationnelle Saint-Gilles qui était reconnu comme GPO mais produisait 0 KPI dans l'aperçu.
+
+Correctifs ciblés
+1. Reconstruction spatiale du texte PDF : regroupement des éléments PDF.js par ligne (coordonnée Y), puis tri gauche -> droite.
+2. Conservation du texte brut comme fallback de reconnaissance des marqueurs.
+3. IPO total / IPO variable : lecture prioritaire de la valeur située avant les libellés IPO BUDGET / IPO RÉALISÉ / IPO HISTO, conformément à la mise en page réelle du GPO.
+4. Gains & Pertes : même principe pour les libellés G&P H / B / R.
+5. Diagnostic Source enrichi : nombre de pages, nombre de repères GPO trouvés, nombre de KPI extraits, site et code FRY8MC.
+
+Périmètre
+- Aucun changement de logique sur Suivi GA, GA détail, Z GEMED, T-Bag ou CGTAB.
+- Aucun changement de données existantes.
+- Import à valider manuellement dans l'aperçu avant toute écriture Performance.

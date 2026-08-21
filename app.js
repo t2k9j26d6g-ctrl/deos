@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28A";
+const DEOS_VERSION = "V5.28B";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -11454,7 +11454,7 @@ async function analyzePerformanceImportFile(file, sourceKey) {
 async function analyzeGpoPdfFile(file, detected) {
   if ((detected.extension || "").toLowerCase() !== "pdf") return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supporté pour GPO PDF." };
   const pages = await readPdfPages(file);
-  const allText = pages.map(p => p.text).join("\n");
+  const allText = pages.map(p => `${p.text || ""}\n${p.rawText || ""}`).join("\n");
   const markers = ["Entrepôt SAINT GILLES", "Région SUD EST", "Passage IPO total", "Passage IPO Variable", "Mensu IPO", "Performance mensuelle", "Evolution HEURES", "Absentéisme", "Heures majorées", "Gains & Pertes", "HAUTEUR PALETTE"];
   const hitCount = markers.filter(m => normalizeText(allText).includes(normalizeText(m))).length;
   const detectedPeriod = detectGpoPeriod(allText, file.name);
@@ -11477,8 +11477,42 @@ async function analyzeGpoPdfFile(file, detected) {
     selectedPeriods: [period],
     sheets: pages.map(p => `page ${p.page}`).slice(0, 5),
     detectedIndicators: indicators,
-    message: `${indicators.length} KPI GPO extrait(s) depuis ${pages.length} page(s).`
+    message: `GPO reconnu · ${pages.length} page(s) · ${hitCount}/${markers.length} repères · ${indicators.length} KPI extrait(s) · site ${site || "à confirmer"}${site ? ` (${PERFORMANCE_IMPORT_SITE.code})` : ""}.`
   };
+}
+
+function pdfLayoutTextFromItems(items = []) {
+  const positioned = ensureArray(items).map((item, index) => ({
+    text: String(item?.str || "").trim(),
+    x: Number(item?.transform?.[4] || 0),
+    y: Number(item?.transform?.[5] || 0),
+    index
+  })).filter(item => item.text);
+  if (!positioned.length) return "";
+
+  // Les GPO sont des pages très graphiques. L'ordre natif de getTextContent()
+  // suit souvent l'ordre interne du PDF et non l'ordre visuel. On reconstruit
+  // donc des lignes par coordonnée Y, puis on trie de gauche à droite.
+  const lines = [];
+  const yTolerance = 2.8;
+  positioned.sort((a, b) => (b.y - a.y) || (a.x - b.x) || (a.index - b.index));
+  positioned.forEach(item => {
+    let line = lines.find(candidate => Math.abs(candidate.y - item.y) <= yTolerance);
+    if (!line) {
+      line = { y: item.y, items: [] };
+      lines.push(line);
+    }
+    line.items.push(item);
+  });
+  lines.sort((a, b) => b.y - a.y);
+  return lines.map(line => line.items
+    .sort((a, b) => (a.x - b.x) || (a.index - b.index))
+    .map(item => item.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function readPdfPages(file) {
@@ -11493,8 +11527,9 @@ async function readPdfPages(file) {
   for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
     const page = await pdf.getPage(pageNo);
     const content = await page.getTextContent();
-    const text = content.items.map(item => item.str || "").join(" ");
-    pages.push({ page: pageNo, text });
+    const rawText = content.items.map(item => item.str || "").join(" ");
+    const layoutText = pdfLayoutTextFromItems(content.items);
+    pages.push({ page: pageNo, text: layoutText || rawText, rawText, layoutText });
   }
   return pages;
 }
@@ -11652,9 +11687,16 @@ function gpoNumbers(text) {
 }
 
 function extractGpoIpoValues(text) {
-  const h = matchNumberAfter(text, /IPO\s*HISTO/i);
-  const b = matchNumberAfter(text, /IPO\s*BUDGET/i);
-  const r = matchNumberAfter(text, /IPO\s*R[ÉE]ALIS[ÉE]/i);
+  // Sur le GPO Saint-Gilles, les valeurs des trois barres sont visuellement
+  // placées AU-DESSUS des libellés IPO BUDGET / RÉALISÉ / HISTO.
+  // Le fallback "after" reste utile si le modèle PDF évolue.
+  const around = regex => {
+    const before = matchNumberBefore(text, regex);
+    return before !== "" ? before : matchNumberAfter(text, regex);
+  };
+  const h = around(/IPO\s*HISTO/i);
+  const b = around(/IPO\s*BUDGET/i);
+  const r = around(/IPO\s*R[ÉE]ALIS[ÉE]/i);
   return { historical: h, budget: b, actual: r };
 }
 
@@ -11720,9 +11762,15 @@ function extractGpoAbsTotal(text) {
 }
 
 function extractGpoGpValues(text) {
-  const h = matchNumberAfter(text, /G&P\s*H/i);
-  const b = matchNumberAfter(text, /G&P\s*B/i);
-  const r = matchNumberAfter(text, /G&P\s*R/i);
+  // La page Gains & Pertes place les valeurs au-dessus des libellés G&P H/B/R.
+  // On préfère donc le nombre précédent et on conserve un fallback arrière.
+  const around = regex => {
+    const before = matchNumberBefore(text, regex);
+    return before !== "" ? before : matchNumberAfter(text, regex);
+  };
+  const h = around(/G&P\s*H/i);
+  const b = around(/G&P\s*B/i);
+  const r = around(/G&P\s*R/i);
   return { historical: h, budget: b, actual: r };
 }
 
