@@ -410,3 +410,13 @@ textarea{min-height:92px}
 	.documents-filter-bar .form-grid{grid-template-columns:1fr}
 	.doc-row,.doc-row.doc-row-head{grid-template-columns:1fr}
 }
+
+/* V5.27A — To-Do + comptes-rendus pliables */
+.deos-doc-accordion-title{cursor:pointer;display:flex;align-items:center;justify-content:space-between;margin:0;user-select:none}
+.deos-doc-accordion-title::after{content:"▸";font-size:1rem;transition:transform .15s ease}
+.deos-doc-accordion-open>.deos-doc-accordion-title::after{transform:rotate(90deg)}
+.deos-doc-accordion-body{display:none;margin-top:12px}
+.deos-doc-accordion-open>.deos-doc-accordion-body{display:block}
+.deos-todo-row{gap:12px;align-items:flex-start}
+.deos-todo-row .row-actions{flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:900px){.deos-todo-row{display:block}.deos-todo-row .row-actions{margin-top:10px;justify-content:flex-start}}

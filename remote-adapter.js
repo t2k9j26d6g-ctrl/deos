@@ -173,6 +173,35 @@
     };
   }
 
+  function normalizeDecisionData(decision) {
+    if (!decision || typeof decision !== "object" || Array.isArray(decision)) throw createRemoteError("INVALID_DECISION_PAYLOAD", "Le payload distant d'une Décision doit rester un objet simple.");
+    const output = {};
+    for (const [key,value] of Object.entries(decision)) {
+      const k=String(key||"").trim(); if(!k||k==="id"||k==="clientId") continue;
+      if(k.startsWith("__")||k.startsWith("_sync")||RESERVED_DEOS_KEYS.has(k)) throw createRemoteError("DECISION_PAYLOAD_FORBIDDEN", `La cle ${k} n'est pas autorisee pour la synchronisation Décisions.`);
+      output[k]=value;
+    }
+    return clonePlainObject(output);
+  }
+  function normalizeDecisionRow(row) {
+    const data=row&&row.data&&typeof row.data==="object"&&!Array.isArray(row.data)?clonePlainObject(row.data):{};
+    return {remoteId:row?.id?String(row.id):"",clientId:row?.client_id?String(row.client_id):String(data.id||""),ownerId:row?.owner_id?String(row.owner_id):"",workspaceId:row?.workspace_id?String(row.workspace_id):"",version:Number.isFinite(Number(row?.version))?Number(row.version):0,createdAt:row?.created_at?String(row.created_at):"",updatedAt:row?.updated_at?String(row.updated_at):"",deletedAt:row?.deleted_at?String(row.deleted_at):"",decision:{id:row?.client_id?String(row.client_id):String(data.id||""),...data}};
+  }
+  function normalizeDocumentData(documentData) {
+    if (!documentData || typeof documentData !== "object" || Array.isArray(documentData)) throw createRemoteError("INVALID_DOCUMENT_PAYLOAD", "Le payload distant d'un Document doit rester un objet simple.");
+    const output={};
+    for(const [key,value] of Object.entries(documentData)){
+      const k=String(key||"").trim(); if(!k||k==="id"||k==="clientId")continue;
+      if(k.startsWith("__")||k.startsWith("_sync")||RESERVED_DEOS_KEYS.has(k)) throw createRemoteError("DOCUMENT_PAYLOAD_FORBIDDEN", `La cle ${k} n'est pas autorisee pour la synchronisation Documents.`);
+      output[k]=value;
+    }
+    return clonePlainObject(output);
+  }
+  function normalizeDocumentRow(row){
+    const data=row&&row.data&&typeof row.data==="object"&&!Array.isArray(row.data)?clonePlainObject(row.data):{};
+    return {remoteId:row?.id?String(row.id):"",clientId:row?.client_id?String(row.client_id):String(data.id||""),ownerId:row?.owner_id?String(row.owner_id):"",workspaceId:row?.workspace_id?String(row.workspace_id):"",version:Number.isFinite(Number(row?.version))?Number(row.version):0,createdAt:row?.created_at?String(row.created_at):"",updatedAt:row?.updated_at?String(row.updated_at):"",deletedAt:row?.deleted_at?String(row.deleted_at):"",document:{id:row?.client_id?String(row.client_id):String(data.id||""),...data}};
+  }
+
   function normalizeRecord(record, expectedWorkspaceId, ownerId) {
     const payload = clonePlainObject(record.payload || {});
     validatePayloadShape(payload);
@@ -797,6 +826,18 @@ class SupabaseRemoteAdapter {
       const row = Array.isArray(response.data) ? response.data[0] : response.data;
       return normalizeManagerRow(row || {});
     }
+    async listDecisions(workspaceId) {
+      const context=this.getContext(workspaceId); const response=await context.client.rpc("deos_list_decisions");
+      if(response.error) throw createRemoteError("REMOTE_DECISIONS_LIST_FAILED",response.error.message||"Lecture distante des Décisions impossible.",response.error);
+      return Array.isArray(response.data)?response.data.map(normalizeDecisionRow):[];
+    }
+    async createDecision(decision){const context=this.getContext(decision&&decision.workspaceId);this.assertWritableRole(context.role);const clientId=String(decision&&(decision.clientId||decision.id)||"").trim();if(!clientId)throw createRemoteError("DECISION_CLIENT_ID_REQUIRED","Un id local stable est requis.");const payload=normalizeDecisionData(decision||{});const response=await context.client.from("deos_decisions").insert({workspace_id:context.workspaceId,owner_id:context.userId,client_id:clientId,data:payload}).select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version").single();if(response.error){if(String(response.error.code||"")==="23505")throw createRemoteError("REMOTE_DECISION_EXISTS",response.error.message,response.error);throw createRemoteError("REMOTE_DECISION_CREATE_FAILED",response.error.message||"Création distante Décision impossible.",response.error);}return normalizeDecisionRow(response.data);}
+    async updateDecision(clientId,patch,expectedVersion){const context=this.getContext();this.assertWritableRole(context.role);const version=Number(expectedVersion);if(!Number.isInteger(version)||version<1)throw createRemoteError("EXPECTED_VERSION_REQUIRED","Version attendue obligatoire.");const response=await context.client.rpc("deos_update_decision",{p_client_id:String(clientId||"").trim(),p_expected_version:version,p_data:normalizeDecisionData(patch||{})});if(response.error){const message=response.error.message||"Mise à jour distante Décision impossible.";if(/CONFLICT/i.test(message))throw createRemoteError("CONFLICT",message,response.error);throw createRemoteError("REMOTE_DECISION_UPDATE_FAILED",message,response.error);}return normalizeDecisionRow(Array.isArray(response.data)?response.data[0]:response.data||{});}
+    async softDeleteDecision(clientId,expectedVersion){const context=this.getContext();this.assertWritableRole(context.role);const version=Number(expectedVersion);if(!Number.isInteger(version)||version<1)throw createRemoteError("EXPECTED_VERSION_REQUIRED","Version attendue obligatoire.");const response=await context.client.rpc("deos_soft_delete_decision",{p_client_id:String(clientId||"").trim(),p_expected_version:version});if(response.error){const message=response.error.message||"Suppression distante Décision impossible.";if(/CONFLICT/i.test(message))throw createRemoteError("CONFLICT",message,response.error);throw createRemoteError("REMOTE_DECISION_DELETE_FAILED",message,response.error);}return normalizeDecisionRow(Array.isArray(response.data)?response.data[0]:response.data||{});}
+    async listDocuments(workspaceId){const context=this.getContext(workspaceId);const response=await context.client.rpc("deos_list_documents");if(response.error)throw createRemoteError("REMOTE_DOCUMENTS_LIST_FAILED",response.error.message||"Lecture distante des Documents impossible.",response.error);return Array.isArray(response.data)?response.data.map(normalizeDocumentRow):[];}
+    async createDocument(documentData){const context=this.getContext(documentData&&documentData.workspaceId);this.assertWritableRole(context.role);const clientId=String(documentData&&(documentData.clientId||documentData.id)||"").trim();if(!clientId)throw createRemoteError("DOCUMENT_CLIENT_ID_REQUIRED","Un id local stable est requis.");const payload=normalizeDocumentData(documentData||{});const response=await context.client.from("deos_documents").insert({workspace_id:context.workspaceId,owner_id:context.userId,client_id:clientId,data:payload}).select("id, workspace_id, owner_id, client_id, data, created_at, updated_at, deleted_at, version").single();if(response.error){if(String(response.error.code||"")==="23505")throw createRemoteError("REMOTE_DOCUMENT_EXISTS",response.error.message,response.error);throw createRemoteError("REMOTE_DOCUMENT_CREATE_FAILED",response.error.message||"Création distante Document impossible.",response.error);}return normalizeDocumentRow(response.data);}
+    async updateDocument(clientId,patch,expectedVersion){const context=this.getContext();this.assertWritableRole(context.role);const version=Number(expectedVersion);if(!Number.isInteger(version)||version<1)throw createRemoteError("EXPECTED_VERSION_REQUIRED","Version attendue obligatoire.");const response=await context.client.rpc("deos_update_document",{p_client_id:String(clientId||"").trim(),p_expected_version:version,p_data:normalizeDocumentData(patch||{})});if(response.error){const message=response.error.message||"Mise à jour distante Document impossible.";if(/CONFLICT/i.test(message))throw createRemoteError("CONFLICT",message,response.error);throw createRemoteError("REMOTE_DOCUMENT_UPDATE_FAILED",message,response.error);}return normalizeDocumentRow(Array.isArray(response.data)?response.data[0]:response.data||{});}
+    async softDeleteDocument(clientId,expectedVersion){const context=this.getContext();this.assertWritableRole(context.role);const version=Number(expectedVersion);if(!Number.isInteger(version)||version<1)throw createRemoteError("EXPECTED_VERSION_REQUIRED","Version attendue obligatoire.");const response=await context.client.rpc("deos_soft_delete_document",{p_client_id:String(clientId||"").trim(),p_expected_version:version});if(response.error){const message=response.error.message||"Suppression distante Document impossible.";if(/CONFLICT/i.test(message))throw createRemoteError("CONFLICT",message,response.error);throw createRemoteError("REMOTE_DOCUMENT_DELETE_FAILED",message,response.error);}return normalizeDocumentRow(Array.isArray(response.data)?response.data[0]:response.data||{});}
   }
 
   global.DeosSupabaseRemote = {

@@ -1,0 +1,18 @@
+DEOS V5.27C TEST — iPad Auth & démarrage robuste
+
+Objectif : corriger le blocage des boutons de connexion sur Safari/iPad avec réseau lent.
+
+Modifications :
+- timeout d'initialisation Supabase (8 s) afin d'éviter un démarrage indéfini ;
+- timeout des actions Auth (12 s) : connexion, magic link, mot de passe oublié ;
+- watchdog de sécurité : réactive automatiquement les boutons si une opération reste bloquée ;
+- message d'erreur visible au lieu d'un écran figé ;
+- conservation intégrale des fonctions V5.27B (To-Do, CR, synchro Décisions/Documents).
+
+Test iPad :
+1. Ouvrir l'URL GitHub Pages de test.
+2. Ouvrir Utilisateur DEOS > Se connecter.
+3. Vérifier que les boutons sont actifs.
+4. Tester la connexion par mot de passe.
+5. En cas de réseau lent, vérifier que les boutons se réactivent après environ 12-14 s.
+6. Une fois connecté, vérifier la remontée des Décisions et Documents distants.
