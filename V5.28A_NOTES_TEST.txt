@@ -1,0 +1,31 @@
+DEOS V5.28A TEST — Import Performance mensuel multi-site
+Date : 21/08/2026
+
+OBJECTIF
+Fiabiliser l'import mensuel avant de travailler sur l'analyse automatique.
+Site cible centralisé : Saint-Gilles = FRY8MC.
+
+EVOLUTIONS
+1. Référentiel site centralisé FRY8MC / Saint-Gilles.
+2. T-Bag : lecture XLSB générique via SheetJS, filtrage des lignes AL=FRY8MC, détection des mois disponibles.
+3. CGTAB : suppression du verrou par empreinte SHA ; lecture mensuelle générique, filtrage salariés AL=FRY8MC, période détectée depuis Debut/Fin, agrégation anonymisée uniquement.
+4. Suivi GA : suppression du verrou SHA et de la fixture Juin 2026 ; lecture directe du classeur XLSB, détection de l'onglet Saint-Gilles par FRY8MC, période et valeurs H/B/R lues dans l'onglet du mois.
+5. GA détail : conserve l'agrégation/anonymisation existante et utilise le référentiel FRY8MC central.
+6. Z GEMED : si plusieurs feuilles portent un site explicite, seules les feuilles Saint-Gilles sont analysées.
+7. GPO : siteCode FRY8MC associé lorsque Saint-Gilles est reconnu ; aperçu/validation restent non destructifs.
+8. Interface import : affiche le site cible et les codes sites détectés.
+
+VALIDATION STRUCTURELLE EFFECTUEE SUR LE PACK JUILLET 2026
+- Suivi GA : onglet St Gilles trouvé, période 07/2026, 128 lignes candidates avant mapping.
+- CGTAB : plusieurs AL détectés ; 578 lignes salariés FRY8MC retenues ; période 07/2026 détectée.
+- T-Bag : FRY8MC détecté ; données mensuelles présentes de MM-01 à MM-07.
+- GA détail : 2 581 lignes FRY8MC pour 07/2026 dans DATA ; aucune donnée nominative ne doit être persistée.
+- Z GEMED : feuille St Gilles, Site=Saint Gilles, MM-07 détecté.
+
+HORS SCOPE V5.28A
+- Interprétation / commentaires automatiques des résultats.
+- Choix définitif des sources officielles lorsqu'un KPI existe dans plusieurs fichiers.
+- Refonte du tableau Performance après import.
+
+PRODUCTION
+Version de test uniquement. Ne remplace pas V5.26A de production.

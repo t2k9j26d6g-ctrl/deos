@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.27C";
+const DEOS_VERSION = "V5.28A";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -10696,6 +10696,38 @@ const performanceImportSources = [
 ];
 const IMPORT_PERIOD_PENDING = "Période à confirmer";
 
+// V5.28A — Référentiel site centralisé pour tous les imports Performance.
+const PERFORMANCE_IMPORT_SITE = Object.freeze({
+  code: "FRY8MC",
+  name: "Saint-Gilles",
+  aliases: ["saint gilles", "st gilles", "st-gilles", "saint-gilles"]
+});
+
+function performanceImportSiteCode(value = "") {
+  return String(value || "").trim().toUpperCase();
+}
+
+function performanceImportSiteMatches(value = "") {
+  const code = performanceImportSiteCode(value);
+  if (code === PERFORMANCE_IMPORT_SITE.code) return true;
+  const text = normalizeText(value);
+  return PERFORMANCE_IMPORT_SITE.aliases.some(alias => text.includes(normalizeText(alias)));
+}
+
+function performanceImportSiteLabel() {
+  return `${PERFORMANCE_IMPORT_SITE.name} (${PERFORMANCE_IMPORT_SITE.code})`;
+}
+
+function performanceImportDistinctSiteCodes(values = []) {
+  return [...new Set(ensureArray(values).map(performanceImportSiteCode).filter(value => /^FR[A-Z0-9]+$/.test(value)))].sort();
+}
+
+function detectCompactImportPeriod(value = "") {
+  const text = String(value || "");
+  const hit = text.match(/(?:^|[^0-9])(0?[1-9]|1[0-2])[-_ ]?(20\d{2})(?:[^0-9]|$)/);
+  return hit ? `${String(Number(hit[1])).padStart(2, "0")}/${hit[2]}` : "";
+}
+
 function detectGpoPdf(file) {
   return { ...file, source: "GPO PDF", sourceType: "GPO PDF", status: "à confirmer", confidence: "moyenne", period: detectImportPeriod(file.name), message: "analyse réelle disponible après lecture locale PDF.js" };
 }
@@ -10713,7 +10745,7 @@ function detectZGemedExcel(file) {
     confidence: binary || likely ? "moyenne" : "faible",
     period: detectImportPeriod(file.name),
     site: /st[-_ ]?gilles|saint[-_ ]?gilles/.test(name) ? "Saint-Gilles" : "",
-    message: binary ? "Fichier Z GEMED binaire détecté. Extraction navigateur disponible après export Excel .xlsx ou CSV." : "analyse réelle disponible après lecture locale"
+    message: binary ? "Fichier Z GEMED binaire détecté." : "Analyse locale avec contrôle du site."
   };
 }
 function detectCgtab(file) {
@@ -10886,11 +10918,24 @@ function performanceImportBody() {
 }
 
 function performanceImportStepFiles() {
-  return `<div class="card"><h2>Sélection des fichiers</h2><div class="grid two">${performanceImportSources.map(s => `<div class="item"><strong>${esc(s.label)}</strong><input type="file" accept="${esc(s.accept)}" onchange="addPerformanceImportFiles('${s.key}',this.files)"><span class="muted">${s.key === "zgemed" ? "Analyse réelle CSV/XLSX locale. XLSB reconnu avec message de conversion." : s.key === "gpo" ? "Analyse réelle PDF locale via PDF.js." : s.key === "ga" ? "Analyse réelle XLSB locale (modèle validé St Gilles)." : "Extraction réelle à développer."}</span></div>`).join("")}</div>${performanceImportFilesList()}<div class="row-actions"><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(2)">Suivant</button></div></div>`;
+  const sourceHelp = key => ({
+    gpo: "Analyse locale PDF.js · site contrôlé dans le document.",
+    zgemed: "Analyse locale XLSX/CSV · filtre Saint-Gilles si plusieurs sites sont présents.",
+    ga: "Analyse locale XLSB générique · onglet/ligne Saint-Gilles détecté par FRY8MC.",
+    tbag: "Analyse locale XLSB · lignes filtrées sur AL = FRY8MC.",
+    cgtab: "Analyse locale XLSB agrégée/anonymisée · salariés filtrés sur AL = FRY8MC.",
+    guide: "PDF performance complémentaire.",
+    litiges: "Source complémentaire à cartographier."
+  }[key] || "Analyse locale.");
+  return `<div class="card"><h2>Sélection des fichiers</h2><div class="item alert-blue"><strong>Site cible de l'import : ${esc(performanceImportSiteLabel())}</strong><span class="muted">Un fichier peut contenir plusieurs sites ou plusieurs onglets. DEOS ne retient que Saint-Gilles et signale les autres sites détectés.</span></div><div class="grid two">${performanceImportSources.map(s => `<div class="item"><strong>${esc(s.label)}</strong><input type="file" accept="${esc(s.accept)}" onchange="addPerformanceImportFiles('${s.key}',this.files)"><span class="muted">${esc(sourceHelp(s.key))}</span></div>`).join("")}</div>${performanceImportFilesList()}<div class="row-actions"><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(2)">Suivant</button></div></div>`;
 }
 
 function performanceImportFilesList() {
-  return `<div class="card"><h2>Fichiers sélectionnés</h2>${performanceImportWizard.files.map(f => `<div class="item"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.typeDetected)} · ${esc(f.source)} · ${esc(f.period || f.periods?.join(", ") || "Période à confirmer")} · Confiance ${esc(f.confidence || "moyenne")}</span><span class="meta">${esc(f.status)} · ${esc(f.message || "")}</span></div>`).join("") || `<div class="empty">Aucun fichier ajouté.</div>`}${performanceImportWizard.errors.map(e => `<div class="item alert-red"><strong>${esc(e.title)}</strong><span class="muted">${esc(e.detail)}</span></div>`).join("")}</div>`;
+  return `<div class="card"><h2>Fichiers sélectionnés</h2>${performanceImportWizard.files.map(f => {
+    const detectedSites = performanceImportDistinctSiteCodes(f.detectedSiteCodes || []);
+    const siteMeta = detectedSites.length ? ` · Codes détectés : ${detectedSites.join(", ")}` : "";
+    return `<div class="item"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.typeDetected)} · ${esc(f.source)} · ${esc(f.period || f.periods?.join(", ") || "Période à confirmer")} · Confiance ${esc(f.confidence || "moyenne")}</span><span class="meta">Site retenu : ${esc(f.site || "à confirmer")}${f.siteCode ? ` (${esc(f.siteCode)})` : ""}${esc(siteMeta)}</span><span class="meta">${esc(f.status)} · ${esc(f.message || "")}</span></div>`;
+  }).join("") || `<div class="empty">Aucun fichier ajouté.</div>`}${performanceImportWizard.errors.map(e => `<div class="item alert-red"><strong>${esc(e.title)}</strong><span class="muted">${esc(e.detail)}</span></div>`).join("")}</div>`;
 }
 
 async function addPerformanceImportFiles(sourceKey, fileList) {
@@ -10921,7 +10966,7 @@ function setPerformanceImportStep(step) {
 }
 
 function performanceImportStepSources() {
-  return `<div class="card"><h2>Identification de la source</h2>${performanceImportWizard.files.map(file => `<div class="item"><strong>${esc(file.name)}</strong><span class="muted">Type détecté : ${esc(file.typeDetected)} · Source supposée : ${esc(file.source)} · Statut : ${esc(file.status || "à confirmer")} · Confiance ${esc(file.confidence || "moyenne")}</span><span class="meta">Site détecté : ${esc(file.site || "à confirmer")} · Périodes : ${esc(ensureArray(file.periods).join(", ") || file.period || "à confirmer")} · Onglets : ${esc(ensureArray(file.sheets).join(", ") || "non disponible")}</span>${ensureArray(file.periods).length ? `<div class="manager-links">${file.periods.map(p => `<label><input type="checkbox" checked onchange="toggleImportPeriod('${esc(file.id)}','${esc(p)}',this.checked)"> ${esc(p)}</label>`).join("")}</div>` : ""}${file.message ? `<span class="meta">${esc(file.message)}</span>` : ""}</div>`).join("") || `<div class="empty">Aucun fichier à identifier.</div>`}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(1)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(3)">Créer l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Identification de la source</h2>${performanceImportWizard.files.map(file => `<div class="item"><strong>${esc(file.name)}</strong><span class="muted">Type détecté : ${esc(file.typeDetected)} · Source supposée : ${esc(file.source)} · Statut : ${esc(file.status || "à confirmer")} · Confiance ${esc(file.confidence || "moyenne")}</span><span class="meta">Site retenu : ${esc(file.site || "à confirmer")}${file.siteCode ? ` (${esc(file.siteCode)})` : ""} · Périodes : ${esc(ensureArray(file.periods).join(", ") || file.period || "à confirmer")} · Onglets : ${esc(ensureArray(file.sheets).join(", ") || "non disponible")}</span>${ensureArray(file.periods).length ? `<div class="manager-links">${file.periods.map(p => `<label><input type="checkbox" checked onchange="toggleImportPeriod('${esc(file.id)}','${esc(p)}',this.checked)"> ${esc(p)}</label>`).join("")}</div>` : ""}${file.message ? `<span class="meta">${esc(file.message)}</span>` : ""}</div>`).join("") || `<div class="empty">Aucun fichier à identifier.</div>`}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(1)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(3)">Créer l'aperçu</button></div></div>`;
 }
 
 function buildPerformanceImportPreview() {
@@ -11425,6 +11470,8 @@ async function analyzeGpoPdfFile(file, detected) {
     status: hitCount >= 7 ? "reconnu" : hitCount >= 3 ? "probablement reconnu" : "non reconnu",
     confidence: hitCount >= 7 ? "élevée" : hitCount >= 3 ? "moyenne" : "faible",
     site,
+    siteCode: site ? PERFORMANCE_IMPORT_SITE.code : "",
+    detectedSiteCodes: site ? [PERFORMANCE_IMPORT_SITE.code] : [],
     period,
     periods: [period],
     selectedPeriods: [period],
@@ -11875,7 +11922,7 @@ function tbagNormalizeBanner(value = "") {
   return String(value || "").trim().replace(/\s+/g, " ");
 }
 
-function tbagAnalyzeRows(sheet, sheetName, headerRow, year, monthCols, range) {
+function tbagAnalyzeRows(sheet, sheetName, headerRow, year, monthCols, range, targetSiteCode = PERFORMANCE_IMPORT_SITE.code) {
   const rows = [];
   const populations = new Set();
   const banners = new Set();
@@ -11886,6 +11933,8 @@ function tbagAnalyzeRows(sheet, sheetName, headerRow, year, monthCols, range) {
   const volumeByPopPeriod = {};
 
   for (let r = headerRow + 1; r <= range.e.r + 1; r++) {
+    const rowSiteCode = performanceImportSiteCode(tbagCellText(sheet, r, 1));
+    if (rowSiteCode && rowSiteCode !== performanceImportSiteCode(targetSiteCode)) continue;
     const hybrid = tbagCellText(sheet, r, 2);
     const bannerRaw = tbagCellText(sheet, r, 3);
     const nature = tbagCellText(sheet, r, 4);
@@ -11987,14 +12036,20 @@ async function analyzeTBagFile(file, detected) {
   const year = tbagExtractYear(sheet) || "2026";
   const monthCols = tbagMonthColumns(sheet, primary.headerRow, range);
   if (!monthCols.length) throw new Error("Aucune colonne mensuelle MM-xx détectée dans T-Bag.");
-  const analyzed = tbagAnalyzeRows(sheet, primary.sheetName, primary.headerRow, year, monthCols, range);
+    const detectedSiteCodes = performanceImportDistinctSiteCodes(Array.from({ length: Math.max(0, range.e.r - primary.headerRow + 1) }, (_, index) => tbagCellText(sheet, primary.headerRow + 1 + index, 1)));
+  if (detectedSiteCodes.length && !detectedSiteCodes.includes(PERFORMANCE_IMPORT_SITE.code)) {
+    return { ...detected, source: "T_BAG", sourceType: "T-Bag XLSB", status: "non reconnu", confidence: "faible", detectedSiteCodes, message: `Le fichier T-Bag ne contient pas le site ${performanceImportSiteLabel()}.` };
+  }
+  const analyzed = tbagAnalyzeRows(sheet, primary.sheetName, primary.headerRow, year, monthCols, range, PERFORMANCE_IMPORT_SITE.code);
   return {
     ...detected,
     source: "T_BAG",
     sourceType: "T-Bag XLSB",
     status: analyzed.rows.length ? "reconnu" : "probablement reconnu",
     confidence: analyzed.rows.length ? "élevée" : "moyenne",
-    site: "Saint-Gilles",
+    site: PERFORMANCE_IMPORT_SITE.name,
+    siteCode: PERFORMANCE_IMPORT_SITE.code,
+    detectedSiteCodes,
     scope: "Préparation",
     period: analyzed.periods[0] || "",
     periods: analyzed.periods,
@@ -12009,8 +12064,7 @@ async function analyzeTBagFile(file, detected) {
 
 const CGTAB_HEADER_ROW_1_BASED = 4;
 const CGTAB_REQUIRED_SHEET = "CGTAB";
-const CGTAB_SCOPE = "Saint-Gilles";
-const CGTAB_PERIOD = "06/2026";
+const CGTAB_SCOPE = PERFORMANCE_IMPORT_SITE.name;
 const CGTAB_KPI_DEFINITIONS = [
   { metricKey: "hours.paid", label: "Hrs Payees", category: "hours", unit: "h", aggregationType: "sum", headers: ["Hrs Payees"] },
   { metricKey: "hours.theoretical", label: "Theorique", category: "hours", unit: "h", aggregationType: "sum", headers: ["Theorique"] },
@@ -12025,8 +12079,8 @@ const CGTAB_KPI_DEFINITIONS = [
   { metricKey: "absence.sickness_hours", label: "Maladie", category: "absence", unit: "h", aggregationType: "sum", headers: ["Maladie"] },
   { metricKey: "absence.work_accident_hours", label: "AT", category: "absence", unit: "h", aggregationType: "sum", headers: ["AT"] },
   { metricKey: "absence.unpaid_absence_hours", label: "Abs no Pay", category: "absence", unit: "h", aggregationType: "sum", headers: ["Abs no Pay"] },
-  { metricKey: "premium_hours.night_10", label: "Nuit10%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit10%"] },
-  { metricKey: "premium_hours.night_20", label: "Nuit20%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit20%"] },
+  { metricKey: "premium_hours.night_10_25", label: "Nuit10%25%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit10%25%"] },
+  { metricKey: "premium_hours.night_28", label: "Nuit28%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit28%"] },
   { metricKey: "premium_hours.night_30", label: "Nuit30%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit30%"] },
   { metricKey: "premium_hours.night_60", label: "Nuit60%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit60%"] },
   { metricKey: "premium_hours.additional_hours", label: "Hrs Compl", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Hrs Compl"] },
@@ -12059,7 +12113,7 @@ function cgtabRound(value, digits = 2) {
   return Number(n.toFixed(digits));
 }
 
-const GA_DETAIL_TARGET_ETAB = "FRY8MC";
+const GA_DETAIL_TARGET_ETAB = PERFORMANCE_IMPORT_SITE.code;
 const GA_DETAIL_SOURCE_SHEET = "DATA";
 const GA_DETAIL_PRIVACY_RULE = "Groupes <5 salariés masqués de l'aperçu importable";
 const GA_DETAIL_EXCLUDED_COLUMNS = ["nom", "mle", "matricule", "identifiant RH", "date de naissance", "code salarié"];
@@ -12499,16 +12553,56 @@ function cgtabResolveHeaders(sheet, range) {
   return map;
 }
 
-function cgtabFindEmployeeRows(sheet, range, headerMap) {
+function cgtabFindEmployeeRows(sheet, range, headerMap, targetSiteCode = PERFORMANCE_IMPORT_SITE.code) {
   const matriculeCol = headerMap.get("Matricule")?.[0] || 1;
   const nomCol = headerMap.get("NomPrenom")?.[0] || 2;
+  const alCol = headerMap.get("AL")?.[0] || 0;
   const rows = [];
   for (let r = CGTAB_HEADER_ROW_1_BASED + 1; r <= range.e.r + 1; r++) {
     const matricule = String(cgtabCellValue(sheet, r, matriculeCol) ?? "").trim();
     const nomPrenom = String(cgtabCellValue(sheet, r, nomCol) ?? "").trim();
-    if (matricule || nomPrenom) rows.push(r);
+    if (!matricule && !nomPrenom) continue;
+    const siteCode = alCol ? performanceImportSiteCode(cgtabCellValue(sheet, r, alCol)) : "";
+    if (siteCode && siteCode !== performanceImportSiteCode(targetSiteCode)) continue;
+    rows.push(r);
   }
   return rows;
+}
+
+function cgtabDetectedSiteCodes(sheet, range, headerMap) {
+  const alCol = headerMap.get("AL")?.[0] || 0;
+  if (!alCol) return [];
+  const values = [];
+  for (let r = CGTAB_HEADER_ROW_1_BASED + 1; r <= range.e.r + 1; r++) {
+    const code = performanceImportSiteCode(cgtabCellValue(sheet, r, alCol));
+    if (code) values.push(code);
+  }
+  return performanceImportDistinctSiteCodes(values);
+}
+
+function cgtabPeriodFromDateValue(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return `${String(value.getMonth() + 1).padStart(2, "0")}/${value.getFullYear()}`;
+  const digits = String(value).replace(/\D/g, "");
+  if (digits.length === 7 || digits.length === 8) {
+    const padded = digits.padStart(8, "0");
+    const month = Number(padded.slice(2, 4));
+    const year = Number(padded.slice(4, 8));
+    if (month >= 1 && month <= 12 && year >= 2000) return `${String(month).padStart(2, "0")}/${year}`;
+  }
+  return canonicalPerformancePeriod(String(value)) || "";
+}
+
+function cgtabDetectPeriod(sheet, headerMap, employeeRows, fileName = "") {
+  const debutCol = headerMap.get("Debut")?.[0] || headerMap.get("Début")?.[0] || 0;
+  const finCol = headerMap.get("Fin")?.[0] || 0;
+  for (const r of ensureArray(employeeRows).slice(0, 20)) {
+    const fromStart = debutCol ? cgtabPeriodFromDateValue(cgtabCellValue(sheet, r, debutCol)) : "";
+    if (fromStart) return fromStart;
+    const fromEnd = finCol ? cgtabPeriodFromDateValue(cgtabCellValue(sheet, r, finCol)) : "";
+    if (fromEnd) return fromEnd;
+  }
+  return detectCompactImportPeriod(fileName) || canonicalPerformancePeriod(detectImportPeriod(fileName)) || IMPORT_PERIOD_PENDING;
 }
 
 function cgtabResolveHeaderToken(token, headerMap) {
@@ -12524,7 +12618,7 @@ function cgtabBuildSourceColumns(headers, headerMap) {
   return headers.map(token => {
     const { header, col } = cgtabResolveHeaderToken(token, headerMap);
     const letter = cgtabColLetter(col);
-    return `${header} [${letter}${col}]`;
+    return `${header}${letter ? ` [col. ${letter}]` : ""}`;
   }).join(" | ");
 }
 
@@ -12818,110 +12912,131 @@ function gaBuildIndicatorRow(row, period) {
 
 async function analyzeCgtabFile(file, detected) {
   const ext = (detected.extension || "").toLowerCase();
-  if (ext !== "xlsb" && !String(file.name || "").toLowerCase().endsWith(".xlsb")) {
-    return {
-      ...detected,
-      source: "CGTAB",
-      sourceType: "CGTAB XLSB",
-      status: "non reconnu",
-      confidence: "faible",
-      message: "V5.18.6 cible le classeur XLSB CGTAB Saint-Gilles validé."
-    };
+  if (!["xlsb", "xlsx", "xlsm", "xls"].includes(ext) && !/\.(xlsb|xlsx|xlsm|xls)$/i.test(String(file.name || ""))) {
+    return { ...detected, source: "CGTAB", sourceType: "CGTAB", status: "non reconnu", confidence: "faible", message: "Format CGTAB non supporté." };
   }
+  if (!window.XLSX?.read || !window.XLSX?.utils?.decode_range) throw new Error("Bibliothèque XLSX indisponible pour lire le classeur CGTAB.");
   const buffer = await readFileArrayBuffer(file);
-  const sha = await sha256HexFromArrayBuffer(buffer);
-  if (sha !== CGTAB_ST_GILLES_KNOWN_SHA256) {
-    return {
-      ...detected,
-      source: "CGTAB",
-      sourceType: "CGTAB XLSB",
-      status: "non reconnu",
-      confidence: "faible",
-      message: "Format XLSB BIFF12 détecté. Le connecteur minimal V5.18.6 est limité au classeur validé (empreinte différente)."
-    };
-  }
-  if (!window.XLSX?.read || !window.XLSX?.utils?.decode_range) {
-    throw new Error("Bibliothèque XLSX indisponible pour lire le classeur CGTAB.");
-  }
   const workbook = window.XLSX.read(buffer, { type: "array", cellFormula: false, cellText: false, raw: true });
-  const sheet = workbook?.Sheets?.[CGTAB_REQUIRED_SHEET];
-  if (!sheet) throw new Error("Feuille CGTAB introuvable dans le classeur.");
-  const ref = sheet["!ref"];
-  if (!ref) throw new Error("Feuille CGTAB vide ou illisible.");
-  const range = window.XLSX.utils.decode_range(ref);
+  const sheetName = ensureArray(workbook.SheetNames).find(name => normalizeText(name) === normalizeText(CGTAB_REQUIRED_SHEET)) || CGTAB_REQUIRED_SHEET;
+  const sheet = workbook?.Sheets?.[sheetName];
+  if (!sheet?.["!ref"]) throw new Error("Feuille CGTAB introuvable ou vide.");
+  const range = window.XLSX.utils.decode_range(sheet["!ref"]);
   const headerMap = cgtabResolveHeaders(sheet, range);
-  const employeeRows = cgtabFindEmployeeRows(sheet, range, headerMap);
-  const period = CGTAB_PERIOD;
+  const detectedSiteCodes = cgtabDetectedSiteCodes(sheet, range, headerMap);
+  if (detectedSiteCodes.length && !detectedSiteCodes.includes(PERFORMANCE_IMPORT_SITE.code)) {
+    return { ...detected, source: "CGTAB", sourceType: "CGTAB", status: "non reconnu", confidence: "faible", detectedSiteCodes, message: `CGTAB ne contient pas ${performanceImportSiteLabel()}.` };
+  }
+  const employeeRows = cgtabFindEmployeeRows(sheet, range, headerMap, PERFORMANCE_IMPORT_SITE.code);
+  if (!employeeRows.length) throw new Error(`Aucune ligne salarié ${performanceImportSiteLabel()} détectée dans CGTAB.`);
+  const period = cgtabDetectPeriod(sheet, headerMap, employeeRows, file.name || "");
   const indicators = buildCgtabAggregateRows(period, employeeRows, sheet, headerMap);
   return {
-    ...detected,
-    source: "CGTAB",
-    sourceType: "CGTAB XLSB",
-    status: "reconnu",
-    confidence: "élevée",
-    site: CGTAB_SCOPE,
-    scope: CGTAB_SCOPE,
-    period,
-    periods: [period],
-    selectedPeriods: [period],
-    sheets: [CGTAB_REQUIRED_SHEET],
-    selectedSheet: CGTAB_REQUIRED_SHEET,
-    sourceRowCount: employeeRows.length,
-    excludedNominativeColumns: CGTAB_EXCLUDED_NOMINATIVE_COLUMNS,
-    detectedIndicators: dedupeImportRows(indicators),
-    message: `${indicators.length} agrégat(s) RH anonymisé(s) depuis CGTAB (${employeeRows.length} lignes salariés, scope ${CGTAB_SCOPE}). Colonnes nominatives exclues : ${CGTAB_EXCLUDED_NOMINATIVE_COLUMNS.join(", ")}.`
+    ...detected, source: "CGTAB", sourceType: "CGTAB XLSB", status: "reconnu", confidence: "élevée",
+    site: PERFORMANCE_IMPORT_SITE.name, siteCode: PERFORMANCE_IMPORT_SITE.code, detectedSiteCodes, scope: CGTAB_SCOPE,
+    period, periods: [period], selectedPeriods: [period], sheets: ensureArray(workbook.SheetNames || []), selectedSheet: sheetName,
+    sourceRowCount: employeeRows.length, excludedNominativeColumns: CGTAB_EXCLUDED_NOMINATIVE_COLUMNS, detectedIndicators: dedupeImportRows(indicators),
+    message: `${indicators.length} agrégat(s) RH anonymisé(s) depuis CGTAB pour ${performanceImportSiteLabel()} (${employeeRows.length} lignes retenues).`
   };
+}
+
+function gaWorkbookCellText(sheet, row1Based, col1Based) {
+  const ref = window.XLSX.utils.encode_cell({ r: row1Based - 1, c: col1Based - 1 });
+  const cell = sheet?.[ref];
+  return String(cell?.w ?? cell?.v ?? "").trim();
+}
+
+function gaFindSiteSheet(workbook, targetSiteCode = PERFORMANCE_IMPORT_SITE.code) {
+  const names = ensureArray(workbook?.SheetNames || []);
+  let aliasCandidate = null;
+  for (const name of names) {
+    const sheet = workbook.Sheets?.[name];
+    if (!sheet?.["!ref"]) continue;
+    for (let r = 1; r <= 15; r++) {
+      for (let c = 1; c <= 8; c++) {
+        const text = gaWorkbookCellText(sheet, r, c);
+        if (performanceImportSiteCode(text) === performanceImportSiteCode(targetSiteCode)) return { sheetName: name, sheet };
+        if (!aliasCandidate && performanceImportSiteMatches(text)) aliasCandidate = { sheetName: name, sheet };
+      }
+    }
+    if (!aliasCandidate && performanceImportSiteMatches(name)) aliasCandidate = { sheetName: name, sheet };
+  }
+  return aliasCandidate;
+}
+
+function gaWorkbookDetectedSiteCodes(workbook) {
+  const codes = [];
+  ensureArray(workbook?.SheetNames || []).forEach(name => {
+    const sheet = workbook.Sheets?.[name];
+    if (!sheet?.["!ref"]) return;
+    for (let r = 1; r <= 15; r++) {
+      for (let c = 1; c <= 8; c++) {
+        const value = performanceImportSiteCode(gaWorkbookCellText(sheet, r, c));
+        if (/^FR[A-Z0-9]+$/.test(value)) codes.push(value);
+      }
+    }
+  });
+  return performanceImportDistinctSiteCodes(codes);
+}
+
+function gaSheetPeriod(sheet, fileName = "") {
+  for (let r = 1; r <= 12; r++) {
+    for (let c = 1; c <= 8; c++) {
+      const period = gaPeriodFromTitle(gaWorkbookCellText(sheet, r, c));
+      if (period) return period;
+    }
+  }
+  const month = Number(gaWorkbookCellText(sheet, 1, 4) || gaWorkbookCellText(sheet, 11, 2));
+  const yearHit = Array.from({ length: 12 }, (_, i) => gaWorkbookCellText(sheet, i + 1, 1)).join(" ").match(/20\d{2}/);
+  if (month >= 1 && month <= 12 && yearHit) return `${String(month).padStart(2, "0")}/${yearHit[0]}`;
+  return detectCompactImportPeriod(fileName) || canonicalPerformancePeriod(detectImportPeriod(fileName)) || IMPORT_PERIOD_PENDING;
+}
+
+function gaExtractMonthlyCandidates(sheet) {
+  if (!sheet?.["!ref"]) return [];
+  const range = window.XLSX.utils.decode_range(sheet["!ref"]);
+  const rows = [];
+  // Bloc UO en haut de la feuille : Libellé / HISTO / BUDGET / REALISE.
+  for (let r = 1; r <= Math.min(range.e.r + 1, 20); r++) {
+    const label = gaWorkbookCellText(sheet, r, 3);
+    if (!/^UO\s+/i.test(label)) continue;
+    rows.push({ row: r, type: "activity", section: "UO", costCenter: "", label, historical: gaWorkbookCellText(sheet, r, 4), budget: gaWorkbookCellText(sheet, r, 5), actual: gaWorkbookCellText(sheet, r, 6), deltaBudget: gaWorkbookCellText(sheet, r, 7), deltaHistorical: gaWorkbookCellText(sheet, r, 8), sourceCell: `C${r}` });
+  }
+  let currentCostCenter = "";
+  let currentSection = "";
+  for (let r = 15; r <= range.e.r + 1; r++) {
+    const colA = gaWorkbookCellText(sheet, r, 1);
+    const colB = gaWorkbookCellText(sheet, r, 2);
+    const colC = gaWorkbookCellText(sheet, r, 3);
+    if (/^\d{4,6}$/.test(colA)) currentCostCenter = colA;
+    if (/^(DIR|IND)$/i.test(colB)) currentSection = colB.toUpperCase();
+    const label = colC || (/^Total\s+(DIR|IND)$/i.test(colB) ? colB : "");
+    if (!label) continue;
+    if (/^BUDGET$/i.test(label)) continue;
+    rows.push({ row: r, type: currentSection === "DIR" ? "hours_direct" : currentSection === "IND" ? "hours_indirect" : "", section: currentSection, costCenter: currentCostCenter, colB, label, historical: gaWorkbookCellText(sheet, r, 4), budget: gaWorkbookCellText(sheet, r, 5), actual: gaWorkbookCellText(sheet, r, 6), deltaBudget: gaWorkbookCellText(sheet, r, 7), deltaHistorical: gaWorkbookCellText(sheet, r, 8), sourceCell: `C${r}` });
+  }
+  return rows;
 }
 
 async function analyzeSuiviGaFile(file, detected) {
   const ext = (detected.extension || "").toLowerCase();
-  if (ext !== "xlsb" && !String(file.name || "").toLowerCase().endsWith(".xlsb")) {
-    return {
-      ...detected,
-      source: "SUIVI_GA",
-      sourceType: "Suivi GA",
-      status: "non reconnu",
-      confidence: "faible",
-      message: "V5.18.5 cible le classeur XLSB St Gilles validé."
-    };
+  if (!["xlsb", "xlsx", "xlsm", "xls"].includes(ext) && !/\.(xlsb|xlsx|xlsm|xls)$/i.test(String(file.name || ""))) {
+    return { ...detected, source: "SUIVI_GA", sourceType: "Suivi GA", status: "non reconnu", confidence: "faible", message: "Format Suivi GA non supporté." };
   }
+  if (!window.XLSX?.read || !window.XLSX?.utils?.decode_range) throw new Error("Bibliothèque XLSX indisponible pour lire le Suivi GA.");
   const buffer = await readFileArrayBuffer(file);
-  const sha = await sha256HexFromArrayBuffer(buffer);
-  if (sha !== GA_ST_GILLES_KNOWN_SHA256) {
-    return {
-      ...detected,
-      source: "SUIVI_GA",
-      sourceType: "Suivi GA XLSB",
-      status: "non reconnu",
-      confidence: "faible",
-      message: "Format XLSB BIFF12 détecté. Le parser navigateur actuel ne lit pas workbook.bin/sheet.bin de façon générique. Ce connecteur minimal V5.18.5 est limité au classeur validé (empreinte différente)."
-    };
-  }
-  const fixtureResponse = await fetch(`data/ga_stgilles_202606_candidates.json?v=${Date.now()}`);
-  if (!fixtureResponse.ok) throw new Error("Fixture Suivi GA introuvable");
-  const candidates = ensureArray(await fixtureResponse.json());
-  const titleRow = candidates.find(row => Number(row.row) === 6);
-  const titlePeriod = gaPeriodFromTitle(titleRow?.colA || "");
-  const period = titlePeriod || normalizeImportPeriod(detected.period || "") || "06/2026";
-  const indicators = candidates
-    .filter(row => Number(row.row) >= 7)
-    .filter(row => !gaIsDuplicateShadowRow(row))
-    .filter(row => gaHasUsefulValues(row))
-    .map(row => gaBuildIndicatorRow(row, period));
+  const workbook = window.XLSX.read(buffer, { type: "array", cellFormula: true, cellText: false, raw: true });
+  const detectedSiteCodes = gaWorkbookDetectedSiteCodes(workbook);
+  const siteSheet = gaFindSiteSheet(workbook, PERFORMANCE_IMPORT_SITE.code);
+  if (!siteSheet) return { ...detected, source: "SUIVI_GA", sourceType: "Suivi GA XLSB", status: "non reconnu", confidence: "faible", detectedSiteCodes, message: `Aucun onglet ou bloc ${performanceImportSiteLabel()} détecté.` };
+  const period = gaSheetPeriod(siteSheet.sheet, file.name || "");
+  const candidates = gaExtractMonthlyCandidates(siteSheet.sheet);
+  const indicators = candidates.filter(row => !gaIsDuplicateShadowRow(row)).filter(row => gaHasUsefulValues(row)).map(row => gaBuildIndicatorRow(row, period));
   return {
-    ...detected,
-    source: "SUIVI_GA",
-    sourceType: "Suivi GA XLSB",
-    status: "reconnu",
-    confidence: "élevée",
-    site: "Saint-Gilles",
-    period,
-    periods: [period],
-    selectedPeriods: [period],
-    sheets: GA_ST_GILLES_SHEETS,
-    selectedSheet: "St Gilles",
-    detectedIndicators: dedupeImportRows(indicators),
-    message: `${indicators.length} indicateur(s) extrait(s) depuis l'onglet St Gilles (mensuel).`
+    ...detected, source: "SUIVI_GA", sourceType: "Suivi GA XLSB", status: indicators.length ? "reconnu" : "probablement reconnu", confidence: indicators.length ? "élevée" : "moyenne",
+    site: PERFORMANCE_IMPORT_SITE.name, siteCode: PERFORMANCE_IMPORT_SITE.code, detectedSiteCodes, period, periods: [period], selectedPeriods: [period],
+    sheets: ensureArray(workbook.SheetNames || []), selectedSheet: siteSheet.sheetName, detectedIndicators: dedupeImportRows(indicators),
+    message: `${indicators.length} indicateur(s) extrait(s) directement depuis l'onglet ${siteSheet.sheetName} pour ${performanceImportSiteLabel()} · période ${period}.`
   };
 }
 
@@ -13071,6 +13186,8 @@ async function analyzeGaDetailAggregatedFile(file, detected) {
     status: rows.length ? "reconnu" : "probablement reconnu",
     confidence: rows.length ? "élevée" : "moyenne",
     site: scope,
+    siteCode: GA_DETAIL_TARGET_ETAB,
+    detectedSiteCodes: [GA_DETAIL_TARGET_ETAB],
     scope,
     period: sortedPeriods[0] || "",
     periods: sortedPeriods,
@@ -13214,19 +13331,23 @@ function zgemedRowsScore(rows) {
 
 function analyzeZGemedWorkbook(workbook, detected, sourceFormat) {
   const sheets = ensureArray(workbook?.sheets);
-  const site = detectZGemedSite(sheets) || detected.site || "";
-  const periods = detectZGemedPeriods(sheets, detected.name);
+  const sheetSite = sheet => detectZGemedSite([sheet]);
+  const explicitSiteSheets = sheets.filter(sheet => Boolean(sheetSite(sheet)));
+  const selectedSheets = explicitSiteSheets.length ? explicitSiteSheets.filter(sheet => performanceImportSiteMatches(sheetSite(sheet))) : sheets;
+  const detectedSiteLabels = [...new Set(explicitSiteSheets.map(sheetSite).filter(Boolean))];
+  if (explicitSiteSheets.length && !selectedSheets.length) return { ...detected, typeDetected: "Z GEMED Excel", source: "Z_GEMED", status: "non reconnu", confidence: "faible", detectedSites: detectedSiteLabels, message: `Aucune feuille Z GEMED pour ${performanceImportSiteLabel()} détectée.` };
+  const site = selectedSheets.length ? PERFORMANCE_IMPORT_SITE.name : (detectZGemedSite(sheets) || detected.site || "");
+  const periods = detectZGemedPeriods(selectedSheets.length ? selectedSheets : sheets, detected.name);
   const detectedIndicators = [];
   let headerCount = 0;
-  sheets.forEach(sheet => {
+  (selectedSheets.length ? selectedSheets : sheets).forEach(sheet => {
     const extracted = extractZGemedIndicatorsFromSheet(sheet.rows || [], periods[0] || detected.period || "", sourceFormat, sheet.name || sourceFormat);
-    headerCount += extracted.headerCount;
-    detectedIndicators.push(...extracted.rows);
+    headerCount += extracted.headerCount; detectedIndicators.push(...extracted.rows);
   });
   if (!headerCount) return { ...detected, status: "non reconnu", confidence: "faible", source: "Z_GEMED", sheets: sheets.map(sheet => sheet.name || sourceFormat), site, periods, selectedPeriods: periods, detectedIndicators: [], message: "Aucun en-tête Z GEMED exploitable détecté." };
-  const score = Math.max(0, ...sheets.map(sheet => zgemedRowsScore(sheet.rows || [])));
+  const score = Math.max(0, ...(selectedSheets.length ? selectedSheets : sheets).map(sheet => zgemedRowsScore(sheet.rows || [])));
   const dedupedIndicators = dedupeImportRows(detectedIndicators);
-  return { ...detected, typeDetected: "Z GEMED Excel", source: "Z_GEMED", status: score >= 5 ? "reconnu" : "probablement reconnu", confidence: score >= 5 ? "élevée" : "moyenne", site, periods, selectedPeriods: periods, sheets: sheets.map(sheet => sheet.name || sourceFormat), detectedIndicators: dedupedIndicators, message: `${dedupedIndicators.length} indicateur(s) extrait(s) réellement depuis ${sheets.length || 1} feuille(s) ${sourceFormat}.` };
+  return { ...detected, typeDetected: "Z GEMED Excel", source: "Z_GEMED", status: score >= 5 ? "reconnu" : "probablement reconnu", confidence: score >= 5 ? "élevée" : "moyenne", site, siteCode: performanceImportSiteMatches(site) ? PERFORMANCE_IMPORT_SITE.code : "", detectedSites: detectedSiteLabels, periods, selectedPeriods: periods, sheets: sheets.map(sheet => sheet.name || sourceFormat), detectedIndicators: dedupedIndicators, message: `${dedupedIndicators.length} indicateur(s) extrait(s) depuis ${(selectedSheets.length || sheets.length || 1)} feuille(s) ${sourceFormat} pour ${site || "site à confirmer"}.` };
 }
 
 function normalizeText(text) {
@@ -20479,7 +20600,7 @@ function createSimpleEntitySyncController(config) {
     const warning = entity === "decisions"
       ? "Ce pilote synchronise uniquement les Décisions. Les Documents conservent leur pilote séparé."
       : "Ce pilote synchronise uniquement les Documents et leurs comptes-rendus. Les Décisions conservent leur pilote séparé.";
-    return `<div id="${settingsCardId}" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — ${plural}</h2><p class="muted">V5.27C · synchronisation multi-appareils non destructive par identifiant stable, avec détection des conflits.</p></div><span class="remote-mode-badge ${linksSyncStatusClass(runtime.state)}">${esc(linksSyncStatusLabel(runtime.state))}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>${plural} locaux</strong><span>${state[entity].length}</span></div><div class="settings-calendar-summary-item"><strong>${plural} distants</strong><span>${runtime.remoteCount||0}</span></div><div class="settings-calendar-summary-item"><strong>Synchronisés</strong><span>${runtime.syncedCount||0}</span></div><div class="settings-calendar-summary-item"><strong>Conflits</strong><span>${runtime.conflictCount||0}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchro</strong><span>${esc(runtime.lastSyncAt||"Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(runtime.lastError||"Aucune")}</span></div></div></section><section class="settings-card-block"><h3>Actions</h3><div class="row-actions"><button class="secondary" onclick="simpleSyncAnalyzeFromSettings('${entity}')" ${ready?"":"disabled"}>Analyser</button>${enabled()?`<button class="danger" onclick="simpleSyncDeactivateFromSettings('${entity}')">Désactiver</button>`:`<button class="action" onclick="simpleSyncActivateFromSettings('${entity}')">Activer</button>`}<button class="secondary" onclick="simpleSyncNowFromSettings('${entity}')" ${enabled()?"":"disabled"}>Synchroniser maintenant</button><button class="secondary" onclick="simpleSyncShowConflicts('${entity}')" ${runtime.conflictCount?"":"disabled"}>Voir les conflits</button></div>${!ready?`<div class="empty">Connexion au workspace requise. Les migrations Supabase V5.27B doivent être installées.</div>`:""}${a?`<p class="muted">Dernière analyse : ${a.localCount} local(aux), ${a.remoteCount} distant(s), ${a.conflicts.length} conflit(s).</p>`:""}</section></div></div>`;
+    return `<div id="${settingsCardId}" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — ${plural}</h2><p class="muted">V5.28A · synchronisation multi-appareils non destructive par identifiant stable, avec détection des conflits.</p></div><span class="remote-mode-badge ${linksSyncStatusClass(runtime.state)}">${esc(linksSyncStatusLabel(runtime.state))}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>${plural} locaux</strong><span>${state[entity].length}</span></div><div class="settings-calendar-summary-item"><strong>${plural} distants</strong><span>${runtime.remoteCount||0}</span></div><div class="settings-calendar-summary-item"><strong>Synchronisés</strong><span>${runtime.syncedCount||0}</span></div><div class="settings-calendar-summary-item"><strong>Conflits</strong><span>${runtime.conflictCount||0}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchro</strong><span>${esc(runtime.lastSyncAt||"Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(runtime.lastError||"Aucune")}</span></div></div></section><section class="settings-card-block"><h3>Actions</h3><div class="row-actions"><button class="secondary" onclick="simpleSyncAnalyzeFromSettings('${entity}')" ${ready?"":"disabled"}>Analyser</button>${enabled()?`<button class="danger" onclick="simpleSyncDeactivateFromSettings('${entity}')">Désactiver</button>`:`<button class="action" onclick="simpleSyncActivateFromSettings('${entity}')">Activer</button>`}<button class="secondary" onclick="simpleSyncNowFromSettings('${entity}')" ${enabled()?"":"disabled"}>Synchroniser maintenant</button><button class="secondary" onclick="simpleSyncShowConflicts('${entity}')" ${runtime.conflictCount?"":"disabled"}>Voir les conflits</button></div>${!ready?`<div class="empty">Connexion au workspace requise. Les migrations Supabase V5.27B doivent être installées.</div>`:""}${a?`<p class="muted">Dernière analyse : ${a.localCount} local(aux), ${a.remoteCount} distant(s), ${a.conflicts.length} conflit(s).</p>`:""}</section></div></div>`;
   };
   return { entity, initialize, analyze, activate, deactivate, syncNow, renderCard, runExclusive, runtime:()=>runtime };
 }
