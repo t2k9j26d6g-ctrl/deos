@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28B";
+const DEOS_VERSION = "V5.28C";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -11477,7 +11477,7 @@ async function analyzeGpoPdfFile(file, detected) {
     selectedPeriods: [period],
     sheets: pages.map(p => `page ${p.page}`).slice(0, 5),
     detectedIndicators: indicators,
-    message: `GPO reconnu · ${pages.length} page(s) · ${hitCount}/${markers.length} repères · ${indicators.length} KPI extrait(s) · site ${site || "à confirmer"}${site ? ` (${PERFORMANCE_IMPORT_SITE.code})` : ""}.`
+    message: `GPO reconnu · ${pages.length} page(s) · ${hitCount}/${markers.length} repères · ${indicators.length} KPI extrait(s) · lecture brute + visuelle · site ${site || "à confirmer"}${site ? ` (${PERFORMANCE_IMPORT_SITE.code})` : ""}.`
   };
 }
 
@@ -11529,7 +11529,7 @@ async function readPdfPages(file) {
     const content = await page.getTextContent();
     const rawText = content.items.map(item => item.str || "").join(" ");
     const layoutText = pdfLayoutTextFromItems(content.items);
-    pages.push({ page: pageNo, text: layoutText || rawText, rawText, layoutText });
+    pages.push({ page: pageNo, text: `${rawText}\n${layoutText}`.trim() || rawText, rawText, layoutText });
   }
   return pages;
 }

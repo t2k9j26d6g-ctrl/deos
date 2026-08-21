@@ -1,0 +1,14 @@
+DEOS V5.28C — Correctif GPO PDF (lecture hybride)
+
+Objectif
+- Corriger le cas V5.28B où le GPO est reconnu mais 0 KPI sont transmis à l’aperçu.
+
+Modification
+- Chaque page PDF conserve désormais simultanément le texte brut PDF.js ET le texte reconstruit selon la position visuelle.
+- Les règles GPO travaillent sur la combinaison des deux représentations au lieu de remplacer le texte brut par le texte visuel.
+- Le diagnostic source mentionne « lecture brute + visuelle ».
+
+Périmètre
+- Aucun changement des autres connecteurs Performance.
+- Aucun changement de la synchronisation Supabase.
+- Aucun changement des données existantes.
