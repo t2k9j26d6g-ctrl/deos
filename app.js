@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28C";
+const DEOS_VERSION = "V5.28D";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -11023,6 +11023,25 @@ function performanceImportStepPreview() {
   const gaDetailComparisonCards = gaDetailComparisonPreviewCards();
   const maskedGroups = performanceImportWizard.files.flatMap(file => ensureArray(file.maskedGroups || []).map(item => ({ ...item, fileName: file.name || "" })));
   const typeLabel = row => row.periodType === "cumulative" ? "Cumul" : "Mensuel";
+  const categoryLabel = row => ({
+    activity: "Activité",
+    hours_direct: "Heures directes",
+    hours_indirect: "Heures indirectes — total",
+    hours_indirect_detail: "Heures indirectes — détail"
+  })[String(row.category || "")] || row.category || "";
+  const gaRoleLabel = row => {
+    if (!/SUIVI_GA/i.test(String(row.source || row.sourceType || ""))) return "";
+    if (String(row.category || "") === "hours_indirect_detail") return "Détail analytique — non additionné au total";
+    if (String(row.category || "") === "hours_indirect") return "Total centre — valeur consolidée";
+    if (String(row.category || "") === "hours_direct") return "Heures directes du centre";
+    if (String(row.category || "") === "activity") return "Activité du site";
+    return "";
+  };
+  const formatImportNumber = value => {
+    if (value === null || value === undefined || value === "") return "";
+    const numeric = normalizeImportNullableNumericValue(value);
+    return typeof numeric === "number" && Number.isFinite(numeric) ? perfFmt(numeric) : value;
+  };
   const deltaLabel = (value, percent) => {
     const base = value === null || value === undefined || value === "" ? "" : perfFmt(value);
     const pct = percent === null || percent === undefined || percent === "" ? "" : `${perfFmt(percent)}%`;
@@ -11034,7 +11053,7 @@ function performanceImportStepPreview() {
     if (row.unit === "%" && typeof numeric === "number" && Number.isFinite(numeric) && numeric >= 0 && numeric <= 1) {
       return `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(numeric * 100)} %`;
     }
-    return value;
+    return formatImportNumber(value);
   };
   const plannedActionLabel = row => {
     const currentValueExists = row.currentValue !== "" && row.currentValue !== null && row.currentValue !== undefined;
@@ -11048,9 +11067,14 @@ function performanceImportStepPreview() {
     const currentTargetId = row.targetId || row.destinationId || (performanceImportTargetFromPath(row.destinationPath)?.id || "");
     const statusText = row.status || performanceImportStatusLabel(row.status);
     const selectable = row.targetType !== "ignore";
+    const roleHint = gaRoleLabel(row);
     const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
-    const selectHtml = targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
+    const catalogHasCurrentTarget = targetOptions.some(target => target.id === currentTargetId);
+    const dynamicTargetOption = currentTargetId && !catalogHasCurrentTarget
+      ? `<option value="${esc(currentTargetId)}" selected>${esc(row.destinationLabel || row.label || row.indicator || currentTargetId)}</option>`
+      : "";
+    const selectHtml = dynamicTargetOption + targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(categoryLabel(row))}${roleHint ? `<br><small class="muted">${esc(roleHint)}</small>` : ""}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(formatImportNumber(row.budget))}</td><td>${esc(formatImportNumber(row.historical))}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
   const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const maskedGroupsTable = maskedGroups.length ? `<div class="card"><h3>Groupes masqués pour confidentialité</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Valeur</th><th>Contributeurs</th><th>Règle</th><th>Feuille</th></tr></thead><tbody>${maskedGroups.map(row => `<tr class="import-gray"><td>${esc(row.period || "")}</td><td>${esc(row.groupType || "")}</td><td>${esc(row.label || row.value || "")}</td><td>${esc(row.employeeCount || "")}</td><td>${esc(row.rule || "")}</td><td>${esc(row.sourceSheet || "")}</td></tr>`).join("")}</tbody></table></div>` : "";
@@ -12929,6 +12953,8 @@ function gaBuildIndicatorRow(row, period) {
     sourceType: "Suivi GA XLSB",
     category,
     metricKey,
+    aggregationRole: category === "hours_indirect_detail" ? "detail" : (category === "hours_indirect" ? "total" : "value"),
+    analysisOnly: category === "hours_indirect_detail",
     indicator: sourceLabel,
     label: sourceLabel,
     actual: normalizeImportNullableNumericValue(row.actual),
@@ -12949,7 +12975,7 @@ function gaBuildIndicatorRow(row, period) {
     sourceCell: row.sourceCell || `ligne ${row.row || ""}`,
     sourceRef: `St Gilles · ${row.sourceCell || `ligne ${row.row || ""}`}`,
     destinationPath,
-    destinationLabel: mapping ? `${sourceLabel}${costCenter ? ` · ${costCenter}` : ""}` : "KPI complémentaire — non mappé",
+    destinationLabel: mapping ? `${sourceLabel}${costCenter ? ` · ${costCenter}` : ""}${category === "hours_indirect_detail" ? " · détail analytique" : category === "hours_indirect" ? " · total centre" : ""}` : "KPI complémentaire — non mappé",
     destinationId: mapping ? destinationPath : "",
     targetId: mapping ? destinationPath : "",
     targetType: mapping ? "complementary" : "ignore",
@@ -13813,6 +13839,8 @@ function applyImportedValueToPerformance(perf, row) {
       costCenter,
       population,
       banner,
+      aggregationRole: row.aggregationRole || "value",
+      analysisOnly: Boolean(row.analysisOnly),
       period: normalizedPeriod,
       source: row.source || "Import",
       sourceRef: row.sourceRef || "",

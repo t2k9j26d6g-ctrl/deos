@@ -1,0 +1,13 @@
+DEOS V5.28D — Correctif aperçu Suivi GA
+
+Objectif : sécuriser la lecture et la validation de l'import Suivi GA avant de poursuivre les autres sources.
+
+Correctifs :
+- affiche la destination dynamique GA réellement utilisée au lieu de retomber visuellement sur « Ne pas importer » ;
+- traduit les catégories techniques activity / hours_direct / hours_indirect / hours_indirect_detail ;
+- distingue explicitement « total centre » et « détail analytique » ;
+- marque les lignes hours_indirect_detail comme analysisOnly / aggregationRole=detail afin qu'elles restent disponibles pour l'analyse sans être assimilées aux totaux consolidés ;
+- conserve cette métadonnée dans complementaryKpis ;
+- formate les nombres de l'aperçu pour supprimer les artefacts flottants (ex. 998.020000000001 -> 998,02).
+
+Aucune modification de l'analyse métier finale n'est incluse dans cette version.
