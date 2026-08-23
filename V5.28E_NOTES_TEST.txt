@@ -1,0 +1,18 @@
+DEOS V5.28E — Correctif mapping GA détail
+
+Objectif
+- Mapper les trois agrégats structurants du fichier « Suivi Mensuel GA - Détail par salarié » vers les KPI natifs Performance.
+
+Corrections
+- GA détail - Heures totales -> hours.total (Heures totales)
+- GA détail - Heures directes -> hours.direct (Heures directes)
+- GA détail - Heures indirectes -> hours.indirect (Heures indirectes)
+- Les autres agrégats détaillés restent des KPI complémentaires analytiques.
+- Les règles de confidentialité/agrégation de la V5.28D sont conservées.
+
+Test attendu
+1. Importer « Suivi Mensuel GA - Détail par salarié ».
+2. Sélectionner uniquement 07/2026.
+3. Créer l’aperçu.
+4. Vérifier que les trois lignes de synthèse affichent respectivement Heures totales, Heures directes et Heures indirectes comme Destination DEOS avec confiance élevée.
+5. Ne pas valider l’import réel avant validation fonctionnelle du connecteur.

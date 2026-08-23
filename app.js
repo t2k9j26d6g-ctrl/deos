@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28D";
+const DEOS_VERSION = "V5.28E";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -12237,7 +12237,13 @@ function gaDetailDestinationPath(metricKey = "", dims = {}) {
 }
 
 function gaDetailBuildRow({ period, metricKey, label, actual, unit = "h", scope, costCenter = "", directness = "", activityType = "", population = "", aggregationType = "sum", employeeCount = null, sourceSheet = GA_DETAIL_SOURCE_SHEET, sourceColumns = "", sourceCell = "aggregated", confidence = "élevée", privacyRule = GA_DETAIL_PRIVACY_RULE, destinationMetricKey = metricKey }) {
-  const destinationPath = gaDetailDestinationPath(destinationMetricKey, { scope, costCenter, directness, activity: activityType, population });
+  const coreTargets = {
+    "ga_detail.hours.total": performanceImportTargetById("hours.total"),
+    "ga_detail.hours.direct": performanceImportTargetById("hours.direct"),
+    "ga_detail.hours.indirect": performanceImportTargetById("hours.indirect")
+  };
+  const coreTarget = coreTargets[metricKey] || null;
+  const destinationPath = coreTarget?.path || gaDetailDestinationPath(destinationMetricKey, { scope, costCenter, directness, activity: activityType, population });
   return {
     id: newId("preview"),
     period,
@@ -12268,10 +12274,10 @@ function gaDetailBuildRow({ period, metricKey, label, actual, unit = "h", scope,
     confidence,
     sourceRef: `${sourceSheet} · ${sourceCell}`,
     destinationPath,
-    destinationLabel: `${label} · ${scope}`,
-    destinationId: destinationPath,
-    targetId: destinationPath,
-    targetType: "complementary",
+    destinationLabel: coreTarget ? coreTarget.label : `${label} · ${scope}`,
+    destinationId: coreTarget ? coreTarget.id : destinationPath,
+    targetId: coreTarget ? coreTarget.id : destinationPath,
+    targetType: coreTarget ? "existing" : "complementary",
     selected: true,
     action: ""
   };
