@@ -11896,8 +11896,21 @@ function tbagIdentityKey(population = "", banner = "") {
   return `${pop}|${ban}`;
 }
 
-function tbagBuildRow({ period, metricKey, label, value, unit, population = "", banner = "", aggregationType = "sum", confidence = "élevée", sourceSheet, sourceCell, sourceColumns, sourceFormula = "" }) {
-  const destinationPath = tbagDestinationPath(metricKey, population, banner);
+function tbagBuildRow({ period, metricKey, label, value, unit, population = "", banner = "", aggregationType = "sum", confidence = "Ã©levÃ©e", sourceSheet, sourceCell, sourceColumns, sourceFormula = "" }) {
+  const isTotalScope = String(population || "").trim().toUpperCase() === "TOTAL"
+    && String(banner || "").trim().toUpperCase() === "TOTAL BANNIERE";
+  const isNativeProductivityTotal = metricKey === "preparation.productivity.total" && isTotalScope;
+  const isBannerHoursDetail = metricKey === "preparation.banner.hours";
+  const destinationPath = isNativeProductivityTotal
+    ? "productivity.PrÃ©paration.actual"
+    : tbagDestinationPath(metricKey, population, banner);
+  const destinationLabel = isNativeProductivityTotal
+    ? "ProductivitÃ© PrÃ©paration"
+    : `${label} Â· PrÃ©paration`;
+  const targetId = isNativeProductivityTotal
+    ? "productivity.preparation"
+    : destinationPath;
+  const targetType = isNativeProductivityTotal ? "existing" : "complementary";
   const category = metricKey.includes("productivity") ? "preparation_productivity" : metricKey.includes("volume") ? "preparation_volume" : "preparation_hours";
   return {
     id: newId("preview"),
@@ -11914,7 +11927,7 @@ function tbagBuildRow({ period, metricKey, label, value, unit, population = "", 
     budget: null,
     historical: null,
     unit,
-    scope: "Préparation",
+    scope: "PrÃ©paration",
     population,
     banner,
     directness: banner || "",
@@ -11927,12 +11940,14 @@ function tbagBuildRow({ period, metricKey, label, value, unit, population = "", 
     confidence,
     sourceSheet,
     sourceCell,
-    sourceRef: `${sourceSheet} · ${sourceCell}`,
+    sourceRef: `${sourceSheet} Â· ${sourceCell}`,
     destinationPath,
-    destinationLabel: `${label} · Préparation`,
-    destinationId: destinationPath,
-    targetId: destinationPath,
-    targetType: "complementary",
+    destinationLabel,
+    destinationId: targetId,
+    targetId,
+    targetType,
+    analyticalRole: isBannerHoursDetail ? "detail" : (isTotalScope ? "total" : "analytic"),
+    analysisOnly: isBannerHoursDetail,
     selected: true,
     action: ""
   };

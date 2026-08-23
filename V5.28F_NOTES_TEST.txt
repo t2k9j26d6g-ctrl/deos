@@ -1,0 +1,14 @@
+DEOS V5.28F - Correctif mapping T-Bag
+
+Objet
+- Sécuriser le mapping T-Bag sans confondre les heures directes Préparation avec les heures directes globales du site.
+
+Règles
+1. La productivité globale Préparation (TOTAL / TOTAL BANNIERE) est mappée vers le KPI natif
+   Productivité Préparation : productivity.Préparation.actual / targetId productivity.preparation.
+2. Les heures directes Préparation TOTAL BANNIERE restent dans l'espace analytique T-Bag.
+   Elles ne sont PAS mappées vers hours.direct, qui représente les heures directes globales du site.
+3. Les ventilations d'heures par bannière restent complémentaires et sont marquées analysisOnly/detail.
+4. Aucun changement sur les règles d'agrégation/confidentialité T-Bag.
+
+Le script remplace uniquement la fonction tbagBuildRow dans l'app.js courant et crée une sauvegarde locale.
