@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28H";
+const DEOS_VERSION = "V5.28I";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -9463,6 +9463,63 @@ function performanceSourceLabel(sourceKey = "") {
   }[sourceKey] || sourceKey || "Source inconnue";
 }
 
+function performanceOfficialSourceForFamily(priorityKey = "") {
+  const priority = performanceSourcePriorityByFamily[priorityKey] || [];
+  return priority[0] || "";
+}
+
+function performancePriorityKeyForImportRow(row = {}) {
+  const metricKey = String(row.metricKey || row.targetId || "").toLowerCase();
+  const category = normalizePerformanceLabel(row.category || "");
+  const destinationPath = String(row.destinationPath || "");
+  if (metricKey.startsWith("ipo.") || destinationPath.startsWith("ipo.")) return "ipo";
+  if (metricKey.startsWith("productivity.") || destinationPath.startsWith("productivity.")) return "productivites_officielles";
+  if (metricKey.startsWith("hours.") || destinationPath.startsWith("hours.")) return "heures";
+  if (metricKey.startsWith("absenteeism.") || destinationPath.startsWith("absenteeism.")) return "absenteisme";
+  if (metricKey.startsWith("tbag.preparation.")) return "preparation_detaillee";
+  if (metricKey.startsWith("ga_detail.")) return "affectations_dispersion";
+  if (/resultat|ebit|demarque|cout/.test(metricKey) || /resultat|ebit|demarque|cout/.test(category)) return "economie_qualite";
+  return "activite";
+}
+
+function performanceSourceAuthority(row = {}) {
+  const source = performanceSourceKey(row.source || row.sourceType || "Import");
+  const priorityKey = performancePriorityKeyForImportRow(row);
+  const officialSource = performanceOfficialSourceForFamily(priorityKey);
+  const isExistingTarget = row.targetType === "existing" && row.destinationPath && !String(row.destinationPath).startsWith("complementary.");
+  const sourceIsOfficial = !officialSource || source === officialSource;
+  return { source, priorityKey, officialSource, isExistingTarget, sourceIsOfficial };
+}
+
+function performanceAnalyticalFallbackPath(row = {}) {
+  const source = performanceSourceKey(row.source || row.sourceType || "Import") || "source";
+  const metricKey = String(row.metricKey || row.targetId || normalizePerformanceLabel(row.destinationLabel || row.indicator) || "metric")
+    .replace(/[^a-z0-9.]+/gi, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const src = source.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "source";
+  return `complementary.authority.${src}.${metricKey}`;
+}
+
+function enforcePerformanceSourceAuthority(row = {}) {
+  const authority = performanceSourceAuthority(row);
+  if (!authority.isExistingTarget || authority.sourceIsOfficial) return row;
+
+  const analyticalPath = performanceAnalyticalFallbackPath(row);
+  return {
+    ...row,
+    destinationPath: analyticalPath,
+    destinationLabel: `${row.destinationLabel || row.indicator} â€” analytique ${performanceSourceLabel(authority.source)}`,
+    destinationId: analyticalPath,
+    targetId: analyticalPath,
+    targetType: "complementary",
+    scope: row.scope || "analysisOnly",
+    confidence: row.confidence === "Ã©levÃ©e" ? "moyenne" : (row.confidence || "moyenne"),
+    sourceAuthority: "secondary",
+    officialSource: authority.officialSource,
+    authorityReason: `Source secondaire : ${performanceSourceLabel(authority.source)}. Source officielle : ${performanceSourceLabel(authority.officialSource)}.`
+  };
+}
 function performanceMetricFamilyPriorityKey(metricDef = {}) {
   const key = String(metricDef.metricKey || "").toLowerCase();
   if (key.startsWith("ipo.")) return "ipo";
@@ -11074,7 +11131,7 @@ function performanceImportStepPreview() {
       ? `<option value="${esc(currentTargetId)}" selected>${esc(row.destinationLabel || row.label || row.indicator || currentTargetId)}</option>`
       : "";
     const selectHtml = dynamicTargetOption + targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(categoryLabel(row))}${roleHint ? `<br><small class="muted">${esc(roleHint)}</small>` : ""}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(formatImportNumber(row.budget))}</td><td>${esc(formatImportNumber(row.historical))}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue || "")}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(categoryLabel(row))}${roleHint ? `<br><small class="muted">${esc(roleHint)}</small>` : ""}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(formatImportNumber(row.budget))}</td><td>${esc(formatImportNumber(row.historical))}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue === "" || row.currentValue === null || row.currentValue === undefined ? "" : perfFmt(row.currentValue))}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
   const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const maskedGroupsTable = maskedGroups.length ? `<div class="card"><h3>Groupes masqués pour confidentialité</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Valeur</th><th>Contributeurs</th><th>Règle</th><th>Feuille</th></tr></thead><tbody>${maskedGroups.map(row => `<tr class="import-gray"><td>${esc(row.period || "")}</td><td>${esc(row.groupType || "")}</td><td>${esc(row.label || row.value || "")}</td><td>${esc(row.employeeCount || "")}</td><td>${esc(row.rule || "")}</td><td>${esc(row.sourceSheet || "")}</td></tr>`).join("")}</tbody></table></div>` : "";
@@ -13807,6 +13864,7 @@ function mapZGemedIndicator(label, periodType = "monthly") {
 }
 
 function decoratePerformancePreviewRow(row) {
+  row = enforcePerformanceSourceAuthority(row);
   const field = row.destinationField || "actual";
   const current = row.destinationPath ? getPerformanceCurrentValue(row.period, row.destinationPath, field) : "";
   const currentBudget = !row.destinationField && row.destinationPath ? getPerformanceCurrentValue(row.period, row.destinationPath, "budget") : "";
@@ -13946,6 +14004,7 @@ function applyPerformanceImportRows(rows, file, importDate) {
 }
 
 function applyImportedValueToPerformance(perf, row) {
+  row = enforcePerformanceSourceAuthority(row);
   if (row.periodType === "cumulative" && row.targetType === "existing") {
     row = {
       ...row,

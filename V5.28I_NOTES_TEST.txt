@@ -1,0 +1,28 @@
+DEOS V5.28I - Autorité des sources Performance
+
+Objectif
+- Empêcher une source secondaire d'écraser silencieusement un KPI officiel.
+- Conserver les sources secondaires comme données analytiques/comparatives.
+- Formater proprement les valeurs numériques de la colonne Valeur DEOS.
+
+Règles de référence
+- IPO / productivités officielles : GPO
+- Activité : Z GEMED
+- Heures : GPO
+- Absentéisme : GPO
+- Préparation détaillée : T-Bag
+- Economie / qualité : Z GEMED
+- Affectations / dispersion : GA détail
+
+Comportement
+- Une source secondaire qui pointe vers un KPI natif est automatiquement reclassée en KPI complémentaire analytique.
+- Elle reste exploitable pour l'analyse mais ne peut plus écraser le KPI principal.
+- Le garde-fou est appliqué dans l'aperçu et au moment de l'écriture réelle.
+- Les valeurs DEOS sont affichées via perfFmt.
+
+Tests recommandés
+1. T-Bag : Productivité Préparation doit devenir analytique.
+2. GA détail : heures total/direct/indirect doivent devenir analytiques.
+3. Suivi GA : heures principales ne doivent plus écraser GPO.
+4. Z GEMED : activité/coût/EBIT restent autorisés comme source officielle.
+5. GPO : productivités/heures/absentéisme restent KPI officiels.
