@@ -1,0 +1,17 @@
+DEOS V5.28G - Correctif CGTAB + UI import
+
+Objectif principal
+- Corriger l'import du fichier CGTAB juillet 2026 dont les en-têtes de nuit diffèrent des libellés historiques attendus.
+
+Correctifs
+- Nuit10% accepte aussi Nuit10%25%.
+- Nuit20% accepte aussi Nuit28%.
+- Les métriques d'effectif avec heures de nuit utilisent les mêmes variantes.
+- Résolution CGTAB plus tolérante aux différences d'espaces/casse/ponctuation.
+- Libellé affiché DEOS mis à V5.28G.
+- Alignement des cases à cocher et des périodes dans Identification de la source lorsque le motif HTML courant est retrouvé.
+
+Sécurité
+- Le script modifie uniquement app.js.
+- Une sauvegarde app.js.v528f_before_v528g.bak est créée avant écriture.
+- Le script s'arrête sans écrire si les contrôles essentiels échouent.

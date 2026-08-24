@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28E";
+const DEOS_VERSION = "V5.28G";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -10966,7 +10966,7 @@ function setPerformanceImportStep(step) {
 }
 
 function performanceImportStepSources() {
-  return `<div class="card"><h2>Identification de la source</h2>${performanceImportWizard.files.map(file => `<div class="item"><strong>${esc(file.name)}</strong><span class="muted">Type détecté : ${esc(file.typeDetected)} · Source supposée : ${esc(file.source)} · Statut : ${esc(file.status || "à confirmer")} · Confiance ${esc(file.confidence || "moyenne")}</span><span class="meta">Site retenu : ${esc(file.site || "à confirmer")}${file.siteCode ? ` (${esc(file.siteCode)})` : ""} · Périodes : ${esc(ensureArray(file.periods).join(", ") || file.period || "à confirmer")} · Onglets : ${esc(ensureArray(file.sheets).join(", ") || "non disponible")}</span>${ensureArray(file.periods).length ? `<div class="manager-links">${file.periods.map(p => `<label><input type="checkbox" checked onchange="toggleImportPeriod('${esc(file.id)}','${esc(p)}',this.checked)"> ${esc(p)}</label>`).join("")}</div>` : ""}${file.message ? `<span class="meta">${esc(file.message)}</span>` : ""}</div>`).join("") || `<div class="empty">Aucun fichier à identifier.</div>`}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(1)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(3)">Créer l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Identification de la source</h2>${performanceImportWizard.files.map(file => `<div class="item"><strong>${esc(file.name)}</strong><span class="muted">Type détecté : ${esc(file.typeDetected)} · Source supposée : ${esc(file.source)} · Statut : ${esc(file.status || "à confirmer")} · Confiance ${esc(file.confidence || "moyenne")}</span><span class="meta">Site retenu : ${esc(file.site || "à confirmer")}${file.siteCode ? ` (${esc(file.siteCode)})` : ""} · Périodes : ${esc(ensureArray(file.periods).join(", ") || file.period || "à confirmer")} · Onglets : ${esc(ensureArray(file.sheets).join(", ") || "non disponible")}</span>${ensureArray(file.periods).length ? `<div class="manager-links">${file.periods.map(p => `<label style="display:grid;grid-template-columns:22px minmax(90px,160px);align-items:center;gap:10px;width:max-content;margin:6px 0"><input type="checkbox" checked onchange="toggleImportPeriod('${esc(file.id)}','${esc(p)}',this.checked)"><span>${esc(p)}</span></label>`).join("")}</div>` : ""}${file.message ? `<span class="meta">${esc(file.message)}</span>` : ""}</div>`).join("") || `<div class="empty">Aucun fichier à identifier.</div>`}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(1)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(3)">Créer l'aperçu</button></div></div>`;
 }
 
 function buildPerformanceImportPreview() {
@@ -12179,7 +12179,7 @@ const CGTAB_KPI_DEFINITIONS = [
   { metricKey: "workforce.total", label: "Effectif total", category: "workforce", unit: "employees", aggregationType: "count", headers: [] },
   { metricKey: "workforce.with_presence", label: "Effectif avec présence", category: "workforce", unit: "employees", aggregationType: "count", headers: ["Nb present|Nb présent"] },
   { metricKey: "workforce.with_overtime", label: "Effectif avec heures supplémentaires", category: "workforce", unit: "employees", aggregationType: "count", headers: ["HS25", "HS50"] },
-  { metricKey: "workforce.with_night_hours", label: "Effectif avec heures de nuit", category: "workforce", unit: "employees", aggregationType: "count", headers: ["Nuit10%", "Nuit20%", "Nuit30%", "Nuit60%"] }
+  { metricKey: "workforce.with_night_hours", label: "Effectif avec heures de nuit", category: "workforce", unit: "employees", aggregationType: "count", headers: ["Nuit10%|Nuit10%25%", "Nuit20%|Nuit28%", "Nuit30%", "Nuit60%"] }
 ];
 
 function cgtabColLetter(col1Based) {
@@ -12704,6 +12704,25 @@ function cgtabResolveHeaderToken(token, headerMap) {
     const col = headerMap.get(candidate)?.[0] || 0;
     if (col) return { header: candidate, col };
   }
+
+  const normalizeHeader = value => normalizeText(String(value || ""))
+    .replace(/\s+/g, "")
+    .replace(/[.,;:_-]+/g, "")
+    .trim();
+
+  const normalizedEntries = [...headerMap.entries()].map(([header, cols]) => ({
+    header,
+    cols,
+    normalized: normalizeHeader(header)
+  }));
+
+  for (const candidate of candidates) {
+    const wanted = normalizeHeader(candidate);
+    const match = normalizedEntries.find(entry => entry.normalized === wanted);
+    const col = match?.cols?.[0] || 0;
+    if (col) return { header: match.header, col };
+  }
+
   return { header: candidates[0] || String(token || ""), col: 0 };
 }
 
