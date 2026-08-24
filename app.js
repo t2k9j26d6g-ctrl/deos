@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28G";
+const DEOS_VERSION = "V5.28H";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -13328,14 +13328,134 @@ function dedupeImportRows(rows) {
   });
 }
 
+function zGemedRowsFromXlsxSheet(sheet) {
+  if (!window.XLSX?.utils?.sheet_to_json) return [];
+  const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
+  return rows.map((row, rowIndex) => {
+    const out = ensureArray(row);
+    out.__cellRefs = out.map((_, colIndex) => window.XLSX.utils.encode_cell({ r: rowIndex, c: colIndex }));
+    return out;
+  });
+}
+
+function zGemedWorkbookFromSheetJs(workbook) {
+  const sheetNames = ensureArray(workbook?.SheetNames || []);
+  return {
+    sheets: sheetNames.map(name => ({
+      name,
+      rows: zGemedRowsFromXlsxSheet(workbook?.Sheets?.[name])
+    }))
+  };
+}
+
+function zGemedSaintGillesSheetScore(sheet = {}) {
+  const name = normalizeText(sheet?.name || "");
+  const sample = ensureArray(sheet?.rows).slice(0, 80).flat().map(value => normalizeText(value)).join(" ");
+  let score = 0;
+  if (/^st gilles$|^saint gilles$/.test(name)) score += 100;
+  else if (name.includes("st gilles") || name.includes("saint gilles")) score += 80;
+  if (sample.includes("fry8mc")) score += 60;
+  if (sample.includes("saint gilles") || sample.includes("st gilles")) score += 30;
+  return score;
+}
+
+function zGemedSelectSaintGillesSheets(workbook = {}) {
+  const sheets = ensureArray(workbook?.sheets);
+  const scored = sheets
+    .map(sheet => ({ sheet, score: zGemedSaintGillesSheetScore(sheet) }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (!scored.length) return { status: "missing", sheets: [], candidates: [] };
+
+  const bestScore = scored[0].score;
+  const best = scored.filter(item => item.score === bestScore);
+
+  // Une feuille explicitement nommÃ©e St Gilles / Saint Gilles est prioritaire.
+  const explicit = best.filter(item => /^(st|saint) gilles$/.test(normalizeText(item.sheet?.name || "")));
+  if (explicit.length === 1) {
+    return { status: "ok", sheets: [explicit[0].sheet], candidates: scored.map(item => item.sheet?.name || "") };
+  }
+  if (explicit.length > 1) {
+    return { status: "ambiguous", sheets: [], candidates: explicit.map(item => item.sheet?.name || "") };
+  }
+
+  if (best.length === 1) {
+    return { status: "ok", sheets: [best[0].sheet], candidates: scored.map(item => item.sheet?.name || "") };
+  }
+
+  return { status: "ambiguous", sheets: [], candidates: best.map(item => item.sheet?.name || "") };
+}
+
 async function analyzeZGemedFile(file, detected) {
   const ext = (detected.extension || "").toLowerCase();
+
   if (ext === "xlsb" || String(file.name || "").toLowerCase().endsWith(".xlsb")) {
-    return { ...detected, typeDetected: "Z GEMED Excel binaire", status: "probablement reconnu", confidence: "moyenne", source: "Z_GEMED", message: "Format .xlsb reconnu, mais extraction navigateur sans backend non disponible. Exporter le fichier en .xlsx ou CSV depuis Excel pour importer les valeurs." };
+    if (!window.XLSX?.read || !window.XLSX?.utils?.sheet_to_json) {
+      throw new Error("BibliothÃ¨que XLSX indisponible pour lire le classeur Z GEMED .xlsb.");
+    }
+
+    const buffer = await readFileArrayBuffer(file);
+    const rawWorkbook = window.XLSX.read(buffer, {
+      type: "array",
+      cellFormula: false,
+      cellText: false,
+      raw: true
+    });
+    const parsedWorkbook = zGemedWorkbookFromSheetJs(rawWorkbook);
+    const scoped = zGemedSelectSaintGillesSheets(parsedWorkbook);
+
+    if (scoped.status === "missing") {
+      return {
+        ...detected,
+        typeDetected: "Z GEMED Excel binaire",
+        source: "Z_GEMED",
+        sourceType: "Z GEMED XLSB",
+        status: "non reconnu",
+        confidence: "faible",
+        site: "",
+        sheets: ensureArray(parsedWorkbook.sheets).map(sheet => sheet.name || ""),
+        detectedIndicators: [],
+        message: "Import bloquÃ© : aucune feuille/zone Saint-Gilles ou FRY8MC dÃ©tectÃ©e dans le Z GEMED multi-sites."
+      };
+    }
+
+    if (scoped.status === "ambiguous") {
+      return {
+        ...detected,
+        typeDetected: "Z GEMED Excel binaire",
+        source: "Z_GEMED",
+        sourceType: "Z GEMED XLSB",
+        status: "Ã  confirmer",
+        confidence: "faible",
+        site: "",
+        sheets: scoped.candidates,
+        detectedIndicators: [],
+        message: `Import bloquÃ© : plusieurs feuilles candidates Saint-Gilles dÃ©tectÃ©es (${scoped.candidates.join(", ")}).`
+      };
+    }
+
+    const result = analyzeZGemedWorkbook(
+      { sheets: scoped.sheets },
+      { ...detected, site: "Saint-Gilles" },
+      "XLSB"
+    );
+
+    return {
+      ...result,
+      typeDetected: "Z GEMED Excel binaire",
+      source: "Z_GEMED",
+      sourceType: "Z GEMED XLSB",
+      site: "Saint-Gilles",
+      scope: "FRY8MC",
+      sheets: scoped.sheets.map(sheet => sheet.name || ""),
+      message: `${result.detectedIndicators?.length || 0} indicateur(s) extrait(s) du Z GEMED multi-sites aprÃ¨s isolement strict Saint-Gilles / FRY8MC. Feuille retenue : ${scoped.sheets.map(sheet => sheet.name || "").join(", ")}.`
+    };
   }
+
   if (ext === "csv") return analyzeZGemedWorkbook({ sheets: [{ name: "CSV", rows: parseCsvText(await readFileText(file)) }] }, detected, "CSV");
   if (ext === "xlsx" || ext === "xlsm") return analyzeZGemedWorkbook(await readXlsxRows(file), detected, "Excel");
-  return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supporté pour l'extraction locale. Utiliser .xlsx ou .csv." };
+  return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supportÃ© pour l'extraction locale. Utiliser .xlsb, .xlsx ou .csv." };
 }
 
 function readFileText(file) {

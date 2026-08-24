@@ -1,0 +1,22 @@
+DEOS V5.28H - Z GEMED XLSB multi-sites
+
+But
+- Lire directement le vrai fichier mensuel Z GEMED .xlsb sans export préalable.
+- Isoler strictement Saint-Gilles / FRY8MC avant toute extraction de KPI.
+
+Constats sur le fichier de référence Z GEMED_2026 (2).xlsb
+- Classeur multi-sites volumineux.
+- Une feuille explicite 'St Gilles' est présente dans le classeur.
+- Le code FRY8MC est également présent dans le contenu du classeur.
+- Le connecteur précédent bloquait volontairement les .xlsb avant même de tenter la lecture.
+
+Comportement V5.28H
+1. Lecture XLSB via la bibliothèque XLSX déjà utilisée par les connecteurs CGTAB/T-Bag.
+2. Conversion des feuilles en tableaux de lignes.
+3. Scoring des feuilles candidates Saint-Gilles :
+   - nom exact 'St Gilles' / 'Saint Gilles' prioritaire ;
+   - présence FRY8MC ou Saint-Gilles dans le contenu en secours.
+4. Blocage de l'import si aucune cible Saint-Gilles n'est trouvée.
+5. Blocage si plusieurs cibles de même priorité sont ambiguës.
+6. Une fois la feuille isolée, réutilisation du moteur Z GEMED existant pour périodes/KPI/mapping.
+7. Scope déclaré FRY8MC / Saint-Gilles.
