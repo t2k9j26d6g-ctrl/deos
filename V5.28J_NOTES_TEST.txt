@@ -1,0 +1,17 @@
+DEOS V5.28J - GPO régional multi-sites
+
+Fichier de référence analysé :
+- Guide de la Performance Opérationnelle Supply Chain - Région Sud Est - Juillet 2026
+- 169 pages
+- La section '11 Entrepôt SAINT GILLES' débute page 149.
+
+Objectif :
+- Importer directement le GPO régional reçu chaque mois.
+- Isoler Saint-Gilles / FRY8MC automatiquement.
+- Bloquer si la section Saint-Gilles n'est pas détectée.
+- Conserver la compatibilité avec les anciens PDF Saint-Gilles courts.
+
+Test :
+- Site Saint-Gilles / FRY8MC
+- Période 07/2026
+- KPI GPO extraits uniquement depuis la section Saint-Gilles.

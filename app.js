@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28I";
+const DEOS_VERSION = "V5.28J";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -11532,68 +11532,97 @@ async function analyzePerformanceImportFile(file, sourceKey) {
   }
 }
 
+function gpoIsSiteSectionPage(page = {}) {
+  return /\b(?:entrep[oÃ´]t|site)\s+(?:de\s+)?[A-ZÃ€-Ã–Ã˜-Ã][A-ZÃ€-Ã–Ã˜-Ã0-9 '\-]+/i.test(String(page.text || ""));
+}
+
+function gpoIsSaintGillesSectionPage(page = {}) {
+  return /\b(?:entrep[oÃ´]t|site)\s+(?:de\s+)?(?:SAINT|ST)[\s\-]*GILLES\b/i.test(String(page.text || ""));
+}
+
+function gpoScopeSaintGillesPages(pages = []) {
+  const allPages = ensureArray(pages);
+  const startIndex = allPages.findIndex(gpoIsSaintGillesSectionPage);
+
+  if (startIndex >= 0) {
+    let endIndex = allPages.length;
+    for (let i = startIndex + 1; i < allPages.length; i++) {
+      if (gpoIsSiteSectionPage(allPages[i]) && !gpoIsSaintGillesSectionPage(allPages[i])) {
+        endIndex = i;
+        break;
+      }
+    }
+    return {
+      status: "ok",
+      pages: allPages.slice(startIndex, endIndex),
+      startPage: allPages[startIndex]?.page || "",
+      endPage: allPages[endIndex - 1]?.page || allPages[startIndex]?.page || "",
+      mode: "regional-section"
+    };
+  }
+
+  const fullText = allPages.map(page => page.text || "").join("\n");
+  if (/\b(?:SAINT|ST)[\s\-]*GILLES\b/i.test(fullText) && allPages.length <= 40) {
+    return {
+      status: "ok",
+      pages: allPages,
+      startPage: allPages[0]?.page || 1,
+      endPage: allPages[allPages.length - 1]?.page || allPages.length,
+      mode: "single-site"
+    };
+  }
+
+  return { status: "missing", pages: [], startPage: "", endPage: "", mode: "blocked" };
+}
+
 async function analyzeGpoPdfFile(file, detected) {
-  if ((detected.extension || "").toLowerCase() !== "pdf") return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supporté pour GPO PDF." };
+  if ((detected.extension || "").toLowerCase() !== "pdf") {
+    return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supportÃ© pour GPO PDF." };
+  }
+
   const pages = await readPdfPages(file);
-  const allText = pages.map(p => `${p.text || ""}\n${p.rawText || ""}`).join("\n");
-  const markers = ["Entrepôt SAINT GILLES", "Région SUD EST", "Passage IPO total", "Passage IPO Variable", "Mensu IPO", "Performance mensuelle", "Evolution HEURES", "Absentéisme", "Heures majorées", "Gains & Pertes", "HAUTEUR PALETTE"];
-  const hitCount = markers.filter(m => normalizeText(allText).includes(normalizeText(m))).length;
+  const allText = pages.map(p => p.text).join("\n");
   const detectedPeriod = detectGpoPeriod(allText, file.name);
   const period = detectedPeriod || IMPORT_PERIOD_PENDING;
-  const site = /saint\s+gilles|st\s+gilles/i.test(allText) ? "Saint-Gilles" : "";
-  const saintGillesStart = pages.findIndex(p => /Entrepôt\s+SAINT\s+GILLES|Entrepot\s+SAINT\s+GILLES/i.test(p.text));
-  const scopedPages = saintGillesStart >= 0 ? pages.slice(saintGillesStart) : pages.filter(p => /ST\s+GILLES|SAINT\s+GILLES/i.test(p.text));
-  const indicators = extractGpoIndicators(scopedPages.length ? scopedPages : pages, period);
+  const scoped = gpoScopeSaintGillesPages(pages);
+
+  if (scoped.status !== "ok" || !scoped.pages.length) {
+    return {
+      ...detected,
+      source: "GPO PDF",
+      sourceType: "GPO PDF",
+      status: "non reconnu",
+      confidence: "faible",
+      site: "",
+      period,
+      periods: [period],
+      selectedPeriods: [period],
+      sheets: [],
+      detectedIndicators: [],
+      message: "Import bloquÃ© : section Saint-Gilles non dÃ©tectÃ©e de maniÃ¨re fiable dans le GPO."
+    };
+  }
+
+  const scopedText = scoped.pages.map(p => p.text).join("\n");
+  const markers = ["Passage IPO total","Passage IPO Variable","Mensu IPO","Performance mensuelle","Evolution HEURES","AbsentÃ©isme","Gains & Pertes","HAUTEUR PALETTE"];
+  const hitCount = markers.filter(marker => normalizeText(scopedText).includes(normalizeText(marker))).length;
+  const indicators = extractGpoIndicators(scoped.pages, period);
+
   return {
     ...detected,
     source: "GPO PDF",
-    sourceType: "GPO PDF",
-    status: hitCount >= 7 ? "reconnu" : hitCount >= 3 ? "probablement reconnu" : "non reconnu",
-    confidence: hitCount >= 7 ? "élevée" : hitCount >= 3 ? "moyenne" : "faible",
-    site,
-    siteCode: site ? PERFORMANCE_IMPORT_SITE.code : "",
-    detectedSiteCodes: site ? [PERFORMANCE_IMPORT_SITE.code] : [],
+    sourceType: "GPO PDF rÃ©gional",
+    status: hitCount >= 4 && indicators.length ? "reconnu" : indicators.length ? "probablement reconnu" : "non reconnu",
+    confidence: hitCount >= 4 && indicators.length ? "Ã©levÃ©e" : indicators.length ? "moyenne" : "faible",
+    site: "Saint-Gilles",
+    scope: "FRY8MC",
     period,
     periods: [period],
     selectedPeriods: [period],
-    sheets: pages.map(p => `page ${p.page}`).slice(0, 5),
+    sheets: scoped.pages.map(p => `page ${p.page}`).slice(0, 6),
     detectedIndicators: indicators,
-    message: `GPO reconnu · ${pages.length} page(s) · ${hitCount}/${markers.length} repères · ${indicators.length} KPI extrait(s) · lecture brute + visuelle · site ${site || "à confirmer"}${site ? ` (${PERFORMANCE_IMPORT_SITE.code})` : ""}.`
+    message: `${indicators.length} KPI GPO extrait(s) aprÃ¨s isolement strict Saint-Gilles / FRY8MC Â· pages ${scoped.startPage} Ã  ${scoped.endPage} sur ${pages.length} page(s).`
   };
-}
-
-function pdfLayoutTextFromItems(items = []) {
-  const positioned = ensureArray(items).map((item, index) => ({
-    text: String(item?.str || "").trim(),
-    x: Number(item?.transform?.[4] || 0),
-    y: Number(item?.transform?.[5] || 0),
-    index
-  })).filter(item => item.text);
-  if (!positioned.length) return "";
-
-  // Les GPO sont des pages très graphiques. L'ordre natif de getTextContent()
-  // suit souvent l'ordre interne du PDF et non l'ordre visuel. On reconstruit
-  // donc des lignes par coordonnée Y, puis on trie de gauche à droite.
-  const lines = [];
-  const yTolerance = 2.8;
-  positioned.sort((a, b) => (b.y - a.y) || (a.x - b.x) || (a.index - b.index));
-  positioned.forEach(item => {
-    let line = lines.find(candidate => Math.abs(candidate.y - item.y) <= yTolerance);
-    if (!line) {
-      line = { y: item.y, items: [] };
-      lines.push(line);
-    }
-    line.items.push(item);
-  });
-  lines.sort((a, b) => b.y - a.y);
-  return lines.map(line => line.items
-    .sort((a, b) => (a.x - b.x) || (a.index - b.index))
-    .map(item => item.text)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim())
-    .filter(Boolean)
-    .join("\n");
 }
 
 async function readPdfPages(file) {
