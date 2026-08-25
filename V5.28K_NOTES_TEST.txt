@@ -1,0 +1,8 @@
+DEOS V5.28K - Hotfix SyntaxError GPO
+
+Cause : expression régulière Unicode de V5.28J corrompue à l'écriture, provoquant un Range out of order in character class.
+
+Correction :
+- Regex GPO basées sur normalizeText().
+- Regex ensuite 100 % ASCII.
+- Aucun changement de logique métier.

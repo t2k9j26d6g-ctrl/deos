@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28J";
+const DEOS_VERSION = "V5.28K";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -11533,11 +11533,14 @@ async function analyzePerformanceImportFile(file, sourceKey) {
 }
 
 function gpoIsSiteSectionPage(page = {}) {
-  return /\b(?:entrep[oÃ´]t|site)\s+(?:de\s+)?[A-ZÃ€-Ã–Ã˜-Ã][A-ZÃ€-Ã–Ã˜-Ã0-9 '\-]+/i.test(String(page.text || ""));
+  const text = normalizeText(String(page.text || ""));
+  return /(?:^|\s)\d{1,2}\s+(?:entrepot|site)\s+(?:de\s+)?[a-z0-9][a-z0-9 '\-]+/i.test(text);
 }
 
 function gpoIsSaintGillesSectionPage(page = {}) {
-  return /\b(?:entrep[oÃ´]t|site)\s+(?:de\s+)?(?:SAINT|ST)[\s\-]*GILLES\b/i.test(String(page.text || ""));
+  const text = normalizeText(String(page.text || ""));
+  return /(?:^|\s)\d{1,2}\s+(?:entrepot|site)\s+(?:de\s+)?(?:saint|st)[\s\-]*gilles\b/i.test(text)
+    || /\b(?:entrepot|site)\s+(?:de\s+)?(?:saint|st)[\s\-]*gilles\b/i.test(text);
 }
 
 function gpoScopeSaintGillesPages(pages = []) {
