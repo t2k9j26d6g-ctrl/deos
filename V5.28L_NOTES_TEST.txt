@@ -1,0 +1,13 @@
+DEOS V5.28L - Hotfix GPO PDF helper
+
+Symptôme :
+Analyse GPO PDF impossible : pdfLayoutTextFromItems is not defined.
+
+Cause :
+Le patch V5.28J a remplacé une zone de code trop large et a supprimé le helper
+pdfLayoutTextFromItems, alors que readPdfPages continue à l'appeler.
+
+Correction :
+- Restauration EXACTE du helper depuis app.js.v528i_before_v528j.bak.
+- Pas de nouvelle implémentation inventée.
+- La logique métier V5.28J/V5.28K d'isolement Saint-Gilles reste inchangée.

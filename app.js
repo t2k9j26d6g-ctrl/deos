@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28K";
+const DEOS_VERSION = "V5.28L";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -11626,6 +11626,40 @@ async function analyzeGpoPdfFile(file, detected) {
     detectedIndicators: indicators,
     message: `${indicators.length} KPI GPO extrait(s) aprÃ¨s isolement strict Saint-Gilles / FRY8MC Â· pages ${scoped.startPage} Ã  ${scoped.endPage} sur ${pages.length} page(s).`
   };
+}
+
+function pdfLayoutTextFromItems(items = []) {
+  const positioned = ensureArray(items).map((item, index) => ({
+    text: String(item?.str || "").trim(),
+    x: Number(item?.transform?.[4] || 0),
+    y: Number(item?.transform?.[5] || 0),
+    index
+  })).filter(item => item.text);
+  if (!positioned.length) return "";
+
+  // Les GPO sont des pages très graphiques. L'ordre natif de getTextContent()
+  // suit souvent l'ordre interne du PDF et non l'ordre visuel. On reconstruit
+  // donc des lignes par coordonnée Y, puis on trie de gauche à droite.
+  const lines = [];
+  const yTolerance = 2.8;
+  positioned.sort((a, b) => (b.y - a.y) || (a.x - b.x) || (a.index - b.index));
+  positioned.forEach(item => {
+    let line = lines.find(candidate => Math.abs(candidate.y - item.y) <= yTolerance);
+    if (!line) {
+      line = { y: item.y, items: [] };
+      lines.push(line);
+    }
+    line.items.push(item);
+  });
+  lines.sort((a, b) => b.y - a.y);
+  return lines.map(line => line.items
+    .sort((a, b) => (a.x - b.x) || (a.index - b.index))
+    .map(item => item.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim())
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function readPdfPages(file) {
