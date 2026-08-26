@@ -9509,12 +9509,12 @@ function enforcePerformanceSourceAuthority(row = {}) {
   return {
     ...row,
     destinationPath: analyticalPath,
-    destinationLabel: `${row.destinationLabel || row.indicator} â€” analytique ${performanceSourceLabel(authority.source)}`,
+    destinationLabel: `${row.destinationLabel || row.indicator} — analytique ${performanceSourceLabel(authority.source)}`,
     destinationId: analyticalPath,
     targetId: analyticalPath,
     targetType: "complementary",
     scope: row.scope || "analysisOnly",
-    confidence: row.confidence === "Ã©levÃ©e" ? "moyenne" : (row.confidence || "moyenne"),
+    confidence: row.confidence === "élevée" ? "moyenne" : (row.confidence || "moyenne"),
     sourceAuthority: "secondary",
     officialSource: authority.officialSource,
     authorityReason: `Source secondaire : ${performanceSourceLabel(authority.source)}. Source officielle : ${performanceSourceLabel(authority.officialSource)}.`
@@ -11580,7 +11580,7 @@ function gpoScopeSaintGillesPages(pages = []) {
 
 async function analyzeGpoPdfFile(file, detected) {
   if ((detected.extension || "").toLowerCase() !== "pdf") {
-    return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supportÃ© pour GPO PDF." };
+    return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supporté pour GPO PDF." };
   }
 
   const pages = await readPdfPages(file);
@@ -11602,21 +11602,21 @@ async function analyzeGpoPdfFile(file, detected) {
       selectedPeriods: [period],
       sheets: [],
       detectedIndicators: [],
-      message: "Import bloquÃ© : section Saint-Gilles non dÃ©tectÃ©e de maniÃ¨re fiable dans le GPO."
+      message: "Import bloquà© : section Saint-Gilles non dà©tectà©e de manià¨re fiable dans le GPO."
     };
   }
 
   const scopedText = scoped.pages.map(p => p.text).join("\n");
-  const markers = ["Passage IPO total","Passage IPO Variable","Mensu IPO","Performance mensuelle","Evolution HEURES","AbsentÃ©isme","Gains & Pertes","HAUTEUR PALETTE"];
+  const markers = ["Passage IPO total","Passage IPO Variable","Mensu IPO","Performance mensuelle","Evolution HEURES","Absentéisme","Gains & Pertes","HAUTEUR PALETTE"];
   const hitCount = markers.filter(marker => normalizeText(scopedText).includes(normalizeText(marker))).length;
   const indicators = extractGpoIndicators(scoped.pages, period);
 
   return {
     ...detected,
     source: "GPO PDF",
-    sourceType: "GPO PDF rÃ©gional",
+    sourceType: "GPO PDF régional",
     status: hitCount >= 4 && indicators.length ? "reconnu" : indicators.length ? "probablement reconnu" : "non reconnu",
-    confidence: hitCount >= 4 && indicators.length ? "Ã©levÃ©e" : indicators.length ? "moyenne" : "faible",
+    confidence: hitCount >= 4 && indicators.length ? "élevée" : indicators.length ? "moyenne" : "faible",
     site: "Saint-Gilles",
     scope: "FRY8MC",
     period,
@@ -11624,7 +11624,7 @@ async function analyzeGpoPdfFile(file, detected) {
     selectedPeriods: [period],
     sheets: scoped.pages.map(p => `page ${p.page}`).slice(0, 6),
     detectedIndicators: indicators,
-    message: `${indicators.length} KPI GPO extrait(s) aprÃ¨s isolement strict Saint-Gilles / FRY8MC Â· pages ${scoped.startPage} Ã  ${scoped.endPage} sur ${pages.length} page(s).`
+    message: `${indicators.length} KPI GPO extrait(s) après isolement strict Saint-Gilles / FRY8MC · pages ${scoped.startPage} à ${scoped.endPage} sur ${pages.length} page(s).`
   };
 }
 
@@ -11676,7 +11676,13 @@ async function readPdfPages(file) {
     const content = await page.getTextContent();
     const rawText = content.items.map(item => item.str || "").join(" ");
     const layoutText = pdfLayoutTextFromItems(content.items);
-    pages.push({ page: pageNo, text: `${rawText}\n${layoutText}`.trim() || rawText, rawText, layoutText });
+   pages.push({
+  page: pageNo,
+  text: `${rawText}\n${layoutText}`.trim() || rawText,
+  rawText,
+  layoutText,
+  items: content.items
+});
   }
   return pages;
 }
@@ -11767,10 +11773,26 @@ function extractGpoIndicators(pages, period) {
     if (/Passage IPO total/i.test(text)) pushMetric(page, "ipo_total", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+total", 240)), "élevée");
     if (/Passage IPO Variable/i.test(text)) pushMetric(page, "ipo_variable", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+Variable", 240)), "élevée");
     if (/Performance mensuelle/i.test(text)) {
-      pushMetric(page, "productivity_preparation", extractGpoTripleAround(extractGpoSection(text, "PRÉPARATION|PREPARATION", 180), "PRÉPARATION|PREPARATION", { preferDecimal: true }), "moyenne");
-      pushMetric(page, "productivity_reception", extractGpoTripleAround(extractGpoSection(text, "RÉCEPTION|RECEPTION", 180), "RÉCEPTION|RECEPTION", { preferDecimal: true }), "moyenne");
-      pushMetric(page, "productivity_manutention", extractGpoTripleAround(extractGpoSection(text, "MANUTENTION", 180), "MANUTENTION", { preferDecimal: true }), "moyenne");
-      pushMetric(page, "productivity_chargement", extractGpoTripleAround(extractGpoSection(text, "CHARGEMENT", 180), "CHARGEMENT", { preferDecimal: true }), "moyenne");
+      pushMetric(page, "productivity_preparation",
+  extractGpoTripleAround(text, "PRÉPARATION|PREPARATION", { preferDecimal: true }),
+  "moyenne"
+);
+
+pushMetric(page, "productivity_reception",
+  extractGpoTripleAround(text, "RÉCEPTION|RECEPTION", { preferDecimal: true }),
+  "moyenne"
+);
+
+pushMetric(page, "productivity_manutention",
+  extractGpoTripleAround(text, "MANUTENTION", { preferDecimal: true }),
+  "moyenne"
+);
+
+pushMetric(page, "productivity_chargement",
+  extractGpoTripleAround(text, "CHARGEMENT", { preferDecimal: true }),
+  "moyenne"
+);
+      
       if (/TRANSIT|TRANSPORT/i.test(text)) pushMetric(page, "productivity_transit", extractGpoTripleAround(extractGpoSection(text, "TRANSIT|TRANSPORT", 180), "TRANSIT|TRANSPORT", { preferDecimal: true }), "faible");
     }
     if (/Evolution HEURES/i.test(text)) {
@@ -11784,12 +11806,15 @@ function extractGpoIndicators(pages, period) {
       if (pct !== "") pushMetric(page, "hours_indirect_share", { actual: pct, budget: null, historical: null }, "faible");
     }
     if (/TAUX\s+D.?ABSENCE|Absentéisme|Absenteisme/i.test(text)) {
-      pushMetric(page, "absenteeism_total", extractGpoAbsTotal(text), "moyenne");
-      pushMetric(page, "absenteeism_maladie", extractGpoAbsDetail(text, "MALADIE"), "faible");
-      pushMetric(page, "absenteeism_accident_travail", extractGpoAbsDetail(text, "ACCIDENT(?:S)?\s+DU\s+TRAVAIL|AT"), "faible");
-      pushMetric(page, "absenteeism_formation", extractGpoAbsDetail(text, "FORMATION"), "faible");
-      pushMetric(page, "absenteeism_conges", extractGpoAbsDetail(text, "CONGE|CONGÉ"), "faible");
-      pushMetric(page, "absenteeism_autres", extractGpoAbsDetail(text, "AUTRES?"), "faible");
+      
+      const abs = extractGpoAbsValues(page);
+
+pushMetric(page, "absenteeism_total", abs.total, "moyenne");
+pushMetric(page, "absenteeism_maladie", abs.maladie, "moyenne");
+pushMetric(page, "absenteeism_accident_travail", abs.accident, "moyenne");
+pushMetric(page, "absenteeism_formation", abs.formation, "moyenne");
+pushMetric(page, "absenteeism_conges", abs.conges, "moyenne");
+pushMetric(page, "absenteeism_autres", abs.autres, "moyenne");
     }
     if (/Heures majorées|Heures majorees/i.test(text)) {
       const major = extractGpoMajorHours(text);
@@ -11799,7 +11824,8 @@ function extractGpoIndicators(pages, period) {
     }
     if (/Gains\s*&\s*Pertes|G&P/i.test(text)) rows.push({ id: newId("preview"), period, indicator: "Total Gains & Pertes", label: "Total Gains & Pertes", metricKey: "quality.total_gains_pertes", category: "Qualité", actual: extractGpoGpValues(text).actual, value: extractGpoGpValues(text).actual, budget: extractGpoGpValues(text).budget ?? null, historical: extractGpoGpValues(text).historical ?? null, unit: "k€", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "quality.indicators.Total Gains & Pertes.actual", destinationLabel: "Total Gains & Pertes", confidence: "moyenne", selected: true, action: "" });
     if (/HAUTEUR PALETTE|Hauteur Palette/i.test(text)) {
-      const values = extractGpoPalletValues(text);
+      
+      const values = extractGpoPalletValues(page);
       if (values.actual !== "") rows.push({ id: newId("preview"), period, indicator: "Hauteur Palette", label: "Hauteur palette", metricKey: "pallet.height", category: "Hauteur palette", actual: values.actual, value: values.actual, budget: values.budget ?? null, historical: values.historical ?? null, objective: values.objective ?? null, unit: "", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "palletHeight.actual", destinationLabel: "Hauteur palette", confidence: "faible", selected: true, action: "" });
     }
   });
@@ -11908,25 +11934,206 @@ function extractGpoAbsTotal(text) {
   return { historical: nums[0] ?? "", budget: nums[1] ?? "", actual: nums[2] ?? "" };
 }
 
-function extractGpoGpValues(text) {
-  // La page Gains & Pertes place les valeurs au-dessus des libellés G&P H/B/R.
-  // On préfère donc le nombre précédent et on conserve un fallback arrière.
-  const around = regex => {
-    const before = matchNumberBefore(text, regex);
-    return before !== "" ? before : matchNumberAfter(text, regex);
+
+function extractGpoAbsValues(page) {
+  const text = String(page?.text || "");
+
+  const empty = {
+    total: { historical: "", budget: "", actual: "" },
+    maladie: { historical: "", budget: "", actual: "" },
+    accident: { historical: "", budget: "", actual: "" },
+    formation: { historical: "", budget: "", actual: "" },
+    conges: { historical: "", budget: "", actual: "" },
+    autres: { historical: "", budget: "", actual: "" }
   };
-  const h = around(/G&P\s*H/i);
-  const b = around(/G&P\s*B/i);
-  const r = around(/G&P\s*R/i);
-  return { historical: h, budget: b, actual: r };
+
+  const items = ensureArray(page?.items)
+    .map(item => ({
+      text: String(item?.str || "").trim(),
+      x: Number(item?.transform?.[4] || 0),
+      y: Number(item?.transform?.[5] || 0)
+    }))
+    .filter(item => item.text);
+
+  if (!items.length) return empty;
+
+  const norm = value => normalizeText(String(value || ""));
+
+  const findLabel = patterns =>
+    items.find(item =>
+      patterns.some(pattern => norm(item.text).includes(norm(pattern)))
+    );
+
+  const labels = {
+    conges: findLabel(["CP"]),
+    maladie: findLabel(["Maladie"]),
+    accident: findLabel(["AT"]),
+    formation: findLabel(["Formation"]),
+    autres: findLabel(["Autres"])
+  };
+
+  const existingLabels = Object.values(labels).filter(Boolean);
+  if (existingLabels.length < 4) return empty;
+
+  const labelY =
+    existingLabels.reduce((sum, item) => sum + item.y, 0) /
+    existingLabels.length;
+
+  const percentItems = items.flatMap(item => {
+    const matches = [...item.text.matchAll(/(-?\d+(?:[.,]\d+)?)\s*%/g)];
+
+    return matches.map(match => ({
+      value: Number(match[1].replace(",", ".")),
+      x: item.x,
+      y: item.y
+    }));
+  }).filter(item =>
+    Number.isFinite(item.value) &&
+    item.y > labelY + 3 &&
+    item.y < labelY + 130
+  );
+
+  const extractForLabel = label => {
+    if (!label) {
+      return { historical: "", budget: "", actual: "" };
+    }
+
+    const values = percentItems
+      .filter(candidate => Math.abs(candidate.x - label.x) < 45)
+      .sort((a, b) => a.x - b.x);
+
+    if (values.length < 3) {
+      return { historical: "", budget: "", actual: "" };
+    }
+
+    return {
+      historical: values[0].value,
+      budget: values[1].value,
+      actual: values[2].value
+    };
+  };
+
+  empty.conges = extractForLabel(labels.conges);
+  empty.maladie = extractForLabel(labels.maladie);
+  empty.accident = extractForLabel(labels.accident);
+  empty.formation = extractForLabel(labels.formation);
+  empty.autres = extractForLabel(labels.autres);
+
+  // Total absentéisme : la ligne H / B / R est textuellement fiable.
+  const totalMatch = text.match(
+    /HISTO\s+BUDGET\s+REEL([\s\S]{0,180})/i
+  );
+
+  if (totalMatch) {
+    const nums = [...totalMatch[1].matchAll(/(\d+(?:[.,]\d+)?)\s*%/g)]
+      .map(match => Number(match[1].replace(",", ".")))
+      .slice(0, 3);
+
+    if (nums.length === 3) {
+      empty.total = {
+        historical: nums[0],
+        budget: nums[1],
+        actual: nums[2]
+      };
+    }
+  }
+
+  return empty;
+}
+function extractGpoGpValues(text) {
+  const source = String(text || "");
+
+  const start = source.search(/MENSUEL/i);
+  const end = source.search(/Compteurs\s+G&P/i);
+
+  const segment =
+    start >= 0
+      ? source.slice(start, end > start ? end : source.length)
+      : source;
+
+  const values = [];
+
+  for (const match of segment.matchAll(/([+-]?\s*\d+(?:[.,]\d+)?)\s*K(?:€)?\b/gi)) {
+    const raw = match[1].replace(/\s+/g, "");
+
+    // Les composantes du pont sont signées :
+    // +98,9 K ; -44,1 K ; etc.
+    // On ne conserve que les trois totaux H / B / R.
+    if (/^[+-]/.test(raw)) continue;
+
+    const value = Number(raw.replace(",", "."));
+
+    if (Number.isFinite(value)) {
+      values.push(value);
+    }
+  }
+
+  return {
+    historical: values[0] ?? "",
+    budget: values[1] ?? "",
+    actual: values[2] ?? ""
+  };
 }
 
-function extractGpoPalletValues(text) {
+function extractGpoPalletValues(page) {
+  const text = String(page?.text || "");
+
   const objective = matchNumberAfter(text, /Objectif annuel/i);
-  const idx = text.search(/HISTO\s+BUD\s+REEL/i);
-  const segment = idx >= 0 ? text.slice(Math.max(0, idx - 160), idx) : text;
-  const nums = gpoNumbers(segment).filter(v => v !== "").slice(-3);
-  return { historical: nums[0] ?? "", budget: nums[1] ?? "", actual: nums[2] ?? "", objective };
+
+  const items = ensureArray(page?.items)
+    .map(item => ({
+      text: String(item?.str || "").trim(),
+      x: Number(item?.transform?.[4] || 0),
+      y: Number(item?.transform?.[5] || 0)
+    }))
+    .filter(item => item.text);
+
+  // Les 3 valeurs H / B / R du "Cumul à date"
+  // sont regroupées à l'extrémité droite du graphique.
+  const candidates = items
+    .map(item => {
+      const match = item.text.match(/^(\d{2,3}(?:[.,]\d+)?)$/);
+
+      if (!match) return null;
+
+      const value = Number(match[1].replace(",", "."));
+
+      return {
+        value,
+        x: item.x,
+        y: item.y
+      };
+    })
+    .filter(item =>
+      item &&
+      Number.isFinite(item.value) &&
+      item.value >= 80 &&
+      item.value <= 120 &&
+      item.x > 620 &&
+      item.y > 150 &&
+      item.y < 260
+    )
+    .sort((a, b) => a.x - b.x);
+
+  if (candidates.length < 3) {
+    return {
+      historical: "",
+      budget: "",
+      actual: "",
+      objective
+    };
+  }
+
+  // On retient les 3 valeurs les plus à droite :
+  // gauche = HISTO, milieu = BUD, droite = REEL.
+  const values = candidates.slice(-3);
+
+  return {
+    historical: values[0].value,
+    budget: values[1].value,
+    actual: values[2].value,
+    objective
+  };
 }
 
 function extractGpoIndirectPercent(text) {
@@ -12019,17 +12226,17 @@ function tbagIdentityKey(population = "", banner = "") {
   return `${pop}|${ban}`;
 }
 
-function tbagBuildRow({ period, metricKey, label, value, unit, population = "", banner = "", aggregationType = "sum", confidence = "Ã©levÃ©e", sourceSheet, sourceCell, sourceColumns, sourceFormula = "" }) {
+function tbagBuildRow({ period, metricKey, label, value, unit, population = "", banner = "", aggregationType = "sum", confidence = "élevée", sourceSheet, sourceCell, sourceColumns, sourceFormula = "" }) {
   const isTotalScope = String(population || "").trim().toUpperCase() === "TOTAL"
     && String(banner || "").trim().toUpperCase() === "TOTAL BANNIERE";
   const isNativeProductivityTotal = metricKey === "preparation.productivity.total" && isTotalScope;
   const isBannerHoursDetail = metricKey === "preparation.banner.hours";
   const destinationPath = isNativeProductivityTotal
-    ? "productivity.PrÃ©paration.actual"
+    ? "productivity.Prà©paration.actual"
     : tbagDestinationPath(metricKey, population, banner);
   const destinationLabel = isNativeProductivityTotal
-    ? "ProductivitÃ© PrÃ©paration"
-    : `${label} Â· PrÃ©paration`;
+    ? "Productività© Prà©paration"
+    : `${label} Â· Prà©paration`;
   const targetId = isNativeProductivityTotal
     ? "productivity.preparation"
     : destinationPath;
@@ -12050,7 +12257,7 @@ function tbagBuildRow({ period, metricKey, label, value, unit, population = "", 
     budget: null,
     historical: null,
     unit,
-    scope: "PrÃ©paration",
+    scope: "Prà©paration",
     population,
     banner,
     directness: banner || "",
@@ -13494,7 +13701,7 @@ function zGemedSelectSaintGillesSheets(workbook = {}) {
   const bestScore = scored[0].score;
   const best = scored.filter(item => item.score === bestScore);
 
-  // Une feuille explicitement nommÃ©e St Gilles / Saint Gilles est prioritaire.
+  // Une feuille explicitement nommà©e St Gilles / Saint Gilles est prioritaire.
   const explicit = best.filter(item => /^(st|saint) gilles$/.test(normalizeText(item.sheet?.name || "")));
   if (explicit.length === 1) {
     return { status: "ok", sheets: [explicit[0].sheet], candidates: scored.map(item => item.sheet?.name || "") };
@@ -13515,7 +13722,7 @@ async function analyzeZGemedFile(file, detected) {
 
   if (ext === "xlsb" || String(file.name || "").toLowerCase().endsWith(".xlsb")) {
     if (!window.XLSX?.read || !window.XLSX?.utils?.sheet_to_json) {
-      throw new Error("BibliothÃ¨que XLSX indisponible pour lire le classeur Z GEMED .xlsb.");
+      throw new Error("Bibliothà¨que XLSX indisponible pour lire le classeur Z GEMED .xlsb.");
     }
 
     const buffer = await readFileArrayBuffer(file);
@@ -13539,7 +13746,7 @@ async function analyzeZGemedFile(file, detected) {
         site: "",
         sheets: ensureArray(parsedWorkbook.sheets).map(sheet => sheet.name || ""),
         detectedIndicators: [],
-        message: "Import bloquÃ© : aucune feuille/zone Saint-Gilles ou FRY8MC dÃ©tectÃ©e dans le Z GEMED multi-sites."
+        message: "Import bloquà© : aucune feuille/zone Saint-Gilles ou FRY8MC dà©tectà©e dans le Z GEMED multi-sites."
       };
     }
 
@@ -13549,12 +13756,12 @@ async function analyzeZGemedFile(file, detected) {
         typeDetected: "Z GEMED Excel binaire",
         source: "Z_GEMED",
         sourceType: "Z GEMED XLSB",
-        status: "Ã  confirmer",
+        status: "à  confirmer",
         confidence: "faible",
         site: "",
         sheets: scoped.candidates,
         detectedIndicators: [],
-        message: `Import bloquÃ© : plusieurs feuilles candidates Saint-Gilles dÃ©tectÃ©es (${scoped.candidates.join(", ")}).`
+        message: `Import bloquà© : plusieurs feuilles candidates Saint-Gilles dà©tectà©es (${scoped.candidates.join(", ")}).`
       };
     }
 
@@ -13572,13 +13779,13 @@ async function analyzeZGemedFile(file, detected) {
       site: "Saint-Gilles",
       scope: "FRY8MC",
       sheets: scoped.sheets.map(sheet => sheet.name || ""),
-      message: `${result.detectedIndicators?.length || 0} indicateur(s) extrait(s) du Z GEMED multi-sites aprÃ¨s isolement strict Saint-Gilles / FRY8MC. Feuille retenue : ${scoped.sheets.map(sheet => sheet.name || "").join(", ")}.`
+      message: `${result.detectedIndicators?.length || 0} indicateur(s) extrait(s) du Z GEMED multi-sites après isolement strict Saint-Gilles / FRY8MC. Feuille retenue : ${scoped.sheets.map(sheet => sheet.name || "").join(", ")}.`
     };
   }
 
   if (ext === "csv") return analyzeZGemedWorkbook({ sheets: [{ name: "CSV", rows: parseCsvText(await readFileText(file)) }] }, detected, "CSV");
   if (ext === "xlsx" || ext === "xlsm") return analyzeZGemedWorkbook(await readXlsxRows(file), detected, "Excel");
-  return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supportÃ© pour l'extraction locale. Utiliser .xlsb, .xlsx ou .csv." };
+  return { ...detected, status: "non reconnu", confidence: "faible", message: "Format non supporté pour l'extraction locale. Utiliser .xlsb, .xlsx ou .csv." };
 }
 
 function readFileText(file) {
@@ -23812,12 +24019,12 @@ init();
 
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// V5.7 â€” ENRICHISSEMENT LOCAL DES Ã‰VÃ‰NEMENTS GOOGLE CALENDAR
+// V5.7 — ENRICHISSEMENT LOCAL DES à‰Và‰NEMENTS GOOGLE CALENDAR
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 /**
  * Initialise la structure d'enrichissements si elle n'existe pas
- * S'exÃ©cute au dÃ©marrage pour garantir une structure cohÃ©rente
+ * S'exà©cute au dà©marrage pour garantir une structure cohà©rente
  */
 function ensureExternalEventEnrichments() {
   if (!state.externalEventEnrichments) {
@@ -23833,9 +24040,9 @@ function ensureExternalEventEnrichments() {
 }
 
 /**
- * Obtient ou crÃ©e un enrichissement pour un Ã©vÃ©nement externe
- * @param {string} eventKey - ClÃ© stable de l'Ã©vÃ©nement (google_<externalId>)
- * @returns {object} Enrichissement (existant ou nouvellement crÃ©Ã©)
+ * Obtient ou crà©e un enrichissement pour un à©và©nement externe
+ * @param {string} eventKey - Clà© stable de l'à©và©nement (google_<externalId>)
+ * @returns {object} Enrichissement (existant ou nouvellement crà©à©)
  */
 function getExternalEventEnrichment(eventKey) {
   if (!state.externalEventEnrichments[eventKey] && String(eventKey || "").startsWith("google_")) {
@@ -23874,9 +24081,9 @@ function getExternalEventEnrichment(eventKey) {
 }
 
 /**
- * Sauvegarde un enrichissement dans l'Ã©tat global
- * @param {string} eventKey - ClÃ© stable de l'Ã©vÃ©nement
- * @param {object} enrichment - DonnÃ©es d'enrichissement
+ * Sauvegarde un enrichissement dans l'à©tat global
+ * @param {string} eventKey - Clà© stable de l'à©và©nement
+ * @param {object} enrichment - Donnà©es d'enrichissement
  */
 function saveExternalEventEnrichment(eventKey, enrichment) {
   const normalized = normalizeMeetingEnrichment({ eventKey, ...enrichment }, { external: true });
@@ -23887,8 +24094,8 @@ function saveExternalEventEnrichment(eventKey, enrichment) {
 }
 
 /**
- * Sauvegarde les donnÃ©es de la modale d'enrichissement
- * AppelÃ©e par le bouton "Enregistrer" de la modale
+ * Sauvegarde les donnà©es de la modale d'enrichissement
+ * Appelà©e par le bouton "Enregistrer" de la modale
  */
 function saveExternalEventEnrichmentFromModal(eventKey) {
   if (!eventKey) return false;
@@ -23920,11 +24127,11 @@ function saveExternalEventEnrichmentFromModal(eventKey) {
 }
 
 /**
- * Ajoute un sujet Ã  traiter pour un Ã©vÃ©nement externe
+ * Ajoute un sujet à  traiter pour un à©và©nement externe
  */
 function addExternalEventSubject(eventKey) {
   const enrichment = getExternalEventEnrichment(eventKey);
-  const subjectText = prompt("Ajouter un sujet Ã  traiter:");
+  const subjectText = prompt("Ajouter un sujet à  traiter:");
   
   if (subjectText && subjectText.trim()) {
     const newSubject = {
@@ -23943,7 +24150,7 @@ function addExternalEventSubject(eventKey) {
 }
 
 /**
- * Met Ã  jour un sujet existant
+ * Met à  jour un sujet existant
  */
 function updateExternalEventSubject(eventKey, subjectId, title, notes, completed) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24013,7 +24220,7 @@ function deleteExternalEventLink(eventKey, linkId) {
 }
 
 /**
- * Lie une action existante Ã  un Ã©vÃ©nement externe
+ * Lie une action existante à  un à©và©nement externe
  */
 function linkActionToExternalEvent(eventKey, actionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24022,7 +24229,7 @@ function linkActionToExternalEvent(eventKey, actionId) {
   if (!action) return;
   if (!enrichment.linkedActionIds) enrichment.linkedActionIds = [];
   
-  // Ã‰viter les doublons
+  // à‰viter les doublons
   if (enrichment.linkedActionIds.includes(actionId)) return;
   
   enrichment.linkedActionIds.push(actionId);
@@ -24031,7 +24238,7 @@ function linkActionToExternalEvent(eventKey, actionId) {
 }
 
 /**
- * DÃ©tache une action d'un Ã©vÃ©nement externe (sans supprimer l'action)
+ * Dà©tache une action d'un à©và©nement externe (sans supprimer l'action)
  */
 function unlinkActionFromExternalEvent(eventKey, actionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24046,13 +24253,13 @@ function unlinkActionFromExternalEvent(eventKey, actionId) {
 }
 
 /**
- * CrÃ©e une nouvelle action DEOS liÃ©e Ã  un Ã©vÃ©nement externe
+ * Crà©e une nouvelle action DEOS lià©e à  un à©và©nement externe
  */
 function createActionFromExternalEvent(eventKey, eventTitle) {
   const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
   if (!ev) return;
   
-  const actionTitle = prompt("Titre de la nouvelle action:", `Ã€ propos de: ${eventTitle}`);
+  const actionTitle = prompt("Titre de la nouvelle action:", `à€ propos de: ${eventTitle}`);
   if (!actionTitle || !actionTitle.trim()) return;
 
   try {
@@ -24075,7 +24282,7 @@ function createActionFromExternalEvent(eventKey, eventTitle) {
 }
 
 /**
- * Lie une dÃ©cision existante Ã  un Ã©vÃ©nement externe
+ * Lie une dà©cision existante à  un à©và©nement externe
  */
 function linkDecisionToExternalEvent(eventKey, decisionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24084,7 +24291,7 @@ function linkDecisionToExternalEvent(eventKey, decisionId) {
   if (!decision) return;
   if (!enrichment.linkedDecisionIds) enrichment.linkedDecisionIds = [];
   
-  // Ã‰viter les doublons
+  // à‰viter les doublons
   if (enrichment.linkedDecisionIds.includes(decisionId)) return;
   
   enrichment.linkedDecisionIds.push(decisionId);
@@ -24093,7 +24300,7 @@ function linkDecisionToExternalEvent(eventKey, decisionId) {
 }
 
 /**
- * DÃ©tache une dÃ©cision d'un Ã©vÃ©nement externe (sans supprimer la dÃ©cision)
+ * Dà©tache une dà©cision d'un à©và©nement externe (sans supprimer la dà©cision)
  */
 function unlinkDecisionFromExternalEvent(eventKey, decisionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24108,7 +24315,7 @@ function unlinkDecisionFromExternalEvent(eventKey, decisionId) {
 }
 
 /**
- * CrÃ©e une nouvelle dÃ©cision DEOS liÃ©e Ã  un Ã©vÃ©nement externe
+ * Crà©e une nouvelle dà©cision DEOS lià©e à  un à©và©nement externe
  */
 
 /**
@@ -24222,7 +24429,7 @@ function createDecisionFromExternalEvent(eventKey, eventTitle) {
   const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
   if (!ev) return;
   
-  const decisionTitle = prompt("Titre de la nouvelle dÃ©cision:", `Ã€ propos de: ${eventTitle}`);
+  const decisionTitle = prompt("Titre de la nouvelle dà©cision:", `à€ propos de: ${eventTitle}`);
   if (!decisionTitle || !decisionTitle.trim()) return;
 
   try {
@@ -24246,8 +24453,8 @@ function createDecisionFromExternalEvent(eventKey, eventTitle) {
 }
 
 /**
- * Marque un Ã©vÃ©nement comme source indisponible
- * AppelÃ©e automatiquement lors d'une sync si l'Ã©vÃ©nement Google est supprimÃ©
+ * Marque un à©và©nement comme source indisponible
+ * Appelà©e automatiquement lors d'une sync si l'à©và©nement Google est supprimà©
  */
 function markExternalEventSourceMissing(eventKey, missing = true) {
   const enrichment = getExternalEventEnrichment(eventKey);
