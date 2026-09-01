@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.28L";
+const DEOS_VERSION = "V5.29C";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -1645,8 +1645,8 @@ function normalizeEntity(name, item) {
   const base = { ...item, id: item.id || newId(name) };
   if (name === "managers") {
     const template = defaults.managers.find(m => m.id === base.id) || {};
-    const merged = { priority: "", lastInterview: "", nextMeeting: "", objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedProjects: [], linkedDecisions: [], linkedFolders: [], events: [], directorNotes: [], ...template, ...base };
-    return { ...merged, objectives: ensureArray(merged.objectives), strengths: ensureArray(merged.strengths), watchPoints: ensureArray(merged.watchPoints), actions: ensureArray(merged.actions), linkedActions: ensureArray(merged.linkedActions), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events), directorNotes: ensureNotes(merged.directorNotes) };
+    const merged = { priority: "", lastInterview: "", nextMeeting: "", objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedProjects: [], linkedDecisions: [], linkedFolders: [], events: [], directorNotes: [], managementRequests: [], ...template, ...base };
+    return { ...merged, objectives: ensureArray(merged.objectives), strengths: ensureArray(merged.strengths), watchPoints: ensureArray(merged.watchPoints), actions: ensureArray(merged.actions), linkedActions: ensureArray(merged.linkedActions), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events), directorNotes: ensureNotes(merged.directorNotes), managementRequests: ensureArray(merged.managementRequests) };
   }
   if (name === "projects") {
     const template = defaults.projects.find(p => p.id === base.id) || {};
@@ -7577,6 +7577,109 @@ function managerDocumentsList(m) {
   return `<div class="manager-doc-sections"><h3>Comptes-rendus d'entretien</h3>${interviewRows}<h3>Documents liés</h3>${classicRows}</div>`;
 }
 
+
+function managementRequestTypeLabel(value) {
+  const labels = {
+    objective: "Objectif",
+    request: "Demande particulière",
+    expectation: "Attente managériale",
+    watch: "Point de vigilance",
+    reframing: "Recadrage",
+    praise: "Félicitation"
+  };
+  return labels[String(value || "request")] || "Demande particulière";
+}
+
+function managementRequestStatusLabel(value) {
+  const labels = { open: "À suivre", progress: "En cours", achieved: "Atteint", partial: "Partiellement atteint", missed: "Non atteint", abandoned: "Abandonné" };
+  return labels[String(value || "open")] || "À suivre";
+}
+
+function managementRequestStatusBadge(value) {
+  const v = String(value || "open");
+  const cls = v === "achieved" ? "green" : (v === "missed" ? "red" : (v === "abandoned" ? "orange" : "orange"));
+  return `<span class="badge ${cls}">${esc(managementRequestStatusLabel(v))}</span>`;
+}
+
+function managerManagementRequestsSummary(m) {
+  const rows = ensureArray(m.managementRequests);
+  const open = rows.filter(r => ["open", "progress", "partial"].includes(String(r.status || "open"))).length;
+  const overdue = rows.filter(r => {
+    if (!["open", "progress", "partial"].includes(String(r.status || "open")) || !r.dueDate) return false;
+    const d = new Date(String(r.dueDate) + "T23:59:59");
+    return !Number.isNaN(d.getTime()) && d.getTime() < Date.now();
+  }).length;
+  const achieved = rows.filter(r => String(r.status || "") === "achieved").length;
+  return `<div class="row-actions"><span class="badge orange">${open} ouverte(s)</span><span class="badge green">${achieved} atteinte(s)</span>${overdue ? `<span class="badge red">${overdue} en retard</span>` : ""}</div>`;
+}
+
+function managerManagementRequestsList(m) {
+  const rows = [...ensureArray(m.managementRequests)].sort((a,b) => String(b.date || "").localeCompare(String(a.date || "")));
+  if (!rows.length) return `<div class="empty">Aucune demande ou objectif managérial tracé.</div>`;
+  return rows.map(r => {
+    const proof = [r.channel ? `Canal : ${r.channel}` : "", r.emailRef ? `Mail : ${r.emailRef}` : "", r.documentRef ? `Preuve : ${r.documentRef}` : ""].filter(Boolean).join(" · ");
+    return `<details class="item"><summary><strong>${esc(r.date || "Sans date")} · ${esc(managementRequestTypeLabel(r.type))} · ${esc(r.subject || "Sans objet")}</strong> ${managementRequestStatusBadge(r.status)}</summary><div style="padding-top:10px"><p><strong>Demande / objectif formulé</strong><br>${esc(r.requestText || "À compléter")}</p><p><strong>Résultat attendu</strong><br>${esc(r.expectedResult || "À compléter")}</p><p><strong>Échéance :</strong> ${esc(r.dueDate || "Non définie")}</p>${proof ? `<p class="muted">${esc(proof)}</p>` : ""}${r.closureComment ? `<p><strong>Suivi / clôture</strong><br>${esc(r.closureComment)}</p>` : ""}${r.actionId ? `<p><button class="secondary" onclick="openAction('${esc(r.actionId)}')">Ouvrir l’action liée</button></p>` : ""}<div class="row-actions"><button class="secondary" onclick="openManager('${esc(m.id)}','request:${esc(r.id)}')">Modifier / suivre</button></div></div></details>`;
+  }).join("");
+}
+
+function managerManagementRequestForm(m, requestId = "") {
+  const existing = ensureArray(m.managementRequests).find(r => sameId(r.id, requestId)) || {};
+  const editing = Boolean(existing.id);
+  const todayValue = existing.date || isoToday();
+  return `<div id="manager-request-form" class="card full-span"><h2>${editing ? "Mettre à jour l’échange managérial" : "Tracer un échange / une demande"}</h2><p class="muted">Conservez ici la demande formulée, son contexte, l’échéance et la preuve associée. Ce suivi reste distinct d’une action opérationnelle.</p><div class="form-grid"><input id="mrDate" type="date" value="${esc(todayValue)}"><select id="mrType"><option value="objective" ${existing.type === "objective" ? "selected" : ""}>Objectif</option><option value="request" ${!editing || existing.type === "request" ? "selected" : ""}>Demande particulière</option><option value="expectation" ${existing.type === "expectation" ? "selected" : ""}>Attente managériale</option><option value="watch" ${existing.type === "watch" ? "selected" : ""}>Point de vigilance</option><option value="reframing" ${existing.type === "reframing" ? "selected" : ""}>Recadrage</option><option value="praise" ${existing.type === "praise" ? "selected" : ""}>Félicitation</option></select><input id="mrSubject" value="${esc(existing.subject || "")}" placeholder="Objet / titre court"><input id="mrDue" type="date" value="${esc(existing.dueDate || "")}"><select id="mrChannel"><option ${existing.channel === "Oral" ? "selected" : ""}>Oral</option><option ${existing.channel === "Entretien" ? "selected" : ""}>Entretien</option><option ${existing.channel === "Réunion" ? "selected" : ""}>Réunion</option><option ${existing.channel === "Mail" ? "selected" : ""}>Mail</option><option ${existing.channel === "Teams" ? "selected" : ""}>Teams</option><option ${existing.channel === "Autre" ? "selected" : ""}>Autre</option></select><select id="mrStatus"><option value="open" ${!editing || existing.status === "open" ? "selected" : ""}>À suivre</option><option value="progress" ${existing.status === "progress" ? "selected" : ""}>En cours</option><option value="achieved" ${existing.status === "achieved" ? "selected" : ""}>Atteint</option><option value="partial" ${existing.status === "partial" ? "selected" : ""}>Partiellement atteint</option><option value="missed" ${existing.status === "missed" ? "selected" : ""}>Non atteint</option><option value="abandoned" ${existing.status === "abandoned" ? "selected" : ""}>Abandonné</option></select></div><textarea id="mrRequest" placeholder="Demande / objectif formulé">${esc(existing.requestText || "")}</textarea><textarea id="mrExpected" placeholder="Résultat attendu / critères de réussite">${esc(existing.expectedResult || "")}</textarea><div class="form-grid"><input id="mrEmailRef" value="${esc(existing.emailRef || "")}" placeholder="Référence mail / objet du mail"><input id="mrDocumentRef" value="${esc(existing.documentRef || "")}" placeholder="Document / preuve associée"></div><textarea id="mrClosure" placeholder="Commentaire de suivi ou de clôture">${esc(existing.closureComment || "")}</textarea>${existing.actionId ? `<p class="muted">Action DEOS liée : ${esc(existing.actionId)}</p>` : `<label><input id="mrCreateAction" type="checkbox"> Créer également une action DEOS liée à cette demande</label>`}<div class="row-actions"><button class="action" onclick="saveManagerManagementRequest('${esc(m.id)}','${esc(existing.id || "")}')">${editing ? "Enregistrer le suivi" : "Tracer l’échange"}</button><button class="secondary" onclick="openManager('${esc(m.id)}')">Annuler</button></div></div>`;
+}
+
+function saveManagerManagementRequest(managerId, requestId = "") {
+  const m = byId("managers", managerId);
+  if (!m) return;
+  const subject = document.getElementById("mrSubject")?.value.trim() || "";
+  const requestText = document.getElementById("mrRequest")?.value.trim() || "";
+  if (!subject || !requestText) { alert("L’objet et la demande / objectif formulé sont obligatoires."); return; }
+  const payload = {
+    id: requestId || newId("mgr-request"),
+    date: document.getElementById("mrDate")?.value || isoToday(),
+    type: document.getElementById("mrType")?.value || "request",
+    subject,
+    requestText,
+    expectedResult: document.getElementById("mrExpected")?.value.trim() || "",
+    dueDate: document.getElementById("mrDue")?.value || "",
+    channel: document.getElementById("mrChannel")?.value || "Oral",
+    emailRef: document.getElementById("mrEmailRef")?.value.trim() || "",
+    documentRef: document.getElementById("mrDocumentRef")?.value.trim() || "",
+    status: document.getElementById("mrStatus")?.value || "open",
+    closureComment: document.getElementById("mrClosure")?.value.trim() || "",
+    updatedAt: new Date().toISOString()
+  };
+  m.managementRequests = ensureArray(m.managementRequests);
+  const idx = m.managementRequests.findIndex(r => sameId(r.id, requestId));
+  const wantsLinkedAction = Boolean(document.getElementById("mrCreateAction")?.checked);
+  if (idx >= 0) {
+    payload.actionId = m.managementRequests[idx].actionId || "";
+    payload.createdAt = m.managementRequests[idx].createdAt || payload.updatedAt;
+    if (!payload.actionId && wantsLinkedAction) {
+      const action = normalizeEntity("actions", { id: newId("action"), title: subject, link: `Demande managériale · ${m.name}`, owner: m.name, due: payload.dueDate, done: false, linkedManagers: [m.id] });
+      state.actions.unshift(action);
+      payload.actionId = action.id;
+      persist("actions");
+      addActivity("Action créée depuis échange manager", action.title, m.name, action.id);
+    }
+    m.managementRequests[idx] = { ...m.managementRequests[idx], ...payload };
+  } else {
+    payload.createdAt = payload.updatedAt;
+    if (wantsLinkedAction) {
+      const action = normalizeEntity("actions", { id: newId("action"), title: subject, link: `Demande managériale · ${m.name}`, owner: m.name, due: payload.dueDate, done: false, linkedManagers: [m.id] });
+      state.actions.unshift(action);
+      payload.actionId = action.id;
+      persist("actions");
+      addActivity("Action créée depuis échange manager", action.title, m.name, action.id);
+    }
+    m.managementRequests.unshift(payload);
+  }
+  persist("managers");
+  addActivity("🎯 Échange managérial", m.name, `${managementRequestTypeLabel(payload.type)} · ${payload.subject}`, m.id);
+  openManager(m.id);
+}
+
 function renderManagers() {
   document.getElementById("viewTitle").textContent = "Managers V5";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "managers"));
@@ -7590,7 +7693,7 @@ function managerCard(m) {
 function addManager() {
   const name = document.getElementById("mName").value.trim();
   if (!name) return;
-  const m = { id: newId("manager"), name, role: document.getElementById("mRole").value.trim(), status: document.getElementById("mStatus").value, note: document.getElementById("mNote").value.trim(), priority: document.getElementById("mPriority").value.trim(), lastInterview: "", nextMeeting: document.getElementById("mNext").value.trim(), objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedDecisions: [], events: [], directorNotes: [] };
+  const m = { id: newId("manager"), name, role: document.getElementById("mRole").value.trim(), status: document.getElementById("mStatus").value, note: document.getElementById("mNote").value.trim(), priority: document.getElementById("mPriority").value.trim(), lastInterview: "", nextMeeting: document.getElementById("mNext").value.trim(), objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedDecisions: [], events: [], directorNotes: [], managementRequests: [] };
   state.managers.push(m);
   persist("managers");
   addActivity("👥 Manager", m.name, m.role, m.id);
@@ -7600,6 +7703,8 @@ function addManager() {
 function managerQuickForm(m, mode = "") {
   if (mode === "note") return `<div class="card full-span"><h2>Ajouter une note du directeur</h2><textarea id="mnContent" placeholder="Note du directeur"></textarea><button class="action" onclick="saveManagerNote('${m.id}')">Enregistrer</button><button class="secondary" onclick="openManager('${m.id}')">Annuler</button></div>`;
   if (mode === "event") return `<div class="card full-span"><h2>Ajouter un événement</h2><div class="form-grid"><input id="meTitle" placeholder="Titre de l'événement"><input id="meDate" value="${esc(new Date().toLocaleString("fr-FR"))}" placeholder="Date"></div><textarea id="meDetail" placeholder="Détail de l'événement"></textarea><button class="action" onclick="saveManagerEvent('${m.id}')">Enregistrer</button><button class="secondary" onclick="openManager('${m.id}')">Annuler</button></div>`;
+  if (mode === "request") return managerManagementRequestForm(m);
+  if (String(mode || "").startsWith("request:")) return managerManagementRequestForm(m, String(mode).slice(8));
   return "";
 }
 
@@ -7608,7 +7713,14 @@ function openManager(id, mode = "") {
   if (!m) return renderManagers();
   const responsibleCount = managerResponsibleProjects(m).length;
   document.getElementById("viewTitle").textContent = m.name;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderManagers()">Retour Managers</button><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)} ? ${responsibleCount} projet(s) sous responsabilité</span><div class="row-actions"><button class="action" onclick="editManager('${m.id}')">Modifier</button><button class="secondary" onclick="startReport('managers','${m.id}')">Générer un compte rendu</button><button class="secondary" onclick="openManager('${m.id}','note')">Ajouter une note</button><button class="secondary" onclick="openManager('${m.id}','event')">Ajouter un événement</button><button class="danger" onclick="deleteManager('${m.id}')">Supprimer</button></div></div><div class="grid two">${managerQuickForm(m, mode)}<div class="card"><h2>Priorité managériale</h2><p>${esc(m.priority || "À compléter")}</p></div><div class="card"><h2>Entretiens</h2><p><strong>Dernier :</strong> ${esc(m.lastInterview || "À compléter")}</p><p><strong>Prochaine rencontre :</strong> ${esc(m.nextMeeting || "À planifier")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${managerAgendaList(m)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${managerMeetingPreparationsList(m)}</div><div class="card full-span"><h2>Projets sous ma responsabilité</h2>${managerResponsibleProjectsList(m)}</div><div class="card full-span"><h2>Autres projets associés</h2>${managerAssociatedProjectsList(m)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(m)}</div><div class="card"><h2>Objectifs en cours</h2>${listItems(m.objectives)}</div><div class="card"><h2>Points forts</h2>${listItems(m.strengths)}</div><div class="card"><h2>Points de vigilance</h2>${listItems(m.watchPoints)}</div><div class="card"><h2>Actions internes</h2>${listItems(m.actions, "? ")}</div><div class="card"><h2>Actions liées</h2>${linkedActionsList(m)}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisionsList(m)}</div><div class="card"><h2>Journal lié</h2>${managerJournalList(m)}</div><div class="card"><h2>Documents liés</h2>${managerDocumentsList(m)}</div><div class="card"><h2>Notes du directeur</h2>${directorNotesList(m)}</div><div class="card full-span"><h2>Historique chronologique</h2>${managerTimeline(m)}</div></div>`);
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderManagers()">Retour Managers</button><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)} ? ${responsibleCount} projet(s) sous responsabilité</span><div class="row-actions"><button class="action" onclick="editManager('${m.id}')">Modifier</button><button class="secondary" onclick="startReport('managers','${m.id}')">Générer un compte rendu</button><button class="secondary" onclick="openManager('${m.id}','note')">Ajouter une note</button><button class="secondary" onclick="openManager('${m.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openManager('${m.id}','request')">Tracer un échange</button><button class="danger" onclick="deleteManager('${m.id}')">Supprimer</button></div></div><div class="grid two">${managerQuickForm(m, mode)}<div class="card"><h2>Priorité managériale</h2><p>${esc(m.priority || "À compléter")}</p></div><div class="card"><h2>Entretiens</h2><p><strong>Dernier :</strong> ${esc(m.lastInterview || "À compléter")}</p><p><strong>Prochaine rencontre :</strong> ${esc(m.nextMeeting || "À planifier")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${managerAgendaList(m)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${managerMeetingPreparationsList(m)}</div><div class="card full-span"><h2>Projets sous ma responsabilité</h2>${managerResponsibleProjectsList(m)}</div><div class="card full-span"><h2>Autres projets associés</h2>${managerAssociatedProjectsList(m)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(m)}</div><div class="card full-span"><h2>Demandes & objectifs managériaux</h2>${managerManagementRequestsSummary(m)}<div style="margin-top:12px">${managerManagementRequestsList(m)}</div><div class="row-actions" style="margin-top:12px"><button class="action" onclick="openManager('${m.id}','request')">+ Tracer un échange</button></div></div><div class="card"><h2>Objectifs en cours</h2>${listItems(m.objectives)}</div><div class="card"><h2>Points forts</h2>${listItems(m.strengths)}</div><div class="card"><h2>Points de vigilance</h2>${listItems(m.watchPoints)}</div><div class="card"><h2>Actions internes</h2>${listItems(m.actions, "? ")}</div><div class="card"><h2>Actions liées</h2>${linkedActionsList(m)}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisionsList(m)}</div><div class="card"><h2>Journal lié</h2>${managerJournalList(m)}</div><div class="card"><h2>Documents liés</h2>${managerDocumentsList(m)}</div><div class="card"><h2>Notes du directeur</h2>${directorNotesList(m)}</div><div class="card full-span"><h2>Historique chronologique</h2>${managerTimeline(m)}</div></div>`);
+  if (String(mode || "").startsWith("request")) {
+    requestAnimationFrame(() => {
+      const form = document.getElementById("manager-request-form");
+      if (form) form.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById("mrDate")?.focus({ preventScroll: true });
+    });
+  }
 }
 
 function editManager(id) {
@@ -9102,6 +9214,11 @@ const performanceImportTargetCatalog = [
   { id: "hours.direct", label: "Heures directes", path: "hours.direct.actual", type: "existing", unit: "heures", aliases: ["heures directes", "heures direct"] },
   { id: "hours.indirect", label: "Heures indirectes", path: "hours.indirect.actual", type: "existing", unit: "heures", aliases: ["heures indirectes", "heures indirect"] },
   { id: "hours.indirect_share", label: "Poids heures indirectes", path: "hours.indirect.totalShare", type: "existing", unit: "pourcentage", aliases: ["pourcentage heures indirectes", "poids heures indirectes", "% heures indirectes"] },
+  { id: "hours.night", label: "Heures de nuit cumul", path: "hours", destinationField: "night", type: "existing", unit: "h", aliases: ["heures de nuit", "heures de nuit cumul", "hrs nuit"] },
+  { id: "hours.overtime", label: "Heures supplémentaires cumul", path: "hours", destinationField: "overtime", type: "existing", unit: "h", aliases: ["heures supplementaires", "heures supplémentaires", "heures supplémentaires cumul", "hrs supp"] },
+  { id: "hours.sundays", label: "Dimanches / fériés cumul", path: "hours", destinationField: "sundays", type: "existing", unit: "h", aliases: ["dimanches feries", "dimanches / fériés", "dimanches fériés cumul", "hrs dim"] },
+  { id: "gpo.hours_gap_budget", label: "Écart heures vs Budget", path: "complementary.gpo.hours.total.budget_gap", type: "complementary", unit: "heures", aliases: ["ecart heures vs budget", "écart heures vs budget"] },
+  { id: "gpo.hours_gap_historical", label: "Écart heures vs Historique", path: "complementary.gpo.hours.total.historical_gap", type: "complementary", unit: "heures", aliases: ["ecart heures vs historique", "écart heures vs historique"] },
   { id: "absenteeism.total", label: "Absentéisme total", path: "absenteeism.total.actual", type: "existing", unit: "pourcentage", aliases: ["absenteisme total", "absentéisme total", "taux d absence"] },
   { id: "absenteeism.maladie", label: "Absentéisme maladie", path: "absenteeism.details.Maladie.actual", type: "existing", unit: "pourcentage", aliases: ["maladie", "absence maladie"] },
   { id: "absenteeism.accident_travail", label: "Absentéisme accidents du travail", path: "absenteeism.details.Accidents du travail.actual", type: "existing", unit: "pourcentage", aliases: ["accidents du travail", "accident du travail", "at"] },
@@ -9168,7 +9285,7 @@ const performanceSummaryMetricDefinitions = [
   { metricKey: "cgtab.premium_hours.overtime_25", label: "Heures majorées HS25", family: "heures", unit: "h", targetPath: "complementary.cgtab.premium_hours_overtime_25", metricPath: "", aliases: ["hs25"] },
   { metricKey: "absenteeism.maladie", label: "Absentéisme maladie", family: "absenteisme", unit: "%", targetPath: "absenteeism.details.Maladie.actual", metricPath: "absenteeism.details.Maladie", aliases: ["maladie"] },
   { metricKey: "absenteeism.accident_travail", label: "Absentéisme AT", family: "absenteisme", unit: "%", targetPath: "absenteeism.details.Accidents du travail.actual", metricPath: "absenteeism.details.Accidents du travail", aliases: ["accidents du travail", "at"] },
-  { metricKey: "cgtab.absence.sickness_hours", label: "Heures maladie (CGTAB)", family: "absenteisme", unit: "h", targetPath: "complementary.cgtab.absence_sickness_hours", metricPath: "", aliases: ["maladie"] },
+  { metricKey: "cgtab.absence.sickness_hours", label: "Heures maladie (CGTAB)", family: "absenteisme", unit: "h", targetPath: "complementary.cgtab.absence_sickness_hours", metricPath: "", aliases: ["heures maladie", "heures maladie cgtab", "sickness hours"] },
   { metricKey: "tbag.preparation.productivity.total", label: "Préparation - Productivité globale", family: "preparation_detaillee", unit: "colis/h", targetPath: "complementary.tbag.preparation_productivity_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - productivité globale"] },
   { metricKey: "tbag.preparation.volume.total", label: "Préparation - Volume total", family: "preparation_detaillee", unit: "colis", targetPath: "complementary.tbag.preparation_volume_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - volume total"] },
   { metricKey: "tbag.preparation.hours.total", label: "Préparation - Heures directes", family: "preparation_detaillee", unit: "h", targetPath: "complementary.tbag.preparation_hours_total.pop_total.banner_total_banniere", metricPath: "", aliases: ["préparation - heures directes"] },
@@ -9276,6 +9393,7 @@ function performanceImportStatusLabel(status) {
 function performanceImportConfidenceScore(row) {
   const indicator = normalizePerformanceLabel(row.indicator);
   if (!indicator || row.action === "ignore") return 0;
+  if (Number.isFinite(Number(row.sourceConfidenceScore))) return Number(row.sourceConfidenceScore);
   if (row.targetType === "existing") return 92;
   if (row.targetType === "complementary") return row.targetId === "complementary.generic" ? 62 : 74;
   if (row.unit && /colis|heure|%|pourcentage|€|euro|kg/i.test(row.unit)) return 58;
@@ -9485,9 +9603,11 @@ function performancePriorityKeyForImportRow(row = {}) {
 function performanceSourceAuthority(row = {}) {
   const source = performanceSourceKey(row.source || row.sourceType || "Import");
   const priorityKey = performancePriorityKeyForImportRow(row);
-  const officialSource = performanceOfficialSourceForFamily(priorityKey);
+  const metricKey = String(row.metricKey || row.targetId || "").toLowerCase();
+  const gpoCorePilotage = source === "GPO" && (metricKey === "quality.total_gains_pertes" || metricKey === "pallet.height");
+  const officialSource = gpoCorePilotage ? "GPO" : performanceOfficialSourceForFamily(priorityKey);
   const isExistingTarget = row.targetType === "existing" && row.destinationPath && !String(row.destinationPath).startsWith("complementary.");
-  const sourceIsOfficial = !officialSource || source === officialSource;
+  const sourceIsOfficial = gpoCorePilotage || !officialSource || source === officialSource;
   return { source, priorityKey, officialSource, isExistingTarget, sourceIsOfficial };
 }
 
@@ -9549,9 +9669,19 @@ function performanceMatchesMetricDef(row = {}, metricDef = {}) {
   const rowMetricKey = String(row.metricKey || "").trim().toLowerCase();
   const rowLabel = normalizePerformanceLabel(row.indicator || row.label || row.destinationLabel || "");
   const aliases = [metricDef.label, ...(metricDef.aliases || [])].map(normalizePerformanceLabel).filter(Boolean);
-  if (metricDef.targetPath && rowPath && rowPath === metricDef.targetPath) return true;
+  if (metricDef.targetPath && rowPath && (rowPath === metricDef.targetPath || `${rowPath}.actual` === metricDef.targetPath)) return true;
   if (metricDef.metricKey && rowMetricKey && rowMetricKey === String(metricDef.metricKey).toLowerCase()) return true;
-  return aliases.some(alias => alias && (rowLabel === alias || rowLabel.includes(alias)));
+  // V5.28P : les alias très courts (ex. « AT ») ne doivent jamais matcher
+  // par simple sous-chaîne (« préparation » contient les lettres « at »).
+  return aliases.some(alias => {
+    if (!alias) return false;
+    if (rowLabel === alias) return true;
+    if (alias.length <= 3) {
+      const tokens = rowLabel.split(/[^a-z0-9à-ÿ]+/i).filter(Boolean);
+      return tokens.includes(alias);
+    }
+    return rowLabel.includes(alias);
+  });
 }
 
 function performancePrimaryValueForMetric(periodRecord, metricDef) {
@@ -9718,6 +9848,19 @@ function performanceSummaryFormatValue(value, unit, metricKey = "") {
   const digits = /hours|heures|\bh\b/.test(normalizedUnit) ? 2 : (metricKey.startsWith("ipo.") ? 2 : 1);
   const formatted = numeric.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
   return unit ? `${formatted} ${unit}` : formatted;
+}
+
+// V5.28Q : un écart entre deux pourcentages est exprimé en points de pourcentage.
+// Il ne faut pas retransformer 0,8 point en 80 %.
+function performanceSummaryFormatDelta(value, unit, metricKey = "") {
+  if (!perfHas(value)) return "Donnée non disponible";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  const normalizedUnit = String(unit || "").toLowerCase();
+  if (normalizedUnit === "%" || normalizedUnit === "pourcentage") {
+    return `${numeric.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} pt`;
+  }
+  return performanceSummaryFormatValue(value, unit, metricKey);
 }
 
 function performanceSummaryBuildRows(period) {
@@ -10143,8 +10286,8 @@ function performanceDirectionCards(period) {
       <div class="performance-summary-direction-meta">Source : ${esc(row.sourceLabel || performanceSourceLabel(row.source))}</div>
       <div class="performance-summary-direction-lines">
         <div>Objectif/Budget : ${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</div>
-        <div>Écart : ${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</div>
-        <div>Tendance : ${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</div>
+        <div>Écart : ${esc(performanceSummaryFormatDelta(row.gap, row.unit, row.metricKey))}</div>
+        <div>Tendance : ${esc(performanceSummaryFormatDelta(row.trend, row.unit, row.metricKey))}</div>
       </div>
       <div class="performance-summary-direction-badges">${performanceWarningsBadgesV519(row)}</div>
       <button class="secondary" onclick="openPerformanceSummaryDetail('${esc(row.metricKey)}')">Voir le détail</button>
@@ -10294,8 +10437,8 @@ function performanceSummarySectionTable(period, familyKey, rows) {
         <td>${esc(performanceSummaryFormatValue(row.value, row.unit, row.metricKey))}</td>
         <td>${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</td>
         <td>${esc(performanceSummaryFormatValue(row.historical, row.unit, row.metricKey))}</td>
-        <td>${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</td>
-        <td>${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatDelta(row.gap, row.unit, row.metricKey))}</td>
+        <td>${esc(performanceSummaryFormatDelta(row.trend, row.unit, row.metricKey))}</td>
         <td>${esc(row.sourceLabel || performanceSourceLabel(row.source))}</td>
         <td>${performanceStatusBadgeV519(row)}</td>
         <td>${performanceWarningsBadgesV519(row)}</td>
@@ -10343,8 +10486,8 @@ function performanceSummaryDetailPanel(period, rows) {
           <div><strong>Source officielle</strong><p>${esc(row.sourceLabel || performanceSourceLabel(row.source))}</p></div>
           <div><strong>Budget</strong><p>${esc(performanceSummaryFormatValue(row.budget, row.unit, row.metricKey))}</p></div>
           <div><strong>Historique</strong><p>${esc(performanceSummaryFormatValue(row.historical, row.unit, row.metricKey))}</p></div>
-          <div><strong>Écart</strong><p>${esc(performanceSummaryFormatValue(row.gap, row.unit, row.metricKey))}</p></div>
-          <div><strong>Tendance</strong><p>${esc(performanceSummaryFormatValue(row.trend, row.unit, row.metricKey))}</p></div>
+          <div><strong>Écart</strong><p>${esc(performanceSummaryFormatDelta(row.gap, row.unit, row.metricKey))}</p></div>
+          <div><strong>Tendance</strong><p>${esc(performanceSummaryFormatDelta(row.trend, row.unit, row.metricKey))}</p></div>
           <div><strong>Période</strong><p>${esc(performancePeriodTitle(period))}</p></div>
           <div><strong>Qualité</strong><p>${esc(row.confidence || "moyenne")}</p></div>
         </div>
@@ -10508,12 +10651,85 @@ function duplicatePerformancePrevious() {
   renderPerformance();
 }
 
+// V5.28Q : la vue historique et la synthèse Direction utilisent la même résolution
+// de source que le tableau de pilotage supérieur. Cela évite qu'une ancienne valeur
+// locale masque un Budget/Historique GPO pourtant disponible.
+function performanceLatestImportedMetricRow(metricKey, period, preferredSource = "GPO") {
+  const wantedKey = String(metricKey || "").trim().toLowerCase();
+  const wantedPeriod = String(period || "").trim();
+  const candidates = [];
+  ensureArray(state.performance_imports).forEach(item => {
+    ensureArray(item.indicators).forEach(row => {
+      if (String(row.period || "").trim() !== wantedPeriod) return;
+      if (String(row.metricKey || "").trim().toLowerCase() !== wantedKey) return;
+      candidates.push({ row, importDate: String(item.importDate || ""), source: performanceSourceKey(row.source || item.sourceType || item.source || "") });
+    });
+  });
+  candidates.sort((a, b) => b.importDate.localeCompare(a.importDate));
+  return (candidates.find(item => item.source === preferredSource) || candidates[0] || {}).row || null;
+}
+
+function performanceApplyImportedTriplet(metric, row) {
+  if (!metric || typeof metric !== "object" || !row) return;
+  const actual = row.actual ?? row.value;
+  if (perfHas(actual)) metric.actual = actual;
+  if (perfHas(row.budget)) metric.budget = row.budget;
+  if (perfHas(row.historical)) metric.historical = row.historical;
+  if (perfHas(row.objective)) metric.objective = row.objective;
+}
+
+function performanceResolvedRecordForView(p) {
+  const resolved = normalizePerformance(JSON.parse(JSON.stringify(p || {})));
+  const period = performancePeriodKey(resolved);
+  const mappings = [
+    ["activity.colis_total", "activity"],
+    ["ipo.total", "ipo.total"],
+    ["ipo.variable", "ipo.variable"],
+    ["productivity.preparation", "productivity.Préparation"],
+    ["productivity.reception", "productivity.Réception"],
+    ["productivity.manutention", "productivity.Manutention"],
+    ["productivity.chargement", "productivity.Chargement"],
+    ["productivity.transit", "productivity.Transit"],
+    ["hours.total", "hours.total"],
+    ["hours.direct", "hours.direct"],
+    ["hours.indirect", "hours.indirect"],
+    ["absenteeism.total", "absenteeism.total"],
+    ["absenteeism.maladie", "absenteeism.details.Maladie"],
+    ["absenteeism.accident_travail", "absenteeism.details.Accidents du travail"],
+    ["quality.total_gains_pertes", "quality.indicators.Total Gains & Pertes"],
+    ["pallet.height", "palletHeight"]
+  ];
+  mappings.forEach(([metricKey, path]) => {
+    const preferred = getPreferredPerformanceValue(metricKey, period);
+    if (!preferred || !perfHas(preferred.value)) return;
+    const metric = perfPath(resolved, path);
+    if (!metric || typeof metric !== "object") return;
+    metric.actual = preferred.value;
+    if (perfHas(preferred.budget)) metric.budget = preferred.budget;
+    if (perfHas(preferred.historical)) metric.historical = preferred.historical;
+  });
+
+  // V5.28R : G&P et hauteur palette sont des KPI GPO de pilotage mais ne font
+  // pas partie du tableau de synthèse multi-sources. On relit donc explicitement
+  // leur dernier triplet GPO afin que la fiche mensuelle ne perde ni Budget ni Histo.
+  performanceApplyImportedTriplet(
+    perfPath(resolved, "quality.indicators.Total Gains & Pertes"),
+    performanceLatestImportedMetricRow("quality.total_gains_pertes", period, "GPO")
+  );
+  performanceApplyImportedTriplet(
+    perfPath(resolved, "palletHeight"),
+    performanceLatestImportedMetricRow("pallet.height", period, "GPO")
+  );
+  return resolved;
+}
+
 function performanceView(p) {
+  const viewP = performanceResolvedRecordForView(p);
   const actions = state.actions.filter(a => (a.linkedPerformance || []).includes(p.id) || (p.link || "").includes(perfPeriodLabel(p)));
   const decisions = state.decisions.filter(d => (d.linkedPerformance || []).includes(p.id));
   const documents = state.documents.filter(d => (d.linkedPerformance || []).includes(p.id));
-  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} · Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two">${performanceOverviewSection()}<div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", p.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", p.ipo.total)}${perfMetricBlock("IPO variable", p.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(p)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", p.hours.total)}${perfMetricBlock("Heures indirectes", p.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", p.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(p)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(p)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(p))}</p></div>${performanceSourceBlock(p)}<div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="openDocument('${d.id}')"><strong>${esc(d.title || d.name || "Document")}</strong><span class="muted">${esc(d.type || d.category || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div></div>`;
-  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} ? Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two"><div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", p.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", p.ipo.total)}${perfMetricBlock("IPO variable", p.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(p)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", p.hours.total)}${perfMetricBlock("Heures indirectes", p.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", p.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(p)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(p)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(p))}</p></div><div class="card full-span"><h2>Historique et tendances</h2>${perfCharts()}</div><div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")} · ${esc(d.category || "")} · ${esc(d.status || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div>${performanceSourceBlock(p)}<div class="card full-span">${performanceImportHistory()}</div></div>`;
+  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} · Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two">${performanceOverviewSection()}<div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", viewP.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", viewP.ipo.total)}${perfMetricBlock("IPO variable", viewP.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(viewP)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", viewP.hours.total)}${perfMetricBlock("Heures indirectes", viewP.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", viewP.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(viewP)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(viewP)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(viewP))}</p></div>${performanceSourceBlock(p)}<div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="openDocument('${d.id}')"><strong>${esc(d.title || d.name || "Document")}</strong><span class="muted">${esc(d.type || d.category || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div></div>`;
+  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} ? Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two"><div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", viewP.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", viewP.ipo.total)}${perfMetricBlock("IPO variable", viewP.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(viewP)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", viewP.hours.total)}${perfMetricBlock("Heures indirectes", viewP.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", viewP.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(viewP)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(viewP)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(viewP))}</p></div><div class="card full-span"><h2>Historique et tendances</h2>${perfCharts()}</div><div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")} · ${esc(d.category || "")} · ${esc(d.status || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div>${performanceSourceBlock(p)}<div class="card full-span">${performanceImportHistory()}</div></div>`;
 }
 
 function performanceSourceBlock(p) {
@@ -10550,10 +10766,17 @@ function performanceImportSummaryCard(item, p) {
   const detected = ensureArray(item.indicators).length;
   const conflicts = Number(item.conflictCount ?? ensureArray(item.conflicts).length);
   const expanded = expandedPerformanceImportId === item.id;
+  const updatedLabels = ensureArray(item.updatedMetricLabels).filter(Boolean);
+  const unchangedCount = Math.max(0, detected - imported);
+  const importStatusText = imported === 0 && detected > 0 && conflicts === 0
+    ? `${detected} indicateur(s) déjà à jour · aucune modification`
+    : imported > 0 && conflicts === 0
+      ? `${imported} indicateur(s) mis à jour · ${unchangedCount} déjà à jour${updatedLabels.length ? ` · ${updatedLabels.join(", ")}` : ""}`
+      : `${imported} indicateur(s) importé(s) · ${detected} détecté(s) · ${conflicts} conflit(s)`;
   return `<div class="item import-summary">
     <div>
       <strong>Source : ${esc(performanceImportSourceLabel(item))} — ${esc(performanceImportPeriodTitle(item, p))}</strong>
-      <span class="muted">${imported} indicateur(s) importé(s) · ${detected} détecté(s) · ${conflicts} conflit(s)</span>
+      <span class="muted">${esc(importStatusText)}</span>
       <span class="meta">${esc(item.sourceFile || "")}${item.site ? " · Site " + esc(item.site) : ""}${item.importDate ? " · " + esc(item.importDate) : ""}</span>
     </div>
     <div class="row-actions"><button class="secondary" onclick="togglePerformanceImportDetail('${esc(item.id)}')">${expanded ? "Masquer le détail" : "Voir le détail"}</button></div>
@@ -10617,12 +10840,14 @@ function perfQualitySummary(p) {
 }
 
 function perfPalletSummary(p) {
-  const gap = perfGap(p.palletHeight.actual, p.palletHeight.objective);
-  return `<div class="performance-metric"><strong>Hauteur palette</strong><span>Historique ${perfFmt(p.palletHeight.historical)} ? Objectif ${perfFmt(p.palletHeight.objective)} ? Budget ${perfFmt(p.palletHeight.budget)} ? Réalisé ${perfFmt(p.palletHeight.actual)}</span><small>Écart objectif ${perfFmt(gap.value)} ? Tendance ${esc(p.palletHeight.trend || "À compléter")}</small></div>`;
+  const gapObjective = perfGap(p.palletHeight.actual, p.palletHeight.objective);
+  const gapBudget = perfGap(p.palletHeight.actual, p.palletHeight.budget);
+  const gapHistorical = perfGap(p.palletHeight.actual, p.palletHeight.historical);
+  return `<div class="performance-metric"><strong>Hauteur palette</strong><span>Historique ${perfFmt(p.palletHeight.historical)} · Budget ${perfFmt(p.palletHeight.budget)} · Réalisé ${perfFmt(p.palletHeight.actual)} · Objectif annuel ${perfFmt(p.palletHeight.objective)}</span><small>Écart budget ${perfFmt(gapBudget.value)} (${perfFmt(gapBudget.pct)}%) · Écart historique ${perfFmt(gapHistorical.value)} (${perfFmt(gapHistorical.pct)}%) · Écart objectif ${perfFmt(gapObjective.value)}</small></div>`;
 }
 
 function performanceForm(p) {
-  return `<div class="card"><h2>Modifier ${esc(perfPeriodLabel(p))}</h2><div class="form-grid"><input id="pfYear" type="number" value="${p.year}"><select id="pfMonth">${perfMonths.map((m, i) => `<option value="${i + 1}" ${Number(p.month) === i + 1 ? "selected" : ""}>${m}</option>`).join("")}</select><select id="pfStatus"><option ${p.status === "Brouillon" ? "selected" : ""}>Brouillon</option><option ${p.status === "En cours d'analyse" ? "selected" : ""}>En cours d'analyse</option><option ${p.status === "Validé" ? "selected" : ""}>Validé</option><option ${p.status === "Archivé" ? "selected" : ""}>Archivé</option></select></div>${perfMetricForm("Activité colis", "activity", p.activity, ["comment", "highlights", "causes", "projection"])}${perfIpoForm(p)}${perfJobsForm(p)}${perfHoursForm(p)}${perfAbsForm(p)}${perfQualityForm(p)}${perfPalletForm(p)}<div class="card"><h2>Synthèse DE</h2><textarea id="pfSynthesis">${esc(p.synthesis || buildPerformanceSynthesis(p))}</textarea></div><div class="grid three manager-links"><div><label>Managers liés</label>${checkboxList("pfManagers", state.managers, p.linkedManagers, m => m.name)}</div><div><label>Projets liés</label>${checkboxList("pfProjects", state.projects, p.linkedProjects, pr => pr.name)}</div><div><label>Dossiers liés</label>${folderSelect("pfFolders", p.linkedFolders)}</div></div><button class="action" onclick="savePerformance('${p.id}')">Enregistrer</button><button class="secondary" onclick="performanceEdit=false;renderPerformance()">Annuler</button></div>`;
+  return `<div class="card"><h2>Modifier ${esc(perfPeriodLabel(p))}</h2><div class="form-grid"><input id="pfYear" type="number" value="${p.year}"><select id="pfMonth">${perfMonths.map((m, i) => `<option value="${i + 1}" ${Number(p.month) === i + 1 ? "selected" : ""}>${m}</option>`).join("")}</select><select id="pfStatus"><option ${p.status === "Brouillon" ? "selected" : ""}>Brouillon</option><option ${p.status === "En cours d'analyse" ? "selected" : ""}>En cours d'analyse</option><option ${p.status === "Validé" ? "selected" : ""}>Validé</option><option ${p.status === "Archivé" ? "selected" : ""}>Archivé</option></select></div>${perfMetricForm("Activité colis", "activity", p.activity, ["comment", "highlights", "causes", "projection"])}${perfIpoForm(p)}${perfJobsForm(p)}${perfHoursForm(p)}${perfAbsForm(p)}${perfQualityForm(p)}${perfPalletForm(p)}<div class="card"><h2>Synthèse DE</h2><textarea id="pfSynthesis">${esc(p.synthesis || buildPerformanceSynthesis(viewP))}</textarea></div><div class="grid three manager-links"><div><label>Managers liés</label>${checkboxList("pfManagers", state.managers, p.linkedManagers, m => m.name)}</div><div><label>Projets liés</label>${checkboxList("pfProjects", state.projects, p.linkedProjects, pr => pr.name)}</div><div><label>Dossiers liés</label>${folderSelect("pfFolders", p.linkedFolders)}</div></div><button class="action" onclick="savePerformance('${p.id}')">Enregistrer</button><button class="secondary" onclick="performanceEdit=false;renderPerformance()">Annuler</button></div>`;
 }
 
 function perfMetricForm(title, path, m, textFields = []) {
@@ -10692,7 +10917,7 @@ function savePerformance(id) {
 
 function buildPerformanceSynthesis(p) {
   const metrics = [
-    ["Activité", p.activity], ["IPO total", p.ipo.total], ["IPO variable", p.ipo.variable], ["Heures totales", p.hours.total], ["Absentéisme", p.absenteeism.total], ["Hauteur palette", { historical: p.palletHeight.historical, budget: p.palletHeight.objective, actual: p.palletHeight.actual }]
+    ["Activité", p.activity], ["IPO total", p.ipo.total], ["IPO variable", p.ipo.variable], ["Heures totales", p.hours.total], ["Absentéisme", p.absenteeism.total], ["Hauteur palette", { historical: p.palletHeight.historical, budget: p.palletHeight.budget, actual: p.palletHeight.actual }]
   ];
   const gaps = metrics.map(([label, m]) => ({ label, pct: perfGap(m.actual, m.budget).pct, comment: m.comment || m.causes || "" })).filter(x => x.pct !== "");
   const positives = gaps.filter(x => x.pct >= 0).slice(0, 3).map(x => `- ${x.label} : ${perfFmt(x.pct, "%")}`).join("\n") || "À compléter";
@@ -11117,6 +11342,7 @@ function performanceImportStepPreview() {
     if (row.status === "Identique") return "Identique";
     if (!currentValueExists && row.action !== "ignore") return "Ajouter";
     if (row.action === "keep" || row.action === "ignore") return "Conserver";
+    if ((row.status === "Conflit" || row.status === "Différente") && row.recommendedSourceReplacement) return "Remplacer (GPO recommandé)";
     if (row.status === "Conflit" || row.status === "Différente") return "Remplacer";
     return row.action === "use" ? "Ajouter" : "Conserver";
   };
@@ -11131,12 +11357,16 @@ function performanceImportStepPreview() {
       ? `<option value="${esc(currentTargetId)}" selected>${esc(row.destinationLabel || row.label || row.indicator || currentTargetId)}</option>`
       : "";
     const selectHtml = dynamicTargetOption + targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
-    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(categoryLabel(row))}${roleHint ? `<br><small class="muted">${esc(roleHint)}</small>` : ""}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(formatImportNumber(row.budget))}</td><td>${esc(formatImportNumber(row.historical))}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td><div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div></td><td>${esc(row.currentValue === "" || row.currentValue === null || row.currentValue === undefined ? "" : perfFmt(row.currentValue))}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
+    const explicitGpoMapping = performanceSourceKey(row.source || row.sourceType || "") === "GPO" && Boolean(currentTargetId) && Boolean(row.destinationPath);
+    const destinationHtml = explicitGpoMapping
+      ? `<div class="import-target-select"><strong>${esc(row.destinationLabel || row.label || row.indicator || currentTargetId)}</strong><small class="muted">Mapping GPO explicite${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div>`
+      : `<div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div>`;
+    return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(categoryLabel(row))}${roleHint ? `<br><small class="muted">${esc(roleHint)}</small>` : ""}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(formatImportNumber(row.budget))}</td><td>${esc(formatImportNumber(row.historical))}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${destinationHtml}</td><td>${esc(row.currentValue === "" || row.currentValue === null || row.currentValue === undefined ? "" : perfFmt(row.currentValue))}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
   const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const maskedGroupsTable = maskedGroups.length ? `<div class="card"><h3>Groupes masqués pour confidentialité</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Valeur</th><th>Contributeurs</th><th>Règle</th><th>Feuille</th></tr></thead><tbody>${maskedGroups.map(row => `<tr class="import-gray"><td>${esc(row.period || "")}</td><td>${esc(row.groupType || "")}</td><td>${esc(row.label || row.value || "")}</td><td>${esc(row.employeeCount || "")}</td><td>${esc(row.rule || "")}</td><td>${esc(row.sourceSheet || "")}</td></tr>`).join("")}</tbody></table></div>` : "";
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p>${privacyBanner}${tbagPrivacyBanner}${gaDetailPrivacyBanner}${gaDetailComparisonCards}${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="26">${emptyDiagnostic}</td></tr>`}</tbody></table>${maskedGroupsTable}${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p><div class="item alert-blue"><strong>Règle V5.28O</strong><span class="muted">Les 21 KPI GPO reconnus utilisent désormais un mapping explicite. Les anciennes valeurs DEOS restent comparées, mais les destinations GPO ne sont plus proposées via une liste générique. Vous gardez la validation finale.</span></div>${privacyBanner}${tbagPrivacyBanner}${gaDetailPrivacyBanner}${gaDetailComparisonCards}${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="26">${emptyDiagnostic}</td></tr>`}</tbody></table>${maskedGroupsTable}${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -11213,7 +11443,8 @@ function normalizePerformanceImportIndicators(rows, file) {
     const mappedPathRaw = destinationPath || (hasExplicitTargetType ? "" : (target ? target.path : ""));
     const normalizedDestination = normalizeImportDestination(mappedPathRaw, raw.destinationField || "");
     const mappedLabel = firstImportValue(raw, ["destinationLabel", "destination", "target", "deosIndicator"]) || (target ? target.label : "KPI complémentaire");
-    const confidenceMeta = performanceImportConfidenceMeta(targetType === "existing" ? 92 : targetType === "complementary" ? (targetId === "complementary.generic" ? 62 : 74) : 40);
+    const sourceConfidenceScore = Number.isFinite(Number(raw.sourceConfidenceScore)) ? Number(raw.sourceConfidenceScore) : null;
+    const confidenceMeta = performanceImportConfidenceMeta(sourceConfidenceScore ?? (targetType === "existing" ? 92 : targetType === "complementary" ? (targetId === "complementary.generic" ? 62 : 74) : 40));
     const selected = raw.selected !== undefined ? Boolean(raw.selected) : targetType !== "ignore";
     const period = normalizeImportPeriod(raw.period || raw.date || file.period || ensureArray(file.periods)[0]) || IMPORT_PERIOD_PENDING;
     const source = /gpo/i.test(sourceType) ? "GPO" : (isZGemedSourceLabel(raw.source || file.source || file.sourceType || "") ? "Z_GEMED" : (raw.source || file.source || file.sourceType || "Import"));
@@ -11269,6 +11500,8 @@ function normalizePerformanceImportIndicators(rows, file) {
       targetId,
       targetType,
       confidence: raw.confidence || confidenceMeta.label,
+      sourceConfidenceScore: sourceConfidenceScore ?? undefined,
+      validationWarning: raw.validationWarning || "",
       confidenceScore: confidenceMeta.score,
       confidenceLabel: confidenceMeta.label,
       confidenceText: confidenceMeta.text,
@@ -11340,15 +11573,24 @@ function performanceImportStepValidate() {
 }
 
 function compactPerformanceImportIndicator(row = {}) {
+  // V5.28P : l'historique d'import reste compact, mais conserve les champs
+  // indispensables à l'analyse Réel / Budget / Historique et au matching KPI.
   return {
     period: row.period || "",
     periodType: row.periodType || "monthly",
     source: row.source || row.sourceType || "",
     indicator: row.indicator || row.label || "",
+    metricKey: row.metricKey || "",
+    actual: row.actual ?? row.value ?? "",
     value: row.value ?? row.actual ?? "",
+    budget: row.budget ?? null,
+    historical: row.historical ?? null,
+    objective: row.objective ?? null,
     unit: row.unit || "",
     destinationLabel: row.destinationLabel || "",
     destinationPath: row.destinationPath || "",
+    targetId: row.targetId || row.destinationId || "",
+    targetType: row.targetType || "",
     status: row.status || "",
     confidence: row.confidence || row.confidenceText || "",
     action: row.action || ""
@@ -11374,6 +11616,7 @@ function compactPerformanceImportPayload(item = {}) {
     ignoredCount: Number(item.ignoredCount || 0),
     conflictCount: Number(item.conflictCount ?? ensureArray(item.conflicts).length),
     periods: ensureArray(item.periods),
+    updatedMetricLabels: ensureArray(item.updatedMetricLabels).filter(Boolean),
     privacyAudit: item.privacyAudit || undefined
   });
 }
@@ -11426,7 +11669,8 @@ function validatePerformanceImport() {
       importedCount: imported.importedCount,
       ignoredCount: performanceImportWizard.preview.length - imported.importedCount,
       conflictCount: conflictRows.length,
-      periods: imported.periods
+      periods: imported.periods,
+      updatedMetricLabels: imported.updatedMetricLabels
     });
     const containsCgtab = performanceImportWizard.preview.some(row => /CGTAB/i.test(String(row.source || row.sourceType || "")));
     if (containsCgtab) payload.privacyAudit = performancePrivacyAuditForSensitiveData();
@@ -11602,7 +11846,7 @@ async function analyzeGpoPdfFile(file, detected) {
       selectedPeriods: [period],
       sheets: [],
       detectedIndicators: [],
-      message: "Import bloquà© : section Saint-Gilles non dà©tectà©e de manià¨re fiable dans le GPO."
+      message: "Import bloqué : section Saint-Gilles non détectée de manière fiable dans le GPO."
     };
   }
 
@@ -11676,13 +11920,14 @@ async function readPdfPages(file) {
     const content = await page.getTextContent();
     const rawText = content.items.map(item => item.str || "").join(" ");
     const layoutText = pdfLayoutTextFromItems(content.items);
-   pages.push({
-  page: pageNo,
-  text: `${rawText}\n${layoutText}`.trim() || rawText,
-  rawText,
-  layoutText,
-  items: content.items
-});
+    const viewport = page.getViewport({ scale: 1 });
+    const layoutItems = ensureArray(content.items).map((item, index) => ({
+      text: String(item?.str || "").trim(),
+      x: Number(item?.transform?.[4] || 0),
+      yTop: Number(viewport.height || 0) - Number(item?.transform?.[5] || 0),
+      index
+    })).filter(item => item.text);
+    pages.push({ page: pageNo, text: `${rawText}\n${layoutText}`.trim() || rawText, rawText, layoutText, layoutItems, width: viewport.width, height: viewport.height });
   }
   return pages;
 }
@@ -11741,6 +11986,108 @@ function gpoIndicatorRow(period, metric, values, sourcePage, confidence = "moyen
   };
 }
 
+
+function gpoLayoutNumbers(page, { xMin = -Infinity, xMax = Infinity, yMin = -Infinity, yMax = Infinity } = {}) {
+  return ensureArray(page?.layoutItems).map(item => ({
+    ...item,
+    value: parseZGemedNumber(item.text)
+  })).filter(item => item.value !== "" && Number.isFinite(Number(item.value)) && item.x >= xMin && item.x <= xMax && item.yTop >= yMin && item.yTop <= yMax);
+}
+
+function gpoLayoutNearestNumber(page, x, y, { xTolerance = 28, yTolerance = 18, min = -Infinity, max = Infinity } = {}) {
+  const candidates = gpoLayoutNumbers(page, { xMin: x - xTolerance, xMax: x + xTolerance, yMin: y - yTolerance, yMax: y + yTolerance })
+    .filter(item => Number(item.value) >= min && Number(item.value) <= max)
+    .sort((a, b) => (Math.abs(a.x - x) + Math.abs(a.yTop - y) * 1.8) - (Math.abs(b.x - x) + Math.abs(b.yTop - y) * 1.8));
+  return candidates[0]?.value ?? "";
+}
+
+function gpoLayoutTriple(page, coords, range = {}) {
+  return {
+    historical: gpoLayoutNearestNumber(page, coords[0][0], coords[0][1], range),
+    budget: gpoLayoutNearestNumber(page, coords[1][0], coords[1][1], range),
+    actual: gpoLayoutNearestNumber(page, coords[2][0], coords[2][1], range)
+  };
+}
+
+function gpoPlausibility(metricKey, values) {
+  const rules = {
+    "productivity.preparation": [50, 200],
+    "productivity.reception": [5, 50],
+    "productivity.manutention": [5, 50],
+    "productivity.chargement": [5, 60],
+    "productivity.transit": [0, 100],
+    "hours.total": [10000, 1000000],
+    "hours.direct": [10000, 1000000],
+    "hours.indirect": [1000, 500000],
+    "hours.indirect.share": [0, 100],
+    "absenteeism.total": [0, 100],
+    "absenteeism.maladie": [0, 100],
+    "absenteeism.accident_travail": [0, 100],
+    "absenteeism.formation": [0, 100],
+    "absenteeism.conges": [0, 100],
+    "absenteeism.autres": [0, 100],
+    "quality.total_gains_pertes": [-10000, 10000],
+    "pallet.height": [70, 130]
+  };
+  const rule = rules[metricKey];
+  if (!rule) return { ok: true, score: 82 };
+  const present = [values?.historical, values?.budget, values?.actual].filter(value => value !== "" && value !== null && value !== undefined).map(Number).filter(Number.isFinite);
+  if (!present.length) return { ok: false, score: 25 };
+  const ok = present.every(value => value >= rule[0] && value <= rule[1]);
+  return { ok, score: ok ? 94 : 25 };
+}
+
+function gpoMetricConfidence(metricKey, values, layoutBased = false) {
+  const check = gpoPlausibility(metricKey, values);
+  if (!check.ok) return { label: "faible", score: 25, selected: false, action: "ignore", warning: "Valeur incohérente avec la plage métier" };
+  const score = layoutBased ? 96 : Math.min(88, check.score);
+  return { label: performanceImportConfidenceMeta(score).label, score, selected: true, action: "" };
+}
+
+function extractGpoSaintGillesLayout(page) {
+  const text = String(page?.layoutText || page?.text || "");
+  if (!ensureArray(page?.layoutItems).length) return null;
+  const out = {};
+  if (/Performance mensuelle/i.test(text)) {
+    out.productivity_preparation = gpoLayoutTriple(page, [[179, 187], [202, 176], [225, 229]], { xTolerance: 24, yTolerance: 15, min: 50, max: 200 });
+    out.productivity_reception = gpoLayoutTriple(page, [[270, 217], [293, 236], [316, 204]], { xTolerance: 24, yTolerance: 15, min: 5, max: 50 });
+    out.productivity_manutention = gpoLayoutTriple(page, [[359, 224], [382, 219], [405, 209]], { xTolerance: 24, yTolerance: 15, min: 5, max: 50 });
+    out.productivity_chargement = gpoLayoutTriple(page, [[449, 224], [472, 239], [495, 209]], { xTolerance: 24, yTolerance: 15, min: 5, max: 60 });
+  }
+  if (/Evolution HEURES/i.test(text)) {
+    out.hours_total = gpoLayoutTriple(page, [[660, 166], [676, 181], [692, 147]], { xTolerance: 28, yTolerance: 16, min: 10000, max: 1000000 });
+    out.hours_indirect = gpoLayoutTriple(page, [[660, 257], [676, 287], [692, 271]], { xTolerance: 28, yTolerance: 16, min: 1000, max: 500000 });
+    if ([out.hours_total.historical, out.hours_total.budget, out.hours_total.actual, out.hours_indirect.historical, out.hours_indirect.budget, out.hours_indirect.actual].every(v => v !== "")) {
+      out.hours_direct = {
+        historical: Number(out.hours_total.historical) - Number(out.hours_indirect.historical),
+        budget: Number(out.hours_total.budget) - Number(out.hours_indirect.budget),
+        actual: Number(out.hours_total.actual) - Number(out.hours_indirect.actual)
+      };
+      out.hours_indirect_share = {
+        historical: +(Number(out.hours_indirect.historical) / Number(out.hours_total.historical) * 100).toFixed(1),
+        budget: +(Number(out.hours_indirect.budget) / Number(out.hours_total.budget) * 100).toFixed(1),
+        actual: +(Number(out.hours_indirect.actual) / Number(out.hours_total.actual) * 100).toFixed(1)
+      };
+    }
+  }
+  if (/TAUX\s+D.?ABSENCE|Absentéisme|Absenteisme/i.test(text)) {
+    out.absenteeism_total = gpoLayoutTriple(page, [[672, 127], [673, 173], [672, 224]], { xTolerance: 24, yTolerance: 14, min: 0, max: 100 });
+    out.absenteeism_conges = gpoLayoutTriple(page, [[108, 173], [136, 173], [163, 173]], { xTolerance: 22, yTolerance: 12, min: 0, max: 100 });
+    out.absenteeism_maladie = gpoLayoutTriple(page, [[214, 233], [241, 240], [269, 230]], { xTolerance: 22, yTolerance: 14, min: 0, max: 100 });
+    out.absenteeism_accident_travail = gpoLayoutTriple(page, [[318, 239], [345, 242], [373, 231]], { xTolerance: 22, yTolerance: 14, min: 0, max: 100 });
+    out.absenteeism_formation = gpoLayoutTriple(page, [[422, 253], [449, 253], [477, 252]], { xTolerance: 24, yTolerance: 12, min: 0, max: 100 });
+    out.absenteeism_autres = gpoLayoutTriple(page, [[526, 248], [553, 243], [581, 244]], { xTolerance: 22, yTolerance: 14, min: 0, max: 100 });
+  }
+  if (/Gains\s*&\s*Pertes|G&P/i.test(text)) {
+    out.gains_pertes = gpoLayoutTriple(page, [[66, 201], [96, 243], [331, 169]], { xTolerance: 32, yTolerance: 20, min: -10000, max: 10000 });
+  }
+  if (/HAUTEUR PALETTE|Hauteur Palette/i.test(text)) {
+    out.pallet_height = gpoLayoutTriple(page, [[651, 353], [664, 340], [683, 333]], { xTolerance: 28, yTolerance: 16, min: 70, max: 130 });
+    out.pallet_height.objective = gpoLayoutNearestNumber(page, 40, 337, { xTolerance: 24, yTolerance: 18, min: 70, max: 130 });
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function extractGpoIndicators(pages, period) {
   const rows = [];
   const gpoMetrics = {
@@ -11761,72 +12108,74 @@ function extractGpoIndicators(pages, period) {
     absenteeism_formation: { metricKey: "absenteeism.formation", label: "Absentéisme formation", targetId: "absenteeism.formation", category: "Absentéisme", unit: "pourcentage" },
     absenteeism_conges: { metricKey: "absenteeism.conges", label: "Absentéisme congés", targetId: "absenteeism.conges", category: "Absentéisme", unit: "pourcentage" },
     absenteeism_autres: { metricKey: "absenteeism.autres", label: "Absentéisme autres", targetId: "absenteeism.autres", category: "Absentéisme", unit: "pourcentage" },
-    hours_gap_budget: { metricKey: "hours.total.budget_gap", label: "Écart heures vs Budget", targetId: "complementary.generic", category: "Heures", unit: "heures" },
-    hours_gap_historical: { metricKey: "hours.total.historical_gap", label: "Écart heures vs Historique", targetId: "complementary.generic", category: "Heures", unit: "heures" }
+    hours_gap_budget: { metricKey: "hours.total.budget_gap", label: "Écart heures vs Budget", targetId: "gpo.hours_gap_budget", category: "Heures", unit: "heures" },
+    hours_gap_historical: { metricKey: "hours.total.historical_gap", label: "Écart heures vs Historique", targetId: "gpo.hours_gap_historical", category: "Heures", unit: "heures" }
   };
-  const pushMetric = (page, metricId, values, confidence = "moyenne") => {
-    const row = gpoIndicatorRow(period, gpoMetrics[metricId], values, `page ${page.page}`, confidence);
-    if (row) rows.push(row);
+  const pushMetric = (page, metricId, values, confidence = "moyenne", layoutBased = false) => {
+    const metric = gpoMetrics[metricId];
+    const check = gpoMetricConfidence(metric?.metricKey || metricId, values, layoutBased);
+    const row = gpoIndicatorRow(period, metric, values, `page ${page.page}`, check.label || confidence);
+    if (row) {
+      row.sourceConfidenceScore = check.score;
+      row.validationWarning = check.warning || "";
+      row.selected = check.selected;
+      row.action = check.action;
+      rows.push(row);
+    }
   };
   pages.forEach(page => {
     const text = page.text;
+    const layout = extractGpoSaintGillesLayout(page) || {};
     if (/Passage IPO total/i.test(text)) pushMetric(page, "ipo_total", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+total", 240)), "élevée");
     if (/Passage IPO Variable/i.test(text)) pushMetric(page, "ipo_variable", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+Variable", 240)), "élevée");
     if (/Performance mensuelle/i.test(text)) {
-      pushMetric(page, "productivity_preparation",
-  extractGpoTripleAround(text, "PRÉPARATION|PREPARATION", { preferDecimal: true }),
-  "moyenne"
-);
-
-pushMetric(page, "productivity_reception",
-  extractGpoTripleAround(text, "RÉCEPTION|RECEPTION", { preferDecimal: true }),
-  "moyenne"
-);
-
-pushMetric(page, "productivity_manutention",
-  extractGpoTripleAround(text, "MANUTENTION", { preferDecimal: true }),
-  "moyenne"
-);
-
-pushMetric(page, "productivity_chargement",
-  extractGpoTripleAround(text, "CHARGEMENT", { preferDecimal: true }),
-  "moyenne"
-);
-      
+      pushMetric(page, "productivity_preparation", layout.productivity_preparation || extractGpoTripleAround(extractGpoSection(text, "PRÉPARATION|PREPARATION", 180), "PRÉPARATION|PREPARATION", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_preparation));
+      pushMetric(page, "productivity_reception", layout.productivity_reception || extractGpoTripleAround(extractGpoSection(text, "RÉCEPTION|RECEPTION", 180), "RÉCEPTION|RECEPTION", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_reception));
+      pushMetric(page, "productivity_manutention", layout.productivity_manutention || extractGpoTripleAround(extractGpoSection(text, "MANUTENTION", 180), "MANUTENTION", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_manutention));
+      pushMetric(page, "productivity_chargement", layout.productivity_chargement || extractGpoTripleAround(extractGpoSection(text, "CHARGEMENT", 180), "CHARGEMENT", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_chargement));
       if (/TRANSIT|TRANSPORT/i.test(text)) pushMetric(page, "productivity_transit", extractGpoTripleAround(extractGpoSection(text, "TRANSIT|TRANSPORT", 180), "TRANSIT|TRANSPORT", { preferDecimal: true }), "faible");
     }
     if (/Evolution HEURES/i.test(text)) {
       const hoursValues = extractGpoHoursValues(text);
-      pushMetric(page, "hours_total", hoursValues.total, "moyenne");
-      pushMetric(page, "hours_direct", hoursValues.direct, "moyenne");
-      pushMetric(page, "hours_indirect", hoursValues.indirect, "moyenne");
-      if (hoursValues.total.actual !== "" && hoursValues.total.budget !== "") pushMetric(page, "hours_gap_budget", { actual: Number(hoursValues.total.actual) - Number(hoursValues.total.budget), budget: null, historical: null }, "faible");
-      if (hoursValues.total.actual !== "" && hoursValues.total.historical !== "") pushMetric(page, "hours_gap_historical", { actual: Number(hoursValues.total.actual) - Number(hoursValues.total.historical), budget: null, historical: null }, "faible");
-      const pct = extractGpoIndirectPercent(text);
-      if (pct !== "") pushMetric(page, "hours_indirect_share", { actual: pct, budget: null, historical: null }, "faible");
+      const totalValues = layout.hours_total || hoursValues.total;
+      const directValues = layout.hours_direct || hoursValues.direct;
+      const indirectValues = layout.hours_indirect || hoursValues.indirect;
+      pushMetric(page, "hours_total", totalValues, "moyenne", Boolean(layout.hours_total));
+      pushMetric(page, "hours_direct", directValues, "moyenne", Boolean(layout.hours_direct));
+      pushMetric(page, "hours_indirect", indirectValues, "moyenne", Boolean(layout.hours_indirect));
+      if (totalValues.actual !== "" && totalValues.budget !== "") pushMetric(page, "hours_gap_budget", { actual: Number(totalValues.actual) - Number(totalValues.budget), budget: null, historical: null }, "faible");
+      if (totalValues.actual !== "" && totalValues.historical !== "") pushMetric(page, "hours_gap_historical", { actual: Number(totalValues.actual) - Number(totalValues.historical), budget: null, historical: null }, "faible");
+      const pctValues = layout.hours_indirect_share || null;
+      if (pctValues) pushMetric(page, "hours_indirect_share", pctValues, "moyenne", true);
+      else { const pct = extractGpoIndirectPercent(text); if (pct !== "") pushMetric(page, "hours_indirect_share", { actual: pct, budget: null, historical: null }, "faible"); }
     }
     if (/TAUX\s+D.?ABSENCE|Absentéisme|Absenteisme/i.test(text)) {
-      
-      const abs = extractGpoAbsValues(page);
-
-pushMetric(page, "absenteeism_total", abs.total, "moyenne");
-pushMetric(page, "absenteeism_maladie", abs.maladie, "moyenne");
-pushMetric(page, "absenteeism_accident_travail", abs.accident, "moyenne");
-pushMetric(page, "absenteeism_formation", abs.formation, "moyenne");
-pushMetric(page, "absenteeism_conges", abs.conges, "moyenne");
-pushMetric(page, "absenteeism_autres", abs.autres, "moyenne");
+      pushMetric(page, "absenteeism_total", layout.absenteeism_total || extractGpoAbsTotal(text), "moyenne", Boolean(layout.absenteeism_total));
+      pushMetric(page, "absenteeism_maladie", layout.absenteeism_maladie || extractGpoAbsDetail(text, "MALADIE"), "faible", Boolean(layout.absenteeism_maladie));
+      pushMetric(page, "absenteeism_accident_travail", layout.absenteeism_accident_travail || extractGpoAbsDetail(text, "ACCIDENT(?:S)?\s+DU\s+TRAVAIL|AT"), "faible", Boolean(layout.absenteeism_accident_travail));
+      pushMetric(page, "absenteeism_formation", layout.absenteeism_formation || extractGpoAbsDetail(text, "FORMATION"), "faible", Boolean(layout.absenteeism_formation));
+      pushMetric(page, "absenteeism_conges", layout.absenteeism_conges || extractGpoAbsDetail(text, "CONGE|CONGÉ"), "faible", Boolean(layout.absenteeism_conges));
+      pushMetric(page, "absenteeism_autres", layout.absenteeism_autres || extractGpoAbsDetail(text, "AUTRES?"), "faible", Boolean(layout.absenteeism_autres));
     }
     if (/Heures majorées|Heures majorees/i.test(text)) {
       const major = extractGpoMajorHours(text);
       ["night", "overtime", "sundays"].forEach(key => {
-        if (major[key] !== "") rows.push({ id: newId("preview"), period, indicator: ({ night: "Heures de nuit cumul", overtime: "Heures supplémentaires cumul", sundays: "Dimanches / fériés cumul" })[key], value: major[key], unit: "h", source: "GPO PDF", sourceType: "GPO PDF", pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "hours", destinationLabel: ({ night: "Heures de nuit", overtime: "Heures supplémentaires", sundays: "Dimanches / fériés" })[key], destinationField: key, confidence: "moyenne", selected: true, action: "" });
+        if (major[key] !== "") {
+          const targetId = ({ night: "hours.night", overtime: "hours.overtime", sundays: "hours.sundays" })[key];
+          const target = performanceImportTargetById(targetId);
+          rows.push({ id: newId("preview"), period, indicator: ({ night: "Heures de nuit cumul", overtime: "Heures supplémentaires cumul", sundays: "Dimanches / fériés cumul" })[key], label: ({ night: "Heures de nuit cumul", overtime: "Heures supplémentaires cumul", sundays: "Dimanches / fériés cumul" })[key], metricKey: targetId, category: "Heures", value: major[key], actual: major[key], unit: "h", source: "GPO", sourceType: "GPO PDF", pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: target?.path || "hours", destinationLabel: target?.label || ({ night: "Heures de nuit cumul", overtime: "Heures supplémentaires cumul", sundays: "Dimanches / fériés cumul" })[key], destinationField: target?.destinationField || key, targetId, destinationId: targetId, targetType: "existing", confidence: "moyenne", selected: true, action: "" });
+        }
       });
     }
-    if (/Gains\s*&\s*Pertes|G&P/i.test(text)) rows.push({ id: newId("preview"), period, indicator: "Total Gains & Pertes", label: "Total Gains & Pertes", metricKey: "quality.total_gains_pertes", category: "Qualité", actual: extractGpoGpValues(text).actual, value: extractGpoGpValues(text).actual, budget: extractGpoGpValues(text).budget ?? null, historical: extractGpoGpValues(text).historical ?? null, unit: "k€", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "quality.indicators.Total Gains & Pertes.actual", destinationLabel: "Total Gains & Pertes", confidence: "moyenne", selected: true, action: "" });
+    if (/Gains\s*&\s*Pertes|G&P/i.test(text)) {
+      const gp = layout.gains_pertes || extractGpoGpValues(text);
+      const check = gpoMetricConfidence("quality.total_gains_pertes", gp, Boolean(layout.gains_pertes));
+      rows.push({ id: newId("preview"), period, indicator: "Total Gains & Pertes", label: "Total Gains & Pertes", metricKey: "quality.total_gains_pertes", category: "Qualité", actual: gp.actual, value: gp.actual, budget: gp.budget ?? null, historical: gp.historical ?? null, unit: "k€", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "quality.indicators.Total Gains & Pertes.actual", destinationLabel: "Total Gains & Pertes", confidence: check.label, sourceConfidenceScore: check.score, validationWarning: check.warning || "", selected: check.selected, action: check.action });
+    }
     if (/HAUTEUR PALETTE|Hauteur Palette/i.test(text)) {
-      
-      const values = extractGpoPalletValues(page);
-      if (values.actual !== "") rows.push({ id: newId("preview"), period, indicator: "Hauteur Palette", label: "Hauteur palette", metricKey: "pallet.height", category: "Hauteur palette", actual: values.actual, value: values.actual, budget: values.budget ?? null, historical: values.historical ?? null, objective: values.objective ?? null, unit: "", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "palletHeight.actual", destinationLabel: "Hauteur palette", confidence: "faible", selected: true, action: "" });
+      const values = layout.pallet_height || extractGpoPalletValues(text);
+      const check = gpoMetricConfidence("pallet.height", values, Boolean(layout.pallet_height));
+      if (values.actual !== "") rows.push({ id: newId("preview"), period, indicator: "Hauteur Palette", label: "Hauteur palette", metricKey: "pallet.height", category: "Hauteur palette", actual: values.actual, value: values.actual, budget: values.budget ?? null, historical: values.historical ?? null, objective: values.objective ?? null, unit: "", scope: "global", source: "GPO", sourceType: "GPO PDF", sourcePage: `page ${page.page}`, pageSource: `page ${page.page}`, sourceRef: `PDF page ${page.page}`, destinationPath: "palletHeight.actual", destinationLabel: "Hauteur palette", confidence: check.label, sourceConfidenceScore: check.score, validationWarning: check.warning || "", selected: check.selected, action: check.action });
     }
   });
   return dedupeImportRows(rows);
@@ -11934,206 +12283,25 @@ function extractGpoAbsTotal(text) {
   return { historical: nums[0] ?? "", budget: nums[1] ?? "", actual: nums[2] ?? "" };
 }
 
-
-function extractGpoAbsValues(page) {
-  const text = String(page?.text || "");
-
-  const empty = {
-    total: { historical: "", budget: "", actual: "" },
-    maladie: { historical: "", budget: "", actual: "" },
-    accident: { historical: "", budget: "", actual: "" },
-    formation: { historical: "", budget: "", actual: "" },
-    conges: { historical: "", budget: "", actual: "" },
-    autres: { historical: "", budget: "", actual: "" }
-  };
-
-  const items = ensureArray(page?.items)
-    .map(item => ({
-      text: String(item?.str || "").trim(),
-      x: Number(item?.transform?.[4] || 0),
-      y: Number(item?.transform?.[5] || 0)
-    }))
-    .filter(item => item.text);
-
-  if (!items.length) return empty;
-
-  const norm = value => normalizeText(String(value || ""));
-
-  const findLabel = patterns =>
-    items.find(item =>
-      patterns.some(pattern => norm(item.text).includes(norm(pattern)))
-    );
-
-  const labels = {
-    conges: findLabel(["CP"]),
-    maladie: findLabel(["Maladie"]),
-    accident: findLabel(["AT"]),
-    formation: findLabel(["Formation"]),
-    autres: findLabel(["Autres"])
-  };
-
-  const existingLabels = Object.values(labels).filter(Boolean);
-  if (existingLabels.length < 4) return empty;
-
-  const labelY =
-    existingLabels.reduce((sum, item) => sum + item.y, 0) /
-    existingLabels.length;
-
-  const percentItems = items.flatMap(item => {
-    const matches = [...item.text.matchAll(/(-?\d+(?:[.,]\d+)?)\s*%/g)];
-
-    return matches.map(match => ({
-      value: Number(match[1].replace(",", ".")),
-      x: item.x,
-      y: item.y
-    }));
-  }).filter(item =>
-    Number.isFinite(item.value) &&
-    item.y > labelY + 3 &&
-    item.y < labelY + 130
-  );
-
-  const extractForLabel = label => {
-    if (!label) {
-      return { historical: "", budget: "", actual: "" };
-    }
-
-    const values = percentItems
-      .filter(candidate => Math.abs(candidate.x - label.x) < 45)
-      .sort((a, b) => a.x - b.x);
-
-    if (values.length < 3) {
-      return { historical: "", budget: "", actual: "" };
-    }
-
-    return {
-      historical: values[0].value,
-      budget: values[1].value,
-      actual: values[2].value
-    };
-  };
-
-  empty.conges = extractForLabel(labels.conges);
-  empty.maladie = extractForLabel(labels.maladie);
-  empty.accident = extractForLabel(labels.accident);
-  empty.formation = extractForLabel(labels.formation);
-  empty.autres = extractForLabel(labels.autres);
-
-  // Total absentéisme : la ligne H / B / R est textuellement fiable.
-  const totalMatch = text.match(
-    /HISTO\s+BUDGET\s+REEL([\s\S]{0,180})/i
-  );
-
-  if (totalMatch) {
-    const nums = [...totalMatch[1].matchAll(/(\d+(?:[.,]\d+)?)\s*%/g)]
-      .map(match => Number(match[1].replace(",", ".")))
-      .slice(0, 3);
-
-    if (nums.length === 3) {
-      empty.total = {
-        historical: nums[0],
-        budget: nums[1],
-        actual: nums[2]
-      };
-    }
-  }
-
-  return empty;
-}
 function extractGpoGpValues(text) {
-  const source = String(text || "");
-
-  const start = source.search(/MENSUEL/i);
-  const end = source.search(/Compteurs\s+G&P/i);
-
-  const segment =
-    start >= 0
-      ? source.slice(start, end > start ? end : source.length)
-      : source;
-
-  const values = [];
-
-  for (const match of segment.matchAll(/([+-]?\s*\d+(?:[.,]\d+)?)\s*K(?:€)?\b/gi)) {
-    const raw = match[1].replace(/\s+/g, "");
-
-    // Les composantes du pont sont signées :
-    // +98,9 K ; -44,1 K ; etc.
-    // On ne conserve que les trois totaux H / B / R.
-    if (/^[+-]/.test(raw)) continue;
-
-    const value = Number(raw.replace(",", "."));
-
-    if (Number.isFinite(value)) {
-      values.push(value);
-    }
-  }
-
-  return {
-    historical: values[0] ?? "",
-    budget: values[1] ?? "",
-    actual: values[2] ?? ""
+  // La page Gains & Pertes place les valeurs au-dessus des libellés G&P H/B/R.
+  // On préfère donc le nombre précédent et on conserve un fallback arrière.
+  const around = regex => {
+    const before = matchNumberBefore(text, regex);
+    return before !== "" ? before : matchNumberAfter(text, regex);
   };
+  const h = around(/G&P\s*H/i);
+  const b = around(/G&P\s*B/i);
+  const r = around(/G&P\s*R/i);
+  return { historical: h, budget: b, actual: r };
 }
 
-function extractGpoPalletValues(page) {
-  const text = String(page?.text || "");
-
+function extractGpoPalletValues(text) {
   const objective = matchNumberAfter(text, /Objectif annuel/i);
-
-  const items = ensureArray(page?.items)
-    .map(item => ({
-      text: String(item?.str || "").trim(),
-      x: Number(item?.transform?.[4] || 0),
-      y: Number(item?.transform?.[5] || 0)
-    }))
-    .filter(item => item.text);
-
-  // Les 3 valeurs H / B / R du "Cumul à date"
-  // sont regroupées à l'extrémité droite du graphique.
-  const candidates = items
-    .map(item => {
-      const match = item.text.match(/^(\d{2,3}(?:[.,]\d+)?)$/);
-
-      if (!match) return null;
-
-      const value = Number(match[1].replace(",", "."));
-
-      return {
-        value,
-        x: item.x,
-        y: item.y
-      };
-    })
-    .filter(item =>
-      item &&
-      Number.isFinite(item.value) &&
-      item.value >= 80 &&
-      item.value <= 120 &&
-      item.x > 620 &&
-      item.y > 150 &&
-      item.y < 260
-    )
-    .sort((a, b) => a.x - b.x);
-
-  if (candidates.length < 3) {
-    return {
-      historical: "",
-      budget: "",
-      actual: "",
-      objective
-    };
-  }
-
-  // On retient les 3 valeurs les plus à droite :
-  // gauche = HISTO, milieu = BUD, droite = REEL.
-  const values = candidates.slice(-3);
-
-  return {
-    historical: values[0].value,
-    budget: values[1].value,
-    actual: values[2].value,
-    objective
-  };
+  const idx = text.search(/HISTO\s+BUD\s+REEL/i);
+  const segment = idx >= 0 ? text.slice(Math.max(0, idx - 160), idx) : text;
+  const nums = gpoNumbers(segment).filter(v => v !== "").slice(-3);
+  return { historical: nums[0] ?? "", budget: nums[1] ?? "", actual: nums[2] ?? "", objective };
 }
 
 function extractGpoIndirectPercent(text) {
@@ -12232,11 +12400,11 @@ function tbagBuildRow({ period, metricKey, label, value, unit, population = "", 
   const isNativeProductivityTotal = metricKey === "preparation.productivity.total" && isTotalScope;
   const isBannerHoursDetail = metricKey === "preparation.banner.hours";
   const destinationPath = isNativeProductivityTotal
-    ? "productivity.Prà©paration.actual"
+    ? "productivity.Préparation.actual"
     : tbagDestinationPath(metricKey, population, banner);
   const destinationLabel = isNativeProductivityTotal
-    ? "Productività© Prà©paration"
-    : `${label} Â· Prà©paration`;
+    ? "Productivité Préparation"
+    : `${label} · Préparation`;
   const targetId = isNativeProductivityTotal
     ? "productivity.preparation"
     : destinationPath;
@@ -12257,7 +12425,7 @@ function tbagBuildRow({ period, metricKey, label, value, unit, population = "", 
     budget: null,
     historical: null,
     unit,
-    scope: "Prà©paration",
+    scope: "Préparation",
     population,
     banner,
     directness: banner || "",
@@ -12270,7 +12438,7 @@ function tbagBuildRow({ period, metricKey, label, value, unit, population = "", 
     confidence,
     sourceSheet,
     sourceCell,
-    sourceRef: `${sourceSheet} Â· ${sourceCell}`,
+    sourceRef: `${sourceSheet} · ${sourceCell}`,
     destinationPath,
     destinationLabel,
     destinationId: targetId,
@@ -13701,7 +13869,7 @@ function zGemedSelectSaintGillesSheets(workbook = {}) {
   const bestScore = scored[0].score;
   const best = scored.filter(item => item.score === bestScore);
 
-  // Une feuille explicitement nommà©e St Gilles / Saint Gilles est prioritaire.
+  // Une feuille explicitement nommée St Gilles / Saint Gilles est prioritaire.
   const explicit = best.filter(item => /^(st|saint) gilles$/.test(normalizeText(item.sheet?.name || "")));
   if (explicit.length === 1) {
     return { status: "ok", sheets: [explicit[0].sheet], candidates: scored.map(item => item.sheet?.name || "") };
@@ -13722,7 +13890,7 @@ async function analyzeZGemedFile(file, detected) {
 
   if (ext === "xlsb" || String(file.name || "").toLowerCase().endsWith(".xlsb")) {
     if (!window.XLSX?.read || !window.XLSX?.utils?.sheet_to_json) {
-      throw new Error("Bibliothà¨que XLSX indisponible pour lire le classeur Z GEMED .xlsb.");
+      throw new Error("Bibliothèque XLSX indisponible pour lire le classeur Z GEMED .xlsb.");
     }
 
     const buffer = await readFileArrayBuffer(file);
@@ -13746,7 +13914,7 @@ async function analyzeZGemedFile(file, detected) {
         site: "",
         sheets: ensureArray(parsedWorkbook.sheets).map(sheet => sheet.name || ""),
         detectedIndicators: [],
-        message: "Import bloquà© : aucune feuille/zone Saint-Gilles ou FRY8MC dà©tectà©e dans le Z GEMED multi-sites."
+        message: "Import bloqué : aucune feuille/zone Saint-Gilles ou FRY8MC détectée dans le Z GEMED multi-sites."
       };
     }
 
@@ -13756,12 +13924,12 @@ async function analyzeZGemedFile(file, detected) {
         typeDetected: "Z GEMED Excel binaire",
         source: "Z_GEMED",
         sourceType: "Z GEMED XLSB",
-        status: "à  confirmer",
+        status: "à confirmer",
         confidence: "faible",
         site: "",
         sheets: scoped.candidates,
         detectedIndicators: [],
-        message: `Import bloquà© : plusieurs feuilles candidates Saint-Gilles dà©tectà©es (${scoped.candidates.join(", ")}).`
+        message: `Import bloqué : plusieurs feuilles candidates Saint-Gilles détectées (${scoped.candidates.join(", ")}).`
       };
     }
 
@@ -14159,7 +14327,13 @@ function decoratePerformancePreviewRow(row) {
           ? "Identique"
           : (targetType === "complementary" ? "Conflit" : (confidenceMeta.label === "faible" ? "Conflit" : "Différente"));
   const tone = status === "Ne pas importer" ? "gray" : status === "Conflit" ? "red" : status === "Différente" || confidenceMeta.label === "moyenne" ? "orange" : "green";
-  return { ...row, currentValue: current, status, tone, targetId: row.targetId || row.destinationId || "", targetType, confidenceScore: confidenceMeta.score, confidenceLabel: confidenceMeta.label, confidenceText: confidenceMeta.text, selected: row.selected !== undefined ? Boolean(row.selected) : (targetType !== "ignore" && !same), action: row.action || (same ? "ignore" : (hasCurrent ? "keep" : "use")) };
+  const reliableGpoReplacement = performanceSourceKey(row.source || row.sourceType || "") === "GPO"
+    && targetType === "existing"
+    && confidenceMeta.score >= 85
+    && hasCurrent
+    && !same;
+  const defaultAction = same ? "ignore" : (hasCurrent ? (reliableGpoReplacement ? "use" : "keep") : "use");
+  return { ...row, currentValue: current, status, tone, targetId: row.targetId || row.destinationId || "", targetType, confidenceScore: confidenceMeta.score, confidenceLabel: confidenceMeta.label, confidenceText: confidenceMeta.text, selected: row.selected !== undefined ? Boolean(row.selected) : (targetType !== "ignore" && !same), action: row.action || defaultAction, recommendedSourceReplacement: reliableGpoReplacement };
 }
 
 function getPerformanceByPeriod(period) {
@@ -14225,7 +14399,7 @@ function setImportPreviewTarget(id, targetId) {
   if (!target) return;
   row.destinationPath = target.path;
   row.destinationLabel = target.label;
-  row.destinationField = row.destinationField || "actual";
+  row.destinationField = target.destinationField || row.destinationField || "actual";
   row.targetId = target.id;
   row.destinationId = target.id;
   row.targetType = target.type;
@@ -14243,6 +14417,7 @@ function setImportPreviewTarget(id, targetId) {
 function applyPerformanceImportRows(rows, file, importDate) {
   state.performance = ensureArray(state.performance).map(performanceEnsurePeriodIdentity);
   const periods = new Set();
+  const updatedMetricLabels = [];
   let importedCount = 0;
   rows.forEach(row => {
     const parsedPeriod = parsePerformancePeriod(row.period || "");
@@ -14271,9 +14446,10 @@ function applyPerformanceImportRows(rows, file, importDate) {
     perf.importSources.unshift({ source: sourceLabel, file: file.name || "", importDate, period: row.period, periodType: row.periodType || "monthly", metricKey: row.metricKey || "", importedCount: 1, comment: `${row.indicator} -> ${row.destinationLabel}` });
     periods.add(normalizedPeriod);
     importedCount++;
+    updatedMetricLabels.push(row.indicator || row.label || row.metricKey || row.destinationLabel || "KPI");
   });
   state.performance = state.performance.slice().sort((a, b) => performancePeriodSortStamp(b) - performancePeriodSortStamp(a));
-  return { importedCount, periods: [...periods] };
+  return { importedCount, periods: [...periods], updatedMetricLabels: [...new Set(updatedMetricLabels)] };
 }
 
 function applyImportedValueToPerformance(perf, row) {
@@ -14356,21 +14532,34 @@ function applyImportedValueToPerformance(perf, row) {
     perf.complementaryKpis.push(nextValue);
     return true;
   }
-  const target = perfPath(perf, row.destinationPath);
-  if (!target) return false;
-  const field = row.destinationField || "actual";
+  // V5.28Q : les cibles existantes sont historiquement décrites sous la forme
+  // « productivity.Préparation.actual ». Pour stocker Réel/Budget/Historique,
+  // on doit travailler sur l'objet métrique parent et non sur la valeur scalaire actual.
+  let destinationPath = String(row.destinationPath || "");
+  let field = row.destinationField || "actual";
+  let target = perfPath(perf, destinationPath);
+  if ((target === null || target === undefined || typeof target !== "object") && destinationPath.endsWith(`.${field}`)) {
+    destinationPath = destinationPath.slice(0, -(field.length + 1));
+    target = perfPath(perf, destinationPath);
+  }
+  if (!target || typeof target !== "object") return false;
+  const importsMetricTriplet = field === "actual" && (row.budget !== undefined || row.historical !== undefined);
+  const nextBudget = row.budget !== null && row.budget !== undefined && row.budget !== "" ? row.budget : target.budget;
+  const nextHistorical = row.historical !== null && row.historical !== undefined && row.historical !== "" ? row.historical : target.historical;
   const unchanged = String(target[field] ?? "") === String(row.value ?? "")
-    && (row.destinationField || (String(target.budget ?? "") === String(row.budget ?? "") && String(target.historical ?? "") === String(row.historical ?? "")));
+    && (!importsMetricTriplet || (String(target.budget ?? "") === String(nextBudget ?? "") && String(target.historical ?? "") === String(nextHistorical ?? "")));
   if (unchanged) return false;
   target[field] = row.value;
-  if (!row.destinationField) {
-    target.budget = row.budget ?? target.budget;
-    target.historical = row.historical ?? target.historical;
+  // V5.28P : un mapping explicite vers le champ « actual » représente malgré tout
+  // un KPI complet. Le triplet GPO Réel / Budget / Historique doit donc être stocké.
+  if (importsMetricTriplet) {
+    target.budget = nextBudget;
+    target.historical = nextHistorical;
   }
-  if (row.destinationPath === "palletHeight" && row.objective !== undefined && row.objective !== "") target.objective = row.objective;
+  if (destinationPath === "palletHeight" && row.objective !== undefined && row.objective !== "") target.objective = row.objective;
   const sourceComment = `Source : ${row.source || "Import"} · ${row.sourceRef || ""}`.trim();
   if (!String(target.comment || "").includes(sourceComment)) target.comment = `${target.comment ? target.comment + "\n" : ""}${sourceComment}`.trim();
-  if (row.destinationPath.startsWith("productivity.")) target.status = perfStatus(target);
+  if (destinationPath.startsWith("productivity.")) target.status = perfStatus(target);
   return true;
 }
 
@@ -24019,12 +24208,12 @@ init();
 
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// V5.7 — ENRICHISSEMENT LOCAL DES à‰Và‰NEMENTS GOOGLE CALENDAR
+// V5.7 — ENRICHISSEMENT LOCAL DES ÉVÉNEMENTS GOOGLE CALENDAR
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 /**
  * Initialise la structure d'enrichissements si elle n'existe pas
- * S'exà©cute au dà©marrage pour garantir une structure cohà©rente
+ * S'exécute au démarrage pour garantir une structure cohérente
  */
 function ensureExternalEventEnrichments() {
   if (!state.externalEventEnrichments) {
@@ -24040,9 +24229,9 @@ function ensureExternalEventEnrichments() {
 }
 
 /**
- * Obtient ou crà©e un enrichissement pour un à©và©nement externe
- * @param {string} eventKey - Clà© stable de l'à©và©nement (google_<externalId>)
- * @returns {object} Enrichissement (existant ou nouvellement crà©à©)
+ * Obtient ou crée un enrichissement pour un événement externe
+ * @param {string} eventKey - Clé stable de l'événement (google_<externalId>)
+ * @returns {object} Enrichissement (existant ou nouvellement créé)
  */
 function getExternalEventEnrichment(eventKey) {
   if (!state.externalEventEnrichments[eventKey] && String(eventKey || "").startsWith("google_")) {
@@ -24081,9 +24270,9 @@ function getExternalEventEnrichment(eventKey) {
 }
 
 /**
- * Sauvegarde un enrichissement dans l'à©tat global
- * @param {string} eventKey - Clà© stable de l'à©và©nement
- * @param {object} enrichment - Donnà©es d'enrichissement
+ * Sauvegarde un enrichissement dans l'état global
+ * @param {string} eventKey - Clé stable de l'événement
+ * @param {object} enrichment - Données d'enrichissement
  */
 function saveExternalEventEnrichment(eventKey, enrichment) {
   const normalized = normalizeMeetingEnrichment({ eventKey, ...enrichment }, { external: true });
@@ -24094,8 +24283,8 @@ function saveExternalEventEnrichment(eventKey, enrichment) {
 }
 
 /**
- * Sauvegarde les donnà©es de la modale d'enrichissement
- * Appelà©e par le bouton "Enregistrer" de la modale
+ * Sauvegarde les données de la modale d'enrichissement
+ * Appelée par le bouton "Enregistrer" de la modale
  */
 function saveExternalEventEnrichmentFromModal(eventKey) {
   if (!eventKey) return false;
@@ -24127,11 +24316,11 @@ function saveExternalEventEnrichmentFromModal(eventKey) {
 }
 
 /**
- * Ajoute un sujet à  traiter pour un à©và©nement externe
+ * Ajoute un sujet à traiter pour un événement externe
  */
 function addExternalEventSubject(eventKey) {
   const enrichment = getExternalEventEnrichment(eventKey);
-  const subjectText = prompt("Ajouter un sujet à  traiter:");
+  const subjectText = prompt("Ajouter un sujet à traiter:");
   
   if (subjectText && subjectText.trim()) {
     const newSubject = {
@@ -24150,7 +24339,7 @@ function addExternalEventSubject(eventKey) {
 }
 
 /**
- * Met à  jour un sujet existant
+ * Met à jour un sujet existant
  */
 function updateExternalEventSubject(eventKey, subjectId, title, notes, completed) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24220,7 +24409,7 @@ function deleteExternalEventLink(eventKey, linkId) {
 }
 
 /**
- * Lie une action existante à  un à©và©nement externe
+ * Lie une action existante à un événement externe
  */
 function linkActionToExternalEvent(eventKey, actionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24229,7 +24418,7 @@ function linkActionToExternalEvent(eventKey, actionId) {
   if (!action) return;
   if (!enrichment.linkedActionIds) enrichment.linkedActionIds = [];
   
-  // à‰viter les doublons
+  // Éviter les doublons
   if (enrichment.linkedActionIds.includes(actionId)) return;
   
   enrichment.linkedActionIds.push(actionId);
@@ -24238,7 +24427,7 @@ function linkActionToExternalEvent(eventKey, actionId) {
 }
 
 /**
- * Dà©tache une action d'un à©và©nement externe (sans supprimer l'action)
+ * Détache une action d'un événement externe (sans supprimer l'action)
  */
 function unlinkActionFromExternalEvent(eventKey, actionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24253,13 +24442,13 @@ function unlinkActionFromExternalEvent(eventKey, actionId) {
 }
 
 /**
- * Crà©e une nouvelle action DEOS lià©e à  un à©và©nement externe
+ * Crée une nouvelle action DEOS liée à un événement externe
  */
 function createActionFromExternalEvent(eventKey, eventTitle) {
   const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
   if (!ev) return;
   
-  const actionTitle = prompt("Titre de la nouvelle action:", `à€ propos de: ${eventTitle}`);
+  const actionTitle = prompt("Titre de la nouvelle action:", `À propos de: ${eventTitle}`);
   if (!actionTitle || !actionTitle.trim()) return;
 
   try {
@@ -24282,7 +24471,7 @@ function createActionFromExternalEvent(eventKey, eventTitle) {
 }
 
 /**
- * Lie une dà©cision existante à  un à©và©nement externe
+ * Lie une décision existante à un événement externe
  */
 function linkDecisionToExternalEvent(eventKey, decisionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24291,7 +24480,7 @@ function linkDecisionToExternalEvent(eventKey, decisionId) {
   if (!decision) return;
   if (!enrichment.linkedDecisionIds) enrichment.linkedDecisionIds = [];
   
-  // à‰viter les doublons
+  // Éviter les doublons
   if (enrichment.linkedDecisionIds.includes(decisionId)) return;
   
   enrichment.linkedDecisionIds.push(decisionId);
@@ -24300,7 +24489,7 @@ function linkDecisionToExternalEvent(eventKey, decisionId) {
 }
 
 /**
- * Dà©tache une dà©cision d'un à©và©nement externe (sans supprimer la dà©cision)
+ * Détache une décision d'un événement externe (sans supprimer la décision)
  */
 function unlinkDecisionFromExternalEvent(eventKey, decisionId) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24315,7 +24504,7 @@ function unlinkDecisionFromExternalEvent(eventKey, decisionId) {
 }
 
 /**
- * Crà©e une nouvelle dà©cision DEOS lià©e à  un à©và©nement externe
+ * Crée une nouvelle décision DEOS liée à un événement externe
  */
 
 /**
@@ -24429,7 +24618,7 @@ function createDecisionFromExternalEvent(eventKey, eventTitle) {
   const ev = (state.externalCalendarEvents || []).find(e => e._key === eventKey);
   if (!ev) return;
   
-  const decisionTitle = prompt("Titre de la nouvelle dà©cision:", `à€ propos de: ${eventTitle}`);
+  const decisionTitle = prompt("Titre de la nouvelle décision:", `À propos de: ${eventTitle}`);
   if (!decisionTitle || !decisionTitle.trim()) return;
 
   try {
@@ -24453,8 +24642,8 @@ function createDecisionFromExternalEvent(eventKey, eventTitle) {
 }
 
 /**
- * Marque un à©và©nement comme source indisponible
- * Appelà©e automatiquement lors d'une sync si l'à©và©nement Google est supprimà©
+ * Marque un événement comme source indisponible
+ * Appelée automatiquement lors d'une sync si l'événement Google est supprimé
  */
 function markExternalEventSourceMissing(eventKey, missing = true) {
   const enrichment = getExternalEventEnrichment(eventKey);
@@ -24478,5 +24667,127 @@ function deleteDecision(id) {
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+// -- V5.29C : navigation cohérente -------------------------------------------------
+// Règle ergonomique : toute ouverture d'une fiche positionne le début de la fiche
+// sous le bandeau. Toute ouverture d'un sous-formulaire positionne le début du
+// formulaire. Les modales repartent également de leur première ligne utile.
+(function installDeosConsistentOpeningNavigation(){
+  if (window.__deosConsistentOpeningNavigationInstalled) return;
+  window.__deosConsistentOpeningNavigationInstalled = true;
 
+  function scrollElementToOpeningTop(element, behavior = "smooth") {
+    if (!element) return;
+    try {
+      element.style.scrollMarginTop = "18px";
+      element.scrollIntoView({ behavior, block: "start", inline: "nearest" });
+    } catch (_) {
+      try { window.scrollTo({ top: Math.max(0, element.getBoundingClientRect().top + window.scrollY - 18), behavior }); } catch (_) {}
+    }
+  }
+
+  function focusViewTop() {
+    window.setTimeout(() => {
+      const app = document.getElementById("app");
+      if (!app) return;
+      const firstUseful = app.querySelector(":scope > .card, :scope > .grid, .hero, .card");
+      scrollElementToOpeningTop(firstUseful || app);
+    }, 0);
+  }
+
+  function focusInlineForm(preferredSelector = "") {
+    window.setTimeout(() => {
+      const app = document.getElementById("app");
+      if (!app) return;
+      let target = preferredSelector ? app.querySelector(preferredSelector) : null;
+      if (!target) {
+        target = app.querySelector(".grid.two > .card.full-span:first-child, .grid.two > .card:first-child, form, .card.full-span");
+      }
+      scrollElementToOpeningTop(target || app.querySelector(".card") || app);
+      const field = target?.querySelector?.("input:not([type='hidden']), select, textarea, button");
+      if (field && !field.disabled) {
+        try { field.focus({ preventScroll: true }); } catch (_) {}
+      }
+    }, 0);
+  }
+
+  function focusModalTop() {
+    window.setTimeout(() => {
+      const panels = [...document.querySelectorAll(".modal-backdrop .modal-panel")].filter(panel => {
+        const style = window.getComputedStyle(panel.closest(".modal-backdrop"));
+        return style.display !== "none" && style.visibility !== "hidden";
+      });
+      const panel = panels[panels.length - 1];
+      if (!panel) return;
+      try { panel.scrollTop = 0; } catch (_) {}
+      const head = panel.querySelector(".modal-head") || panel.firstElementChild || panel;
+      scrollElementToOpeningTop(head, "auto");
+    }, 0);
+  }
+
+  function wrapGlobal(name, modeAware = false, selectorResolver = null) {
+    const original = window[name];
+    if (typeof original !== "function" || original.__deosOpeningWrapped) return;
+    const wrapped = function(...args) {
+      const result = original.apply(this, args);
+      const mode = modeAware ? String(args[1] || "") : "";
+      if (mode) {
+        const selector = typeof selectorResolver === "function" ? selectorResolver(args) : "";
+        focusInlineForm(selector);
+      } else {
+        focusViewTop();
+      }
+      return result;
+    };
+    wrapped.__deosOpeningWrapped = true;
+    wrapped.__deosOpeningOriginal = original;
+    window[name] = wrapped;
+    try { eval(`${name} = wrapped`); } catch (_) {}
+  }
+
+  function wrapModal(name) {
+    const original = window[name];
+    if (typeof original !== "function" || original.__deosOpeningWrapped) return;
+    const wrapped = function(...args) {
+      const result = original.apply(this, args);
+      focusModalTop();
+      return result;
+    };
+    wrapped.__deosOpeningWrapped = true;
+    wrapped.__deosOpeningOriginal = original;
+    window[name] = wrapped;
+    try { eval(`${name} = wrapped`); } catch (_) {}
+  }
+
+  // Fiches principales et sous-formulaires intégrés.
+  wrapGlobal("openAction");
+  wrapGlobal("openFolder", true);
+  wrapGlobal("openManager", true, args => String(args[1] || "").startsWith("request") ? "#manager-request-form" : "");
+  wrapGlobal("openProject", true);
+  wrapGlobal("openDecision", true);
+  wrapGlobal("openJournal", true);
+  wrapGlobal("openPerformance");
+  wrapGlobal("openPerformanceImportDetail");
+
+  // Éditeurs qui remplacent la vue principale.
+  wrapGlobal("editFolder");
+  wrapGlobal("editManager");
+  wrapGlobal("editJournal");
+
+  // Fenêtres/modales : toujours repartir de leur en-tête.
+  [
+    "openActionEditModal", "openActionDeleteModal",
+    "openManagerDeleteModal",
+    "openProjectEditModal", "openProjectDeleteModal",
+    "openDecisionEditModal", "openDecisionDeleteModal",
+    "openAgendaModal", "openExternalEventModal", "openMeetingSubjectModal",
+    "openDocumentTemplatePicker", "openDocumentEditModalCreate", "editDocument", "openDocumentDeleteModal",
+    "openManagersConflictResolutionDialog", "openRemoteAuthDialog", "openRemoteWorkspaceDialog",
+    "openLinksConflictsDialog", "openLinksConflictMergeDialog"
+  ].forEach(wrapModal);
+
+  // Expose les helpers pour les futurs modules : une seule règle à réutiliser.
+  window.deosFocusOpeningTop = focusViewTop;
+  window.deosFocusInlineFormTop = focusInlineForm;
+  window.deosFocusModalTop = focusModalTop;
+})();
 
