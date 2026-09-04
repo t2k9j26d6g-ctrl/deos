@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.29C";
+const DEOS_VERSION = "V5.30O";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -82,6 +82,8 @@ async function runDeosButtonTask(button, busyLabel, successLabel, task) {
   }
 }
 window.runDeosButtonTask = runDeosButtonTask;
+// V5.30G : les boutons inline doivent pouvoir résoudre ces fonctions sur Chrome/Safari.
+
 
 const DEOS_BACKUP_VERSION = 1;
 let DEOS_TECHNICAL_BACKUP_KEYS = [];
@@ -554,7 +556,10 @@ const managersConflictChoicesRepository = createRepository(deosDataService, {
       const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
       const choices = {};
       Object.entries(item.choices || {}).forEach(([field, side]) => {
-        if (side === "local" || side === "remote") choices[String(field)] = side;
+        // V5.30I — conserver aussi le choix de fusion explicite.
+        // Avant cette correction, le repository normalisait "merge" en le supprimant
+        // immédiatement après sauvegarde : le bouton "Fusionner les deux" semblait donc inactif.
+        if (side === "local" || side === "remote" || side === "merge") choices[String(field)] = side;
       });
       out[String(key)] = {
         remoteClientId: String(item.remoteClientId || key),
@@ -714,6 +719,7 @@ let backupPreviewOpen = false;
 let backupSafetySnapshot = null;
 let agendaFormError = "";
 let currentView = "cockpit";
+let managerAddFormExpanded = false;
 let meetingOriginContext = null;
 let meetingCreateState = null;
 let pendingMeetingCreateReveal = null;
@@ -892,9 +898,11 @@ function persist(name) {
   } else {
     deosDataService.save(name, state[name]);
   }
-  // V5.27B — une écriture locale Décision/Document déclenche une synchro différée
-  // uniquement si le pilote correspondant a été explicitement activé.
-  if (name === "decisions" || name === "documents") scheduleSimpleEntityAutoSync(name);
+  // V5.30L — toute écriture sur un des 7 objets multi-appareils déclenche
+  // une synchronisation Cloud différée. Le stockage local reste immédiat.
+  if (["links", "actions", "projects", "folders", "managers", "decisions", "documents"].includes(name)) {
+    scheduleMultiDeviceWriteSync(name);
+  }
 }
 
 function normalizeIdentity(value = {}) {
@@ -1645,8 +1653,8 @@ function normalizeEntity(name, item) {
   const base = { ...item, id: item.id || newId(name) };
   if (name === "managers") {
     const template = defaults.managers.find(m => m.id === base.id) || {};
-    const merged = { priority: "", lastInterview: "", nextMeeting: "", objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedProjects: [], linkedDecisions: [], linkedFolders: [], events: [], directorNotes: [], managementRequests: [], ...template, ...base };
-    return { ...merged, objectives: ensureArray(merged.objectives), strengths: ensureArray(merged.strengths), watchPoints: ensureArray(merged.watchPoints), actions: ensureArray(merged.actions), linkedActions: ensureArray(merged.linkedActions), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events), directorNotes: ensureNotes(merged.directorNotes), managementRequests: ensureArray(merged.managementRequests) };
+    const merged = { priority: "", lastInterview: "", nextMeeting: "", objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedProjects: [], linkedDecisions: [], linkedFolders: [], events: [], directorNotes: [], managementRequests: [], pilotNotes: [], ...template, ...base };
+    return { ...merged, objectives: ensureArray(merged.objectives), strengths: ensureArray(merged.strengths), watchPoints: ensureArray(merged.watchPoints), actions: ensureArray(merged.actions), linkedActions: ensureArray(merged.linkedActions), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events), directorNotes: ensureNotes(merged.directorNotes), managementRequests: ensureArray(merged.managementRequests), pilotNotes: normalizeManagerPilotNotes(merged.pilotNotes) };
   }
   if (name === "projects") {
     const template = defaults.projects.find(p => p.id === base.id) || {};
@@ -7536,8 +7544,9 @@ function linkedDecisionsList(m) {
 
 function managerTimeline(m) {
   const managerEvents = (m.events || []).map(e => ({ date: e.date || "", title: e.title || "Événement", detail: e.detail || "", kind: "Échange" }));
+  const pilotEvents = normalizeManagerPilotNotes(m.pilotNotes).map(n => ({ date: n.date || "", title: managerPilotTypeLabel(n.type), detail: ensureArray(n.followUps).length ? `${ensureArray(n.followUps).length} élément(s) à suivre` : "Note de pilotage", kind: "Pilotage" }));
   const activityEvents = state.activity.filter(a => a.entityId === m.id).map(a => ({ date: a.date || "", title: a.type || "Activité", detail: `${a.title || ""}${a.detail ? " · " + a.detail : ""}`, kind: "Activité" }));
-  return [...managerEvents, ...activityEvents].sort((a, b) => String(b.date).localeCompare(String(a.date))).map(e => `<div class="item"><strong>${esc(e.date || "Sans date")} · ${esc(e.title)}</strong><span class="muted">${esc(e.kind)}${e.detail ? " · " + esc(e.detail) : ""}</span></div>`).join("") || `<div class="empty">Aucun échange enregistré.</div>`;
+  return [...managerEvents, ...pilotEvents, ...activityEvents].sort((a, b) => String(b.date).localeCompare(String(a.date))).map(e => `<div class="item"><strong>${esc(e.date || "Sans date")} · ${esc(e.title)}</strong><span class="muted">${esc(e.kind)}${e.detail ? " · " + esc(e.detail) : ""}</span></div>`).join("") || `<div class="empty">Aucun échange enregistré.</div>`;
 }
 
 function directorNotesList(m) {
@@ -7680,31 +7689,340 @@ function saveManagerManagementRequest(managerId, requestId = "") {
   openManager(m.id);
 }
 
+function toggleManagerAddForm(force) {
+  managerAddFormExpanded = typeof force === "boolean" ? force : !managerAddFormExpanded;
+  renderManagers();
+  if (managerAddFormExpanded) {
+    requestAnimationFrame(() => {
+      const form = document.getElementById("manager-add-form");
+      if (form) form.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById("mName")?.focus({ preventScroll: true });
+    });
+  }
+}
+window.toggleManagerAddForm = toggleManagerAddForm;
+
 function renderManagers() {
-  document.getElementById("viewTitle").textContent = "Managers V5";
-  document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "managers"));
-  appHtml(`<div class="card"><h2>Ajouter un manager</h2><input id="mName" placeholder="Nom"><input id="mRole" placeholder="Poste"><select id="mStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select><input id="mPriority" placeholder="Priorité manager"><input id="mNext" placeholder="Prochain entretien"><textarea id="mNote" placeholder="Note"></textarea><button class="action" onclick="addManager()">Ajouter</button></div><div class="grid two">${state.managers.map(managerCard).join("")}</div>`);
+  document.getElementById("viewTitle").textContent = "Managers";
+  const addPanel = `<div class="card" id="manager-add-card"><div class="settings-card-heading"><div><h2>Ajouter un manager</h2><p class="muted">Créez une nouvelle fiche uniquement lorsque nécessaire.</p></div><button class="secondary" type="button" onclick="toggleManagerAddForm()" aria-expanded="${managerAddFormExpanded ? "true" : "false"}">${managerAddFormExpanded ? "Replier" : "+ Ajouter un manager"}</button></div>${managerAddFormExpanded ? `<div id="manager-add-form" style="scroll-margin-top:14px"><input id="mName" placeholder="Nom"><input id="mRole" placeholder="Poste"><select id="mStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select><input id="mPriority" placeholder="Priorité manager"><input id="mNext" placeholder="Prochain entretien"><textarea id="mNote" placeholder="Note"></textarea><div class="row-actions"><button class="action" onclick="addManager()">Ajouter</button><button class="secondary" onclick="toggleManagerAddForm(false)">Annuler</button></div></div>` : ""}</div>`;
+  appHtml(`${addPanel}<div class="grid two">${state.managers.map(managerCard).join("")}</div>`);
 }
 
 function managerCard(m) {
   return `<div class="card clickable" onclick="openManager('${m.id}')"><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)}</span></div>`;
 }
 
-function addManager() {
-  const name = document.getElementById("mName").value.trim();
-  if (!name) return;
-  const m = { id: newId("manager"), name, role: document.getElementById("mRole").value.trim(), status: document.getElementById("mStatus").value, note: document.getElementById("mNote").value.trim(), priority: document.getElementById("mPriority").value.trim(), lastInterview: "", nextMeeting: document.getElementById("mNext").value.trim(), objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedDecisions: [], events: [], directorNotes: [], managementRequests: [] };
-  state.managers.push(m);
-  persist("managers");
-  addActivity("👥 Manager", m.name, m.role, m.id);
-  renderManagers();
+
+
+// V5.30O — Note de pilotage : ergonomie "feuille de travail".
+// Principe : l'entretien reste libre dans une zone centrale ; les marqueurs servent à
+// structurer a posteriori Questions, Vigilances, Actions, Décisions et Faits marquants.
+const MANAGER_PILOT_MARKERS = [
+  { symbol: "?", kind: "question", label: "Question" },
+  { symbol: "!", kind: "vigilance", label: "Vigilance" },
+  { symbol: "→", kind: "action", label: "Action" },
+  { symbol: "✓", kind: "decision", label: "Décision" },
+  { symbol: "★", kind: "fact", label: "Fait marquant" }
+];
+
+function normalizeManagerPilotNotes(rows = []) {
+  return ensureArray(rows).filter(row => row && typeof row === "object").map(row => {
+    const followUps = ensureArray(row.followUps).map(item => {
+      if (typeof item === "string") return { id: newId("pilot-follow"), text: item.trim(), kind: "follow", createdRefs: {} };
+      return { id: item.id || newId("pilot-follow"), text: String(item.text || "").trim(), kind: String(item.kind || "follow"), createdRefs: item.createdRefs && typeof item.createdRefs === "object" ? { ...item.createdRefs } : {} };
+    }).filter(item => item.text);
+    return {
+      id: row.id || newId("pilot-note"),
+      date: String(row.date || "").trim() || isoToday(),
+      type: String(row.type || "performance").trim() || "performance",
+      previousReview: String(row.previousReview || ""),
+      // Compatibilité avec les notes V5.30M/N : les deux anciens champs restent lus
+      // puis sont fusionnés dans la feuille centrale à la prochaine modification.
+      facts: String(row.facts || ""),
+      questions: String(row.questions || ""),
+      notes: String(row.notes || ""),
+      followUps,
+      createdAt: row.createdAt || row.updatedAt || new Date().toISOString(),
+      updatedAt: row.updatedAt || row.createdAt || new Date().toISOString()
+    };
+  }).sort((a,b) => String(b.date || b.updatedAt || "").localeCompare(String(a.date || a.updatedAt || "")));
 }
+
+function managerPilotTypeLabel(value) {
+  const labels = { performance: "Entretien performance", oneToOne: "1:1 managérial", quick: "Point rapide", other: "Autre note de pilotage" };
+  return labels[String(value || "performance")] || "Note de pilotage";
+}
+
+function managerPilotMarkerInfoFromLine(line) {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+  const found = MANAGER_PILOT_MARKERS.find(item => raw.startsWith(item.symbol));
+  if (!found) return null;
+  return { ...found, text: raw.slice(found.symbol.length).trim() };
+}
+
+function managerPilotMarkerLine(line) {
+  const raw = String(line || "").trim();
+  if (!raw) return "";
+  const info = managerPilotMarkerInfoFromLine(raw);
+  if (!info) return `<div class="pilot-render-line">${esc(raw)}</div>`;
+  return `<div class="pilot-render-line pilot-render-${esc(info.kind)}"><span class="pilot-render-tag">${esc(info.symbol)} ${esc(info.label)}</span><span>${esc(info.text)}</span></div>`;
+}
+
+function managerPilotTextBlock(value) {
+  const lines = String(value || "").split(/\r?\n/).filter(line => line.trim());
+  return lines.length ? lines.map(managerPilotMarkerLine).join("") : `<span class="muted">Aucune note.</span>`;
+}
+
+function managerPilotOpenActions(m) {
+  return state.actions.filter(a => !a.done && normalizeLinkedManagerIds(ensureArray(a.linkedManagers)).some(id => sameId(id, m.id)));
+}
+
+function managerPilotSinceLastData(m, excludeNoteId = "") {
+  const notes = normalizeManagerPilotNotes(m.pilotNotes).filter(note => !sameId(note.id, excludeNoteId));
+  const previous = notes[0] || null;
+  const actions = managerPilotOpenActions(m);
+  const requests = ensureArray(m.managementRequests).filter(r => ["open","progress","partial"].includes(String(r.status || "open")));
+  const followUps = previous ? ensureArray(previous.followUps).filter(f => !f.createdRefs || Object.keys(f.createdRefs).length === 0) : [];
+  return { previous, actions, requests, followUps };
+}
+
+function managerPilotSinceLastSummary(m, excludeNoteId = "") {
+  const { actions, requests, followUps } = managerPilotSinceLastData(m, excludeNoteId);
+  const bits = [];
+  if (requests.length) bits.push(`${requests.length} demande${requests.length > 1 ? "s" : ""}`);
+  if (actions.length) bits.push(`${actions.length} action${actions.length > 1 ? "s" : ""}`);
+  if (followUps.length) bits.push(`${followUps.length} point${followUps.length > 1 ? "s" : ""} à revoir`);
+  return bits.length ? bits.join(" · ") : "Aucun élément en attente";
+}
+
+function managerPilotSinceLast(m, excludeNoteId = "") {
+  const { previous, actions, requests, followUps } = managerPilotSinceLastData(m, excludeNoteId);
+  if (!previous && !actions.length && !requests.length && !followUps.length) return `<div class="empty">Aucun élément en attente depuis le précédent entretien.</div>`;
+  const items = [];
+  actions.slice(0,6).forEach(a => items.push(`<button type="button" class="pilot-carry-chip pilot-carry-action" onclick="openAction('${esc(a.id)}')"><span>→</span>${esc(a.title)}</button>`));
+  requests.slice(0,6).forEach(r => items.push(`<span class="pilot-carry-chip pilot-carry-request"><span>◎</span>${esc(r.subject || r.requestText || "Demande")}</span>`));
+  followUps.slice(0,8).forEach(f => items.push(`<span class="pilot-carry-chip pilot-carry-follow"><span>↻</span>${esc(f.text)}</span>`));
+  return `<div class="pilot-carry-body">${previous ? `<div class="pilot-carry-last"><strong>Dernière note</strong><span>${esc(previous.date)} · ${esc(managerPilotTypeLabel(previous.type))}</span></div>` : ""}<div class="pilot-carry-chips">${items.join("")}</div></div>`;
+}
+
+function managerPilotLegacyNotes(existing = {}) {
+  const blocks = [];
+  const facts = String(existing.facts || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const questions = String(existing.questions || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  facts.forEach(line => blocks.push(line.startsWith("★") ? line : `★ ${line}`));
+  questions.forEach(line => blocks.push(line.startsWith("?") ? line : `? ${line}`));
+  const free = String(existing.notes || "").trim();
+  if (free) blocks.push(free);
+  return blocks.join("\n");
+}
+
+function managerPilotExtractTagged(value) {
+  return String(value || "").split(/\r?\n/).map((line, index) => {
+    const info = managerPilotMarkerInfoFromLine(line);
+    return info && info.text ? { ...info, index } : null;
+  }).filter(Boolean);
+}
+
+function managerPilotRetainedHtml(value) {
+  const items = managerPilotExtractTagged(value);
+  if (!items.length) return `<div class="pilot-retained-empty">Aucun élément qualifié pour le moment.<br><span>Sélectionnez une ligne puis utilisez Question, Vigilance, Action, Décision ou Fait marquant.</span></div>`;
+  const groups = MANAGER_PILOT_MARKERS.map(marker => ({ ...marker, items: items.filter(item => item.kind === marker.kind) })).filter(group => group.items.length);
+  return groups.map(group => `<section class="pilot-retained-group"><h4><span>${esc(group.symbol)}</span>${esc(group.label)} <small>${group.items.length}</small></h4>${group.items.map(item => `<div class="pilot-retained-item pilot-retained-${esc(group.kind)}">${esc(item.text)}</div>`).join("")}</section>`).join("");
+}
+
+function updatePilotRetainedPanel() {
+  const field = document.getElementById("mpNotes");
+  const panel = document.getElementById("mpRetained");
+  if (!field || !panel) return;
+  panel.innerHTML = managerPilotRetainedHtml(field.value);
+}
+window.updatePilotRetainedPanel = updatePilotRetainedPanel;
+
+function managerPilotForm(m, noteId = "") {
+  const existing = normalizeManagerPilotNotes(m.pilotNotes).find(n => sameId(n.id, noteId)) || {};
+  const editing = Boolean(existing.id);
+  const noteDate = existing.date || isoToday();
+  const noteType = existing.type || "performance";
+  const centralNotes = managerPilotLegacyNotes(existing);
+  return `<div id="manager-pilot-form" class="card full-span pilot-workspace" style="scroll-margin-top:14px">
+    <div class="pilot-heading"><div><h2>${editing ? "Modifier la note de pilotage" : "Nouvelle note de pilotage"}</h2><p>Prise de notes libre, pensée pour les entretiens de performance et les 1:1.</p></div><span class="meta">${editing ? "Note existante" : "Nouvelle note"}</span></div>
+
+    <div class="pilot-meta-row">
+      <label class="pilot-field"><span>Date</span><input id="mpDate" type="date" value="${esc(noteDate)}"></label>
+      <label class="pilot-field"><span>Type</span><select id="mpType"><option value="performance" ${noteType === "performance" ? "selected" : ""}>Entretien performance</option><option value="oneToOne" ${noteType === "oneToOne" ? "selected" : ""}>1:1 managérial</option><option value="quick" ${noteType === "quick" ? "selected" : ""}>Point rapide</option><option value="other" ${noteType === "other" ? "selected" : ""}>Autre note</option></select></label>
+      <div class="pilot-manager-pill"><span>Manager</span><strong>${esc(m.name)}</strong><small>${esc(m.role || "")}</small></div>
+    </div>
+
+    <details class="pilot-carry" ${managerPilotSinceLastSummary(m, existing.id || "") !== "Aucun élément en attente" ? "open" : ""}><summary><span>Depuis le dernier entretien</span><strong>${esc(managerPilotSinceLastSummary(m, existing.id || ""))}</strong></summary>${managerPilotSinceLast(m, existing.id || "")}</details>
+
+    <input id="mpPrevious" type="hidden" value="${esc(existing.previousReview || "")}">
+    <div class="pilot-main-grid">
+      <section class="pilot-note-sheet">
+        <div class="pilot-sheet-header"><div><h3>Notes de l'entretien</h3><p>Écrivez d'abord. Qualifiez ensuite uniquement ce qui mérite d'être suivi.</p></div>
+          <div class="pilot-marker-toolbar" role="toolbar" aria-label="Qualifier une ligne de note">
+            <button type="button" class="pilot-marker pilot-marker-question" onclick="tagPilotSelection('?')">? <span>Question</span></button>
+            <button type="button" class="pilot-marker pilot-marker-vigilance" onclick="tagPilotSelection('!')">! <span>Vigilance</span></button>
+            <button type="button" class="pilot-marker pilot-marker-action" onclick="tagPilotSelection('→')">→ <span>Action</span></button>
+            <button type="button" class="pilot-marker pilot-marker-decision" onclick="tagPilotSelection('✓')">✓ <span>Décision</span></button>
+            <button type="button" class="pilot-marker pilot-marker-fact" onclick="tagPilotSelection('★')">★ <span>Fait marquant</span></button>
+          </div>
+        </div>
+        <textarea id="mpNotes" class="pilot-note-area" oninput="updatePilotRetainedPanel()" placeholder="Écrivez librement comme dans votre carnet Goodnotes…\n\nPuis sélectionnez une ligne ou placez le curseur dessus pour la qualifier.">${esc(centralNotes)}</textarea>
+        <p class="pilot-tip">Astuce : le bouton appliqué au curseur qualifie toute la ligne. Un second marqueur remplace le précédent.</p>
+      </section>
+      <aside class="pilot-retained-panel"><div class="pilot-retained-heading"><div><h3>Ce que DEOS a retenu</h3><p>Lecture automatique des éléments qualifiés.</p></div></div><div id="mpRetained" class="pilot-retained-content">${managerPilotRetainedHtml(centralNotes)}</div></aside>
+    </div>
+
+    <div class="pilot-footer"><div class="pilot-footer-summary"><span>Les éléments marqués →, ✓, ! et ? seront conservés dans « À suivre » après l'enregistrement.</span></div><div class="row-actions"><button class="action" onclick="saveManagerPilotNote('${esc(m.id)}','${esc(existing.id || "")}')">${editing ? "Enregistrer les modifications" : "Enregistrer la note"}</button><button class="secondary" onclick="openManager('${esc(m.id)}')">Annuler</button></div></div>
+  </div>`;
+}
+
+function tagPilotSelection(marker) {
+  const field = document.getElementById("mpNotes");
+  if (!field) return;
+  const value = field.value || "";
+  const start = Number.isFinite(field.selectionStart) ? field.selectionStart : value.length;
+  const end = Number.isFinite(field.selectionEnd) ? field.selectionEnd : start;
+  const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  let lineEnd = value.indexOf("\n", end);
+  if (lineEnd < 0) lineEnd = value.length;
+  const before = value.slice(0, lineStart);
+  const originalLine = value.slice(lineStart, lineEnd);
+  const leading = originalLine.match(/^\s*/)?.[0] || "";
+  let body = originalLine.slice(leading.length);
+  const old = MANAGER_PILOT_MARKERS.find(item => body.startsWith(item.symbol));
+  if (old) body = body.slice(old.symbol.length).replace(/^\s+/, "");
+  const nextLine = body.trim() ? `${leading}${marker} ${body}` : `${leading}${marker} `;
+  field.value = before + nextLine + value.slice(lineEnd);
+  const cursor = lineStart + nextLine.length;
+  field.focus();
+  if (field.setSelectionRange) field.setSelectionRange(cursor, cursor);
+  updatePilotRetainedPanel();
+}
+window.tagPilotSelection = tagPilotSelection;
+
+// Compatibilité avec les boutons ou appels V5.30M/N.
+function insertPilotMarker(fieldId, marker) {
+  if (fieldId === "mpNotes") return tagPilotSelection(marker);
+  const field = document.getElementById(fieldId);
+  if (!field) return;
+  const prefix = field.value && !field.value.endsWith("\n") ? "\n" : "";
+  const addition = `${prefix}${marker} `;
+  const start = Number.isFinite(field.selectionStart) ? field.selectionStart : field.value.length;
+  const end = Number.isFinite(field.selectionEnd) ? field.selectionEnd : field.value.length;
+  field.value = field.value.slice(0,start) + addition + field.value.slice(end);
+  field.focus();
+  const pos = start + addition.length;
+  if (field.setSelectionRange) field.setSelectionRange(pos,pos);
+}
+window.insertPilotMarker = insertPilotMarker;
+
+function saveManagerPilotNote(managerId, noteId = "") {
+  const m = byId("managers", managerId);
+  if (!m) return;
+  m.pilotNotes = normalizeManagerPilotNotes(m.pilotNotes);
+  const existingIndex = m.pilotNotes.findIndex(n => sameId(n.id, noteId));
+  const existing = existingIndex >= 0 ? m.pilotNotes[existingIndex] : null;
+  const date = document.getElementById("mpDate")?.value || isoToday();
+  const notes = document.getElementById("mpNotes")?.value.trim() || "";
+  const tagged = managerPilotExtractTagged(notes).filter(item => item.kind !== "fact");
+  const previousByKey = new Map(ensureArray(existing?.followUps).map(f => [`${String(f.kind || "follow")}|${String(f.text || "").trim()}`, f]));
+  const followUps = tagged.map(item => {
+    const key = `${item.kind}|${item.text}`;
+    const old = previousByKey.get(key) || ensureArray(existing?.followUps).find(f => String(f.text || "").trim() === item.text);
+    return old ? { ...old, text: item.text, kind: item.kind } : { id: newId("pilot-follow"), text: item.text, kind: item.kind, createdRefs: {} };
+  });
+  const stamp = new Date().toISOString();
+  const payload = {
+    id: noteId || newId("pilot-note"), date,
+    type: document.getElementById("mpType")?.value || "performance",
+    previousReview: document.getElementById("mpPrevious")?.value.trim() || "",
+    facts: "",
+    questions: "",
+    notes,
+    followUps,
+    createdAt: existing?.createdAt || stamp,
+    updatedAt: stamp
+  };
+  if (existingIndex >= 0) m.pilotNotes[existingIndex] = payload; else m.pilotNotes.unshift(payload);
+  m.pilotNotes = normalizeManagerPilotNotes(m.pilotNotes);
+  if (payload.type === "performance" || payload.type === "oneToOne") m.lastInterview = date;
+  persist("managers");
+  addActivity("🗒️ Note de pilotage", m.name, `${managerPilotTypeLabel(payload.type)} · ${date}`, m.id);
+  openManager(m.id);
+}
+window.saveManagerPilotNote = saveManagerPilotNote;
+
+function managerPilotCreatedRefButton(type, id) {
+  if (!id) return "";
+  if (type === "action") return `<button class="secondary" onclick="openAction('${esc(id)}')">Ouvrir Action</button>`;
+  if (type === "decision") return `<button class="secondary" onclick="openDecision('${esc(id)}')">Ouvrir Décision</button>`;
+  if (type === "project") return `<button class="secondary" onclick="openProject('${esc(id)}')">Ouvrir Projet</button>`;
+  return "";
+}
+
+function managerPilotFollowUpItem(m, note, f) {
+  const refs = f.createdRefs || {};
+  const createdButtons = Object.entries(refs).map(([type,id]) => managerPilotCreatedRefButton(type,id)).filter(Boolean).join("");
+  const marker = MANAGER_PILOT_MARKERS.find(item => item.kind === f.kind);
+  const kindBadge = marker ? `<span class="pilot-inline-kind pilot-inline-${esc(marker.kind)}">${esc(marker.symbol)} ${esc(marker.label)}</span>` : "";
+  if (createdButtons) return `<div class="item"><div class="pilot-follow-title">${kindBadge}<strong>${esc(f.text)}</strong></div><div class="row-actions" style="margin-top:6px">${createdButtons}<span class="badge green">Converti</span></div></div>`;
+  return `<div class="item"><div class="pilot-follow-title">${kindBadge}<strong>${esc(f.text)}</strong></div><div class="row-actions" style="margin-top:6px"><button class="secondary" onclick="convertManagerPilotFollowUp('${esc(m.id)}','${esc(note.id)}','${esc(f.id)}','action')">→ Action</button><button class="secondary" onclick="convertManagerPilotFollowUp('${esc(m.id)}','${esc(note.id)}','${esc(f.id)}','decision')">✓ Décision</button><button class="secondary" onclick="convertManagerPilotFollowUp('${esc(m.id)}','${esc(note.id)}','${esc(f.id)}','request')">Demande manager</button><button class="secondary" onclick="convertManagerPilotFollowUp('${esc(m.id)}','${esc(note.id)}','${esc(f.id)}','project')">Projet</button></div></div>`;
+}
+
+function managerPilotNotesList(m) {
+  const notes = normalizeManagerPilotNotes(m.pilotNotes);
+  if (!notes.length) return `<div class="empty">Aucune note de pilotage. Créez le prochain entretien directement dans DEOS.</div>`;
+  return notes.map(note => `<details class="item"><summary><strong>${esc(note.date)} · ${esc(managerPilotTypeLabel(note.type))}</strong> <span class="badge orange">${ensureArray(note.followUps).length} à suivre</span></summary><div style="padding-top:10px">
+    ${note.previousReview ? `<h3>Retour précédent</h3>${managerPilotTextBlock(note.previousReview)}` : ""}
+    ${note.facts ? `<h3>Chiffres / faits</h3>${managerPilotTextBlock(note.facts)}` : ""}
+    ${note.questions ? `<h3>Sujets / questions</h3>${managerPilotTextBlock(note.questions)}` : ""}
+    ${note.notes ? `<h3>Notes de l'entretien</h3>${managerPilotTextBlock(note.notes)}` : ""}
+    ${ensureArray(note.followUps).length ? `<h3>À suivre</h3>${ensureArray(note.followUps).map(f => managerPilotFollowUpItem(m,note,f)).join("")}` : ""}
+    <div class="row-actions" style="margin-top:10px"><button class="secondary" onclick="openManager('${esc(m.id)}','pilot:${esc(note.id)}')">Modifier cette note</button></div>
+  </div></details>`).join("");
+}
+
+function convertManagerPilotFollowUp(managerId, noteId, followId, type) {
+  const m = byId("managers", managerId);
+  if (!m) return;
+  m.pilotNotes = normalizeManagerPilotNotes(m.pilotNotes);
+  const note = m.pilotNotes.find(n => sameId(n.id, noteId));
+  const follow = note && ensureArray(note.followUps).find(f => sameId(f.id, followId));
+  if (!note || !follow || !follow.text) return;
+  follow.createdRefs = follow.createdRefs && typeof follow.createdRefs === "object" ? { ...follow.createdRefs } : {};
+  let createdId = "";
+  if (type === "action") {
+    const action = normalizeEntity("actions", { id: newId("action"), title: follow.text, link: `Note de pilotage · ${m.name} · ${note.date}`, owner: m.name, due: "", done: false, linkedManagers: [m.id] });
+    state.actions.unshift(action); createdId = action.id; m.linkedActions = normalizeLinkedIdArray([...(m.linkedActions || []), action.id]); persist("actions");
+  } else if (type === "decision") {
+    const decision = normalizeEntity("decisions", { id: newId("decision"), title: follow.text, date: note.date || isoToday(), status: "decided", importance: "orange", context: `Note de pilotage ${m.name} · ${note.date}`, decision: follow.text, owner: m.name, linkedManagers: [m.id], tags: ["Note de pilotage"] });
+    state.decisions.unshift(decision); createdId = decision.id; m.linkedDecisions = normalizeLinkedIdArray([...(m.linkedDecisions || []), decision.id]); persist("decisions");
+  } else if (type === "project") {
+    const project = normalizeEntity("projects", { id: newId("project"), name: follow.text, status: "orange", progress: 0, objective: follow.text, owner: m.name, ownerId: m.id, linkedManagers: [m.id], launchDate: note.date || isoToday(), deadline: "", priorityLevel: "orange", context: `Créé depuis la note de pilotage du ${note.date}`, next: "À préciser" });
+    state.projects.unshift(project); createdId = project.id; persist("projects");
+  } else if (type === "request") {
+    const stamp = new Date().toISOString();
+    const request = { id: newId("mgr-request"), date: note.date || isoToday(), type: "request", subject: follow.text, requestText: follow.text, expectedResult: "", dueDate: "", channel: "Entretien", emailRef: "", documentRef: `Note de pilotage ${note.date}`, status: "open", closureComment: "", actionId: "", createdAt: stamp, updatedAt: stamp };
+    m.managementRequests = mergeManagerManagementRequests(m.managementRequests, [request]); createdId = request.id;
+  }
+  if (!createdId) return;
+  follow.createdRefs[type] = createdId;
+  note.updatedAt = new Date().toISOString();
+  persist("managers");
+  addActivity("Conversion note de pilotage", m.name, `${follow.text} → ${type}`, m.id);
+  openManager(m.id);
+}
+window.convertManagerPilotFollowUp = convertManagerPilotFollowUp;
 
 function managerQuickForm(m, mode = "") {
   if (mode === "note") return `<div class="card full-span"><h2>Ajouter une note du directeur</h2><textarea id="mnContent" placeholder="Note du directeur"></textarea><button class="action" onclick="saveManagerNote('${m.id}')">Enregistrer</button><button class="secondary" onclick="openManager('${m.id}')">Annuler</button></div>`;
   if (mode === "event") return `<div class="card full-span"><h2>Ajouter un événement</h2><div class="form-grid"><input id="meTitle" placeholder="Titre de l'événement"><input id="meDate" value="${esc(new Date().toLocaleString("fr-FR"))}" placeholder="Date"></div><textarea id="meDetail" placeholder="Détail de l'événement"></textarea><button class="action" onclick="saveManagerEvent('${m.id}')">Enregistrer</button><button class="secondary" onclick="openManager('${m.id}')">Annuler</button></div>`;
   if (mode === "request") return managerManagementRequestForm(m);
   if (String(mode || "").startsWith("request:")) return managerManagementRequestForm(m, String(mode).slice(8));
+  if (mode === "pilot") return managerPilotForm(m);
+  if (String(mode || "").startsWith("pilot:")) return managerPilotForm(m, String(mode).slice(6));
   return "";
 }
 
@@ -7713,12 +8031,19 @@ function openManager(id, mode = "") {
   if (!m) return renderManagers();
   const responsibleCount = managerResponsibleProjects(m).length;
   document.getElementById("viewTitle").textContent = m.name;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderManagers()">Retour Managers</button><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)} ? ${responsibleCount} projet(s) sous responsabilité</span><div class="row-actions"><button class="action" onclick="editManager('${m.id}')">Modifier</button><button class="secondary" onclick="startReport('managers','${m.id}')">Générer un compte rendu</button><button class="secondary" onclick="openManager('${m.id}','note')">Ajouter une note</button><button class="secondary" onclick="openManager('${m.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openManager('${m.id}','request')">Tracer un échange</button><button class="danger" onclick="deleteManager('${m.id}')">Supprimer</button></div></div><div class="grid two">${managerQuickForm(m, mode)}<div class="card"><h2>Priorité managériale</h2><p>${esc(m.priority || "À compléter")}</p></div><div class="card"><h2>Entretiens</h2><p><strong>Dernier :</strong> ${esc(m.lastInterview || "À compléter")}</p><p><strong>Prochaine rencontre :</strong> ${esc(m.nextMeeting || "À planifier")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${managerAgendaList(m)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${managerMeetingPreparationsList(m)}</div><div class="card full-span"><h2>Projets sous ma responsabilité</h2>${managerResponsibleProjectsList(m)}</div><div class="card full-span"><h2>Autres projets associés</h2>${managerAssociatedProjectsList(m)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(m)}</div><div class="card full-span"><h2>Demandes & objectifs managériaux</h2>${managerManagementRequestsSummary(m)}<div style="margin-top:12px">${managerManagementRequestsList(m)}</div><div class="row-actions" style="margin-top:12px"><button class="action" onclick="openManager('${m.id}','request')">+ Tracer un échange</button></div></div><div class="card"><h2>Objectifs en cours</h2>${listItems(m.objectives)}</div><div class="card"><h2>Points forts</h2>${listItems(m.strengths)}</div><div class="card"><h2>Points de vigilance</h2>${listItems(m.watchPoints)}</div><div class="card"><h2>Actions internes</h2>${listItems(m.actions, "? ")}</div><div class="card"><h2>Actions liées</h2>${linkedActionsList(m)}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisionsList(m)}</div><div class="card"><h2>Journal lié</h2>${managerJournalList(m)}</div><div class="card"><h2>Documents liés</h2>${managerDocumentsList(m)}</div><div class="card"><h2>Notes du directeur</h2>${directorNotesList(m)}</div><div class="card full-span"><h2>Historique chronologique</h2>${managerTimeline(m)}</div></div>`);
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderManagers()">Retour Managers</button><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)} ? ${responsibleCount} projet(s) sous responsabilité</span><div class="row-actions"><button class="action" onclick="editManager('${m.id}')">Modifier</button><button class="secondary" onclick="startReport('managers','${m.id}')">Générer un compte rendu</button><button class="secondary" onclick="openManager('${m.id}','note')">Ajouter une note</button><button class="secondary" onclick="openManager('${m.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openManager('${m.id}','request')">Tracer un échange</button><button class="action" onclick="openManager('${m.id}','pilot')">+ Note de pilotage</button><button class="danger" onclick="deleteManager('${m.id}')">Supprimer</button></div></div><div class="grid two">${managerQuickForm(m, mode)}<div class="card"><h2>Priorité managériale</h2><p>${esc(m.priority || "À compléter")}</p></div><div class="card"><h2>Entretiens</h2><p><strong>Dernier :</strong> ${esc(m.lastInterview || "À compléter")}</p><p><strong>Prochaine rencontre :</strong> ${esc(m.nextMeeting || "À planifier")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${managerAgendaList(m)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${managerMeetingPreparationsList(m)}</div><div class="card full-span"><h2>Projets sous ma responsabilité</h2>${managerResponsibleProjectsList(m)}</div><div class="card full-span"><h2>Autres projets associés</h2>${managerAssociatedProjectsList(m)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(m)}</div><div class="card full-span"><div class="row"><div><h2>Notes de pilotage / 1:1 Performance</h2><p class="muted">Notes libres, suivi du précédent entretien et conversion des éléments à suivre.</p></div><button class="action" onclick="openManager('${m.id}','pilot')">+ Nouvelle note</button></div>${managerPilotNotesList(m)}</div><div class="card full-span"><h2>Demandes & objectifs managériaux</h2>${managerManagementRequestsSummary(m)}<div style="margin-top:12px">${managerManagementRequestsList(m)}</div><div class="row-actions" style="margin-top:12px"><button class="action" onclick="openManager('${m.id}','request')">+ Tracer un échange</button></div></div><div class="card"><h2>Objectifs en cours</h2>${listItems(m.objectives)}</div><div class="card"><h2>Points forts</h2>${listItems(m.strengths)}</div><div class="card"><h2>Points de vigilance</h2>${listItems(m.watchPoints)}</div><div class="card"><h2>Actions internes</h2>${listItems(m.actions, "? ")}</div><div class="card"><h2>Actions liées</h2>${linkedActionsList(m)}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisionsList(m)}</div><div class="card"><h2>Journal lié</h2>${managerJournalList(m)}</div><div class="card"><h2>Documents liés</h2>${managerDocumentsList(m)}</div><div class="card"><h2>Notes du directeur</h2>${directorNotesList(m)}</div><div class="card full-span"><h2>Historique chronologique</h2>${managerTimeline(m)}</div></div>`);
   if (String(mode || "").startsWith("request")) {
     requestAnimationFrame(() => {
       const form = document.getElementById("manager-request-form");
       if (form) form.scrollIntoView({ behavior: "smooth", block: "start" });
       document.getElementById("mrDate")?.focus({ preventScroll: true });
+    });
+  }
+  if (String(mode || "").startsWith("pilot")) {
+    requestAnimationFrame(() => {
+      const form = document.getElementById("manager-pilot-form");
+      if (form) form.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById("mpDate")?.focus({ preventScroll: true });
     });
   }
 }
@@ -18109,7 +18434,7 @@ function buildActionsRemotePreview(localActions, remoteRows) {
   const locals = ensureArray(localActions);
   const localMap = new Map(locals.map(action => [actionSyncClientId(action), action]).filter(([id]) => id));
   const remoteMap = new Map(activeRows.map(row => [String(row.clientId || "").trim(), row]).filter(([id]) => id));
-  const localOnly = [], remoteOnly = [], both = [], conflicts = [];
+  const localOnly = [], remoteOnly = [], both = [], conflicts = [], mergeCandidates = [];
   locals.forEach(action => {
     const clientId = actionSyncClientId(action);
     const row = remoteMap.get(clientId);
@@ -18379,11 +18704,13 @@ async function repairExactActionDuplicatesFromSettings() {
   }
 }
 
+window.repairExactActionDuplicatesFromSettings = repairExactActionDuplicatesFromSettings;
+
 function renderActionsHybridSettingsCardHtml() {
   const remoteReady = actionsSyncCanInspectRemote();
   const analysis = deosActionsSyncRuntime.lastAnalysis;
   const warning = "Managers, Documents, Agenda, Google Calendar, Performance, Dossiers, Projets, Décisions et Journal restent strictement locaux. Les Liens conservent leur pilote séparé.";
-  return `<div id="actionsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Actions</h2><p class="muted">Pilote V5.22D séparé des Liens, avec verrou Safari/iPad, garde anti-doublon et diagnostic d’analyse renforcé. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${actionsSyncStatusClass()}">${esc(actionsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(actionsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Actions locales</strong><span>${esc(String(state.actions.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Actions distantes</strong><span>${esc(String(deosActionsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosActionsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosActionsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosActionsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosActionsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Actions</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Actions terminée',analyzeActionsHybridFromSettings)">Analyser les Actions</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Actions terminée',previewActionsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${actionsSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateActionsHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Actions activée',activateActionsHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Actions terminée',syncActionsHybridFromSettings)" ${actionsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showActionsConflictsFromSettings()" ${deosActionsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactActionDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Actions terminée',repairExactActionDuplicatesFromSettings)" ${actionsSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Actions locales et distantes.</div>` : ""}</section></div></div>`;
+  return `<div id="actionsHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Actions</h2><p class="muted">Pilote V5.22D séparé des Liens, avec verrou Safari/iPad, garde anti-doublon et diagnostic d’analyse renforcé. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${actionsSyncStatusClass()}">${esc(actionsSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(actionsSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Actions locales</strong><span>${esc(String(state.actions.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Actions distantes</strong><span>${esc(String(deosActionsSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosActionsSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosActionsSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosActionsSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosActionsSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Actions</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Actions terminée',analyzeActionsHybridFromSettings)">Analyser les Actions</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Actions terminée',previewActionsMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${actionsSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateActionsHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Actions activée',activateActionsHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Actions terminée',syncActionsHybridFromSettings)" ${actionsSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showActionsConflictsFromSettings()" ${deosActionsSyncRuntime.conflictCount ? "" : "disabled"}>Voir les conflits</button><button class="secondary" type="button" onclick="previewExactActionDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Actions terminée',repairExactActionDuplicatesFromSettings)" ${actionsSyncIsEnabled() && remoteReady ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Actions locales et distantes.</div>` : ""}</section></div></div>`;
 }
 async function analyzeActionsHybridFromSettings() {
   return runActionsUiExclusive("analyze", async () => {
@@ -20245,6 +20572,52 @@ function getManagersSyncShadowMap() {
   const shadow = managersSyncShadowRepository.load({ syncedAt: "", managers: [] });
   return new Map(ensureArray(shadow.managers).map(manager => [managerSyncClientId(manager), manager]).filter(([id]) => id));
 }
+// V5.30D — les demandes/objectifs managériaux sont une collection append-only métier.
+// Elles se fusionnent par id afin qu'un échange créé sur un appareil ne disparaisse pas
+// lorsqu'un autre appareil possède une version plus ancienne de la fiche Manager.
+function mergeManagerManagementRequests(localRows = [], remoteRows = []) {
+  const result = new Map();
+  const put = row => {
+    if (!row || typeof row !== "object") return;
+    const id = String(row.id || "").trim() || `legacy:${String(row.date || "")}:${String(row.subject || "")}`;
+    const previous = result.get(id);
+    if (!previous) { result.set(id, { ...row }); return; }
+    const prevStamp = Date.parse(previous.updatedAt || previous.createdAt || previous.date || "") || 0;
+    const nextStamp = Date.parse(row.updatedAt || row.createdAt || row.date || "") || 0;
+    result.set(id, nextStamp >= prevStamp ? { ...previous, ...row } : { ...row, ...previous });
+  };
+  ensureArray(remoteRows).forEach(put);
+  ensureArray(localRows).forEach(put);
+  return [...result.values()].sort((a,b) => String(b.date || b.updatedAt || "").localeCompare(String(a.date || a.updatedAt || "")));
+}
+
+
+function mergeManagerPilotNotes(localRows = [], remoteRows = []) {
+  const result = new Map();
+  const put = raw => {
+    if (!raw || typeof raw !== "object") return;
+    const row = normalizeManagerPilotNotes([raw])[0];
+    if (!row) return;
+    const id = String(row.id || "").trim() || `legacy:${row.date}:${row.type}`;
+    const previous = result.get(id);
+    if (!previous) { result.set(id, row); return; }
+    const prevStamp = Date.parse(previous.updatedAt || previous.createdAt || previous.date || "") || 0;
+    const nextStamp = Date.parse(row.updatedAt || row.createdAt || row.date || "") || 0;
+    const newest = nextStamp >= prevStamp ? row : previous;
+    const older = nextStamp >= prevStamp ? previous : row;
+    const followMap = new Map();
+    [...ensureArray(older.followUps), ...ensureArray(newest.followUps)].forEach(f => {
+      const fid = String(f.id || "").trim() || `legacy:${String(f.text || "")}`;
+      const prior = followMap.get(fid) || {};
+      followMap.set(fid, { ...prior, ...f, createdRefs: { ...(prior.createdRefs || {}), ...(f.createdRefs || {}) } });
+    });
+    result.set(id, { ...older, ...newest, followUps: [...followMap.values()] });
+  };
+  ensureArray(remoteRows).forEach(put);
+  ensureArray(localRows).forEach(put);
+  return normalizeManagerPilotNotes([...result.values()]);
+}
+
 function resolveManagerNonDestructive(localManager = {}, remoteManager = {}, baseManager = null) {
   const localNormalized = normalizeEntity("managers", { ...(localManager || {}) });
   const remoteNormalized = normalizeEntity("managers", { ...(remoteManager || {}) });
@@ -20263,6 +20636,21 @@ function resolveManagerNonDestructive(localManager = {}, remoteManager = {}, bas
     const r = remoteCanonical[key];
     const b = baseCanonical ? baseCanonical[key] : undefined;
     if (managerCanonicalValuesEqual(l, r)) continue;
+
+    if (key === "managementRequests") {
+      const combined = mergeManagerManagementRequests(localNormalized.managementRequests, remoteNormalized.managementRequests);
+      merged.managementRequests = combined;
+      if (!managerCanonicalValuesEqual(canonicalManagerStructuredValue(combined), l)) fromRemoteFields.push(key);
+      if (!managerCanonicalValuesEqual(canonicalManagerStructuredValue(combined), r)) fromLocalFields.push(key);
+      continue;
+    }
+    if (key === "pilotNotes") {
+      const combined = mergeManagerPilotNotes(localNormalized.pilotNotes, remoteNormalized.pilotNotes);
+      merged.pilotNotes = combined;
+      if (!managerCanonicalValuesEqual(canonicalManagerStructuredValue(combined), l)) fromRemoteFields.push(key);
+      if (!managerCanonicalValuesEqual(canonicalManagerStructuredValue(combined), r)) fromLocalFields.push(key);
+      continue;
+    }
 
     const lEmpty = managerCanonicalValueIsEmpty(l);
     const rEmpty = managerCanonicalValueIsEmpty(r);
@@ -20666,6 +21054,58 @@ function deactivateManagersHybridSync() {
   return deosManagersSyncRuntime;
 }
 
+
+// V5.30F — les échanges managériaux se réconcilient même si d'autres champs de la
+// fiche Manager restent en conflit. Cela évite qu'un conflit ancien bloque la
+// propagation des demandes/objectifs nouvellement tracés entre PC et iPad.
+async function reconcileManagerRequestsBeforeConflictCheck(remoteRows = []) {
+  let localChanged = false;
+  let remoteChanged = false;
+  const activeRows = ensureArray(remoteRows).filter(row => !row.deletedAt);
+  const remoteById = new Map(activeRows.map(row => [String(row.clientId || '').trim(), row]).filter(([id]) => id));
+  const uniqueRemoteByName = buildUniqueManagerNaturalMap(activeRows, row => row.manager);
+
+  for (const local of ensureArray(state.managers)) {
+    const localId = managerSyncClientId(local);
+    let row = remoteById.get(localId);
+    if (!row) {
+      const key = managerNaturalIdentity(local);
+      row = key ? uniqueRemoteByName.get(key) : null;
+    }
+    if (!row) continue;
+
+    const combined = mergeManagerManagementRequests(local.managementRequests, row.manager?.managementRequests);
+    const combinedPilotNotes = mergeManagerPilotNotes(local.pilotNotes, row.manager?.pilotNotes);
+    const localSame = managerCanonicalValuesEqual(canonicalManagerStructuredValue(ensureArray(local.managementRequests)), canonicalManagerStructuredValue(combined));
+    const remoteSame = managerCanonicalValuesEqual(canonicalManagerStructuredValue(ensureArray(row.manager?.managementRequests)), canonicalManagerStructuredValue(combined));
+    const localPilotSame = managerCanonicalValuesEqual(canonicalManagerStructuredValue(normalizeManagerPilotNotes(local.pilotNotes)), canonicalManagerStructuredValue(combinedPilotNotes));
+    const remotePilotSame = managerCanonicalValuesEqual(canonicalManagerStructuredValue(normalizeManagerPilotNotes(row.manager?.pilotNotes)), canonicalManagerStructuredValue(combinedPilotNotes));
+
+    if (!localSame) {
+      local.managementRequests = combined;
+      localChanged = true;
+    }
+    if (!localPilotSame) {
+      local.pilotNotes = combinedPilotNotes;
+      localChanged = true;
+    }
+    if (!remoteSame || !remotePilotSame) {
+      const remotePayload = normalizeEntity('managers', { ...(row.manager || {}), id: row.clientId, clientId: row.clientId, managementRequests: combined, pilotNotes: combinedPilotNotes });
+      const updated = await withManagersRemoteTimeout(
+        deosRemoteAdapter.updateManager(String(row.clientId || ''), remotePayload, Number(row.version || 0)),
+        `Réconciliation des échanges managériaux de ${remotePayload.name || row.clientId}`
+      );
+      row.manager = remotePayload;
+      row.version = Number(updated.version || row.version || 0);
+      row.updatedAt = updated.updatedAt || row.updatedAt;
+      remoteChanged = true;
+    }
+  }
+
+  if (localChanged) persistManagersState({ updateShadow: false });
+  return { localChanged, remoteChanged };
+}
+
 async function syncManagersHybridNow(options = {}) {
   if (deosManagersSyncRuntime.syncing) return deosManagersSyncRuntime;
   if (!managersSyncIsEnabled()) { refreshManagersSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" }); return deosManagersSyncRuntime; }
@@ -20676,6 +21116,8 @@ async function syncManagersHybridNow(options = {}) {
   refreshManagersSyncRuntimeState({ syncing: true, state: DEOS_LINKS_SYNC_STATUS.SYNCING, lastError: "" });
   try {
     let remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Lecture des Managers distants");
+    await reconcileManagerRequestsBeforeConflictCheck(remoteRows);
+    remoteRows = await withManagersRemoteTimeout(deosRemoteAdapter.listManagers(), "Actualisation des échanges managériaux");
     let preflight = buildManagersRemotePreview(state.managers, remoteRows);
     if (preflight.duplicateCandidates.length) {
       throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ».`);
@@ -20919,7 +21361,7 @@ function renderManagersHybridSettingsCardHtml() {
   const remoteReady = managersSyncCanInspectRemote();
   const analysis = deosManagersSyncRuntime.lastAnalysis;
   const warning = "Seuls les Managers sont concernés par ce pilote. Liens, Actions, Projets et Dossiers conservent leurs pilotes séparés ; les autres catégories restent locales.";
-  return `<div id="managersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Managers</h2><p class="muted">Pilote V5.25F dédié aux Managers, avec lecture distante via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${managersSyncStatusClass()}">${esc(managersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(managersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Managers locaux</strong><span>${esc(String(state.managers.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Managers distants</strong><span>${esc(String(deosManagersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosManagersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosManagersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosManagersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosManagersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Managers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Managers terminée',analyzeManagersHybridFromSettings)">Analyser les Managers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Managers terminée',previewManagersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${managersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateManagersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Managers activée',activateManagersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Managers terminée',syncManagersHybridFromSettings)" ${managersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showManagersConflictsFromSettings()" ${(deosManagersSyncRuntime.conflictCount || ensureArray(analysis?.conflicts).length) ? "" : "disabled"}>Voir les conflits</button><button class="action" type="button" onclick="openManagersConflictResolutionDialog(0)" ${ensureArray(analysis?.conflicts).length ? "" : "disabled"}>Résoudre les conflits</button><button class="secondary" type="button" onclick="previewExactManagerDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Managers terminée',repairExactManagerDuplicatesFromSettings)" ${managersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Managers locaux et distants.</div>` : ""}</section></div></div>`;
+  return `<div id="managersHybridSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation pilote — Managers</h2><p class="muted">Pilote V5.25F dédié aux Managers, avec lecture distante via RPC dédiée, verrou Safari/iPad, garde anti-doublon et retour visuel immédiat des opérations. Aucune autre donnée métier n'est envoyée.</p></div><span class="remote-mode-badge ${managersSyncStatusClass()}">${esc(managersSyncStatusLabel())}</span></div><div class="settings-warning-box"><strong>Protection des données</strong><p>${esc(warning)}</p></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État pilote</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>État</strong><span>${esc(managersSyncStatusLabel())}</span></div><div class="settings-calendar-summary-item"><strong>Managers locaux</strong><span>${esc(String(state.managers.length || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Managers distants</strong><span>${esc(String(deosManagersSyncRuntime.remoteCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>En attente</strong><span>${esc(String(deosManagersSyncRuntime.pendingCount || 0))}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchronisation</strong><span>${esc(deosManagersSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière erreur</strong><span>${esc(deosManagersSyncRuntime.lastError || "Aucune")}</span></div><div class="settings-calendar-summary-item"><strong>Appareil courant</strong><span>${esc(deosManagersSyncRuntime.currentDevice || "Navigateur courant")}</span></div></div>${analysis ? `<p class="muted">Dernière analyse: ${esc(analysis.generatedAt || "")}</p>` : `<p class="muted">Aucune analyse de migration exécutée.</p>`}</section><section class="settings-card-block"><h3>Managers</h3><p class="muted">Désactivé par défaut. L'analyse et la prévisualisation sont en lecture seule.</p><div class="row-actions"><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Analyse…','Analyse Managers terminée',analyzeManagersHybridFromSettings)">Analyser les Managers</button><button class="secondary" type="button" onclick="runDeosButtonTask(this,'Prévisualisation…','Prévisualisation Managers terminée',previewManagersMigrationFromSettings)" ${remoteReady ? "" : "disabled"}>Prévisualiser la migration</button>${managersSyncIsEnabled() ? `<button class="danger" type="button" onclick="deactivateManagersHybridFromSettings()">Désactiver la synchronisation</button>` : `<button class="action" type="button" onclick="runDeosButtonTask(this,'Activation…','Synchronisation Managers activée',activateManagersHybridFromSettings)">Activer la synchronisation</button>`}<button class="secondary" type="button" onclick="runDeosButtonTask(this,'Synchronisation…','Synchronisation Managers terminée',syncManagersHybridFromSettings)" ${managersSyncIsEnabled() ? "" : "disabled"}>Synchroniser maintenant</button><button class="secondary" type="button" onclick="showManagersConflictsFromSettings()" ${(deosManagersSyncRuntime.conflictCount || ensureArray(analysis?.conflicts).length) ? "" : "disabled"}>Voir les conflits</button><button class="action" type="button" onclick="runDeosButtonTask(this,'Analyse des conflits…','Conflits Managers prêts',openManagersConflictResolutionFromSettings)" ${managersSyncIsEnabled() && remoteReady ? "" : "disabled"}>Résoudre les conflits</button><button class="secondary" type="button" onclick="previewExactManagerDuplicatesFromSettings()" ${remoteReady ? "" : "disabled"}>Voir les doublons exacts</button><button class="danger" type="button" onclick="runDeosButtonTask(this,'Réparation…','Réparation des doublons Managers terminée',repairExactManagerDuplicatesFromSettings)" ${managersSyncIsEnabled() && analysis?.duplicateCandidates?.length ? "" : "disabled"}>Réparer les doublons exacts</button></div>${!remoteReady ? `<div class="empty">Authentifiez-vous sur le workspace actif pour comparer les Managers locaux et distants.</div>` : ""}</section></div></div>`;
 }
 async function analyzeManagersHybridFromSettings() {
   return runManagersUiExclusive("analyze", async () => {
@@ -21040,11 +21482,35 @@ function renderManagersConflictResolutionDialog() {
     const encodedClientId = encodeURIComponent(conflict.remoteClientId || conflict.localClientId || "");
     const encodedField = encodeURIComponent(field);
     const canMerge = managerConflictFieldCanMerge(field, localCanonical[field], remoteCanonical[field]);
-    const mergeButton = canMerge ? `<div class="row-actions" style="margin-top:8px"><button class="${choice === "merge" ? "action" : "secondary"}" type="button" onclick="chooseManagerConflictField('${encodedClientId}','${encodedField}','merge')">${choice === "merge" ? "✓ " : ""}Fusionner les deux</button></div>` : "";
-    return `<div class="card" style="margin:10px 0;padding:12px"><strong>${esc(field)}</strong><div class="settings-card-grid" style="margin-top:8px"><section class="settings-card-block"><h3>Local iPad</h3><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px">${esc(managerConflictDisplayValue(localCanonical[field]))}</pre><button class="${choice === "local" ? "action" : "secondary"}" type="button" onclick="chooseManagerConflictField('${encodedClientId}','${encodedField}','local')">${choice === "local" ? "✓ " : ""}Conserver LOCAL</button></section><section class="settings-card-block"><h3>Supabase / PC</h3><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px">${esc(managerConflictDisplayValue(remoteCanonical[field]))}</pre><button class="${choice === "remote" ? "action" : "secondary"}" type="button" onclick="chooseManagerConflictField('${encodedClientId}','${encodedField}','remote')">${choice === "remote" ? "✓ " : ""}Conserver SUPABASE</button></section></div>${mergeButton}</div>`;
+    const mergeButton = canMerge ? `<div class="row-actions" style="margin-top:8px"><button class="${choice === "merge" ? "action" : "secondary"}" type="button" onclick="chooseCurrentManagerConflictField('${encodedField}','merge')">${choice === "merge" ? "✓ " : ""}Fusionner les deux</button></div>` : "";
+    return `<div class="card" style="margin:10px 0;padding:12px"><strong>${esc(field)}</strong><div class="settings-card-grid" style="margin-top:8px"><section class="settings-card-block"><h3>Local iPad</h3><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px">${esc(managerConflictDisplayValue(localCanonical[field]))}</pre><button class="${choice === "local" ? "action" : "secondary"}" type="button" onclick="chooseCurrentManagerConflictField('${encodedField}','local')">${choice === "local" ? "✓ " : ""}Conserver LOCAL</button></section><section class="settings-card-block"><h3>Supabase / PC</h3><pre style="white-space:pre-wrap;word-break:break-word;font-size:12px">${esc(managerConflictDisplayValue(remoteCanonical[field]))}</pre><button class="${choice === "remote" ? "action" : "secondary"}" type="button" onclick="chooseCurrentManagerConflictField('${encodedField}','remote')">${choice === "remote" ? "✓ " : ""}Conserver SUPABASE</button></section></div>${mergeButton}</div>`;
   }).join("");
   root.insertAdjacentHTML("beforeend", `<div id="managersConflictResolutionOverlay" class="modal-backdrop"><div class="modal-panel remote-auth-panel" style="max-width:960px"><div class="modal-head"><h2>Fusion Manager — ${esc(conflict.title || conflict.local?.name || conflict.remote?.name || "Manager")}</h2><button class="icon-close" type="button" onclick="closeManagersConflictResolutionDialog()" aria-label="Fermer">×</button></div><div class="remote-auth-body"><p class="muted">Manager ${index + 1}/${total} · ${selectedCount}/${fields.length} champ(s) arbitré(s). Aucun choix n'est envoyé à Supabase à ce stade.</p><div class="row-actions"><button class="secondary" type="button" onclick="chooseAllManagerConflictFields('local')">Tout conserver LOCAL</button><button class="secondary" type="button" onclick="chooseAllManagerConflictFields('remote')">Tout conserver SUPABASE</button><button class="secondary" type="button" onclick="chooseAllMergeableManagerConflictFields()">Fusionner tous les champs compatibles</button></div>${rows}<div class="row-actions"><button class="secondary" type="button" onclick="previousManagerConflictDialog()" ${index <= 0 ? "disabled" : ""}>← Précédent</button><button class="secondary" type="button" onclick="nextManagerConflictDialog()" ${index >= total - 1 ? "disabled" : ""}>Suivant →</button><button class="action" type="button" onclick="reanalyzeManagersAfterConflictChoices()">Ré-analyser les Managers</button><button class="secondary" type="button" onclick="closeManagersConflictResolutionDialog()">Fermer</button></div></div></div></div>`);
 }
+async function openManagersConflictResolutionFromSettings() {
+  try {
+    let analysis = deosManagersSyncRuntime.lastAnalysis || deosManagersConflictDialogAnalysis || loadManagersLastAnalysisSnapshot();
+    if (!ensureArray(analysis?.conflicts).length) {
+      analysis = await analyzeManagersHybridState();
+      deosManagersSyncRuntime.lastAnalysis = analysis;
+      deosManagersSyncRuntime.lastAnalysisAt = analysis?.generatedAt || new Date().toISOString();
+      deosManagersConflictDialogAnalysis = analysis;
+      saveManagersLastAnalysisSnapshot(analysis);
+    }
+    if (!ensureArray(analysis?.conflicts).length) {
+      alert("Aucun conflit Manager à résoudre après nouvelle analyse.");
+      return true;
+    }
+    deosManagersConflictDialogAnalysis = analysis;
+    deosManagersConflictDialogIndex = 0;
+    renderManagersConflictResolutionDialog();
+    return true;
+  } catch (error) {
+    alert(`Erreur préparation des conflits Managers\n\n${error?.message || "Analyse impossible."}`);
+    return null;
+  }
+}
+
 function openManagersConflictResolutionDialog(index = 0) {
   deosManagersConflictDialogIndex = Number(index || 0);
   try {
@@ -21063,12 +21529,24 @@ function openManagersConflictResolutionDialog(index = 0) {
   }
 }
 function chooseManagerConflictField(encodedClientId, encodedField, side) {
-  const clientId = decodeURIComponent(String(encodedClientId || ""));
+  // V5.30H — le dialogue travaille sur le conflit actuellement affiché.
+  // Cela évite une recherche fragile par client_id (différences local/distant possibles).
   const field = decodeURIComponent(String(encodedField || ""));
-  const conflicts = ensureArray((deosManagersConflictDialogAnalysis || deosManagersSyncRuntime.lastAnalysis)?.conflicts);
-  const conflict = conflicts.find(item => sameId(item.remoteClientId || item.localClientId, clientId));
+  const data = managersConflictForDialog();
+  const conflict = data?.conflict || null;
   if (!conflict) return alert("Conflit Manager introuvable dans la dernière analyse.");
-  saveManagerConflictFieldChoice(conflict, field, side);
+  if (!field) return alert("Champ Manager introuvable.");
+  const ok = saveManagerConflictFieldChoice(conflict, field, side);
+  if (!ok) return alert("Impossible d’enregistrer ce choix de fusion.");
+  renderManagersConflictResolutionDialog();
+}
+
+function chooseCurrentManagerConflictField(encodedField, side) {
+  const field = decodeURIComponent(String(encodedField || ""));
+  const data = managersConflictForDialog();
+  if (!data?.conflict) return alert("Conflit Manager introuvable dans la dernière analyse.");
+  const ok = saveManagerConflictFieldChoice(data.conflict, field, side);
+  if (!ok) return alert("Impossible d’enregistrer ce choix de fusion.");
   renderManagersConflictResolutionDialog();
 }
 function chooseAllManagerConflictFields(side) {
@@ -21123,9 +21601,11 @@ function showManagersConflictsFromSettings() {
 
 
 
+window.openManagersConflictResolutionFromSettings = openManagersConflictResolutionFromSettings;
 window.openManagersConflictResolutionDialog = openManagersConflictResolutionDialog;
 window.closeManagersConflictResolutionDialog = closeManagersConflictResolutionDialog;
 window.chooseManagerConflictField = chooseManagerConflictField;
+window.chooseCurrentManagerConflictField = chooseCurrentManagerConflictField;
 window.chooseAllManagerConflictFields = chooseAllManagerConflictFields;
 window.chooseAllMergeableManagerConflictFields = chooseAllMergeableManagerConflictFields;
 window.previousManagerConflictDialog = previousManagerConflictDialog;
@@ -21312,6 +21792,42 @@ function createSimpleEntitySyncController(config) {
           setMeta(id,{remoteId:row.remoteId,remoteVersion:Number(row.version||0),remoteUpdatedAt:row.updatedAt||"",lastSyncedAt:new Date().toISOString(),syncStatus:DEOS_LINKS_SYNC_STATUS.SYNCED,lastLocalFingerprint:simpleSyncFingerprint(remote),lastSyncError:"",conflictFields:[]});
           continue;
         }
+        // V5.30J — Décisions : les rattachements Managers sont additifs.
+        // Si linkedManagers est la seule différence, on conserve l’union des deux côtés
+        // au lieu de créer un conflit demandant un arbitrage destructif.
+        if (entity === "decisions") {
+          const decisionDiffs = simpleSyncConflictFields(local, remote);
+          if (decisionDiffs.length === 1 && decisionDiffs[0] === "linkedManagers") {
+            const mergedLinkedManagers = normalizeLinkedManagerIds([
+              ...ensureArray(local.linkedManagers),
+              ...ensureArray(remote.linkedManagers)
+            ]);
+            const mergedDecision = normalizeEntity("decisions", {
+              ...remote,
+              ...local,
+              id,
+              clientId: id,
+              linkedManagers: mergedLinkedManagers
+            });
+            const updated = await timeout(
+              deosRemoteAdapter[updateMethod](id, mergedDecision, Number(row.version || 0)),
+              `Fusion des managers liés — ${mergedDecision.title || id}`
+            );
+            state[entity][idx] = mergedDecision;
+            localChanged = true;
+            setMeta(id, {
+              remoteId: updated.remoteId,
+              remoteVersion: Number(updated.version || 0),
+              remoteUpdatedAt: updated.updatedAt || "",
+              lastSyncedAt: new Date().toISOString(),
+              syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED,
+              lastLocalFingerprint: simpleSyncFingerprint(mergedDecision),
+              lastSyncError: "",
+              conflictFields: []
+            });
+            continue;
+          }
+        }
         const lfp=simpleSyncFingerprint(local), rfp=simpleSyncFingerprint(remote);
         if (!meta.lastLocalFingerprint) {
           if (lfp!==rfp) { setMeta(id,{remoteId:row.remoteId,remoteVersion:Number(row.version||0),remoteUpdatedAt:row.updatedAt||"",syncStatus:DEOS_LINKS_SYNC_STATUS.CONFLICT,lastSyncError:"CONFLICT",conflictFields:simpleSyncConflictFields(local,remote)}); }
@@ -21377,6 +21893,191 @@ window.simpleSyncAnalyzeFromSettings=simpleSyncAnalyzeFromSettings; window.simpl
 let simpleEntityAutoSyncTimers={};
 function scheduleSimpleEntityAutoSync(entity){const c=simpleSyncControllerFor(entity);if(!c||!c.runtime().enabled)return;clearTimeout(simpleEntityAutoSyncTimers[entity]);simpleEntityAutoSyncTimers[entity]=window.setTimeout(()=>c.syncNow({silent:true,source:"local-change"}),900);}
 
+
+// -----------------------------------------------------------------------------
+// V5.30A — Synchronisation multi-appareils unifiée
+// Active les 7 pilotes métier existants et les orchestre sous une seule commande.
+// Les moteurs de conflit existants restent seuls responsables des arbitrages :
+// aucun écrasement silencieux n'est ajouté par cette couche.
+// -----------------------------------------------------------------------------
+const DEOS_MULTI_DEVICE_ENTITIES = Object.freeze(["links", "actions", "projects", "folders", "managers", "decisions", "documents"]);
+let deosMultiDeviceSyncRuntime = {
+  syncing: false,
+  lastSyncAt: "",
+  lastError: "",
+  lastResults: {},
+  listenersBound: false,
+  lastAutoAttemptAt: 0
+};
+
+function multiDeviceConnected() {
+  return Boolean(
+    navigator.onLine !== false
+    && !deosRemoteRuntime.temporaryLocal
+    && deosRemoteRuntime.connectionStatus === "authenticated"
+    && deosRemoteRuntime.workspace
+    && deosRemoteAuthService?.isAuthenticated?.()
+    && deosRemoteAdapter
+  );
+}
+
+function enableAllMultiDevicePilots() {
+  const remote = getRemoteSyncSettings();
+  const now = new Date().toISOString();
+  state.settings.remoteSync = normalizeRemoteSyncSettings({
+    ...remote,
+    linksPilotEnabled: true, linksPilotActivatedAt: remote.linksPilotActivatedAt || now, linksPilotLastMode: "multi-device",
+    actionsPilotEnabled: true, actionsPilotActivatedAt: remote.actionsPilotActivatedAt || now, actionsPilotLastMode: "multi-device",
+    projectsPilotEnabled: true, projectsPilotActivatedAt: remote.projectsPilotActivatedAt || now, projectsPilotLastMode: "multi-device",
+    foldersPilotEnabled: true, foldersPilotActivatedAt: remote.foldersPilotActivatedAt || now, foldersPilotLastMode: "multi-device",
+    managersPilotEnabled: true, managersPilotActivatedAt: remote.managersPilotActivatedAt || now, managersPilotLastMode: "multi-device",
+    decisionsPilotEnabled: true, decisionsPilotActivatedAt: remote.decisionsPilotActivatedAt || now, decisionsPilotLastMode: "multi-device",
+    documentsPilotEnabled: true, documentsPilotActivatedAt: remote.documentsPilotActivatedAt || now, documentsPilotLastMode: "multi-device"
+  });
+  persistSettings();
+  initializeLinksHybridSync({ skipAutoSync: true });
+  initializeActionsHybridSync({ skipAutoSync: true });
+  initializeProjectsHybridSync({ skipAutoSync: true });
+  initializeFoldersHybridSync({ skipAutoSync: true });
+  initializeManagersHybridSync({ skipAutoSync: true });
+  initializeDecisionDocumentHybridSync({ skipAutoSync: true });
+}
+
+function multiDeviceEntityRuntime(entity) {
+  if (entity === "links") return deosLinksSyncRuntime;
+  if (entity === "actions") return deosActionsSyncRuntime;
+  if (entity === "projects") return deosProjectsSyncRuntime;
+  if (entity === "folders") return deosFoldersSyncRuntime;
+  if (entity === "managers") return deosManagersSyncRuntime;
+  if (entity === "decisions") return deosDecisionsSyncController?.runtime?.() || {};
+  if (entity === "documents") return deosDocumentsSyncController?.runtime?.() || {};
+  return {};
+}
+
+async function syncAllMultiDeviceNow(options = {}) {
+  const silent = Boolean(options.silent);
+  if (deosMultiDeviceSyncRuntime.syncing) return deosMultiDeviceSyncRuntime;
+  if (!multiDeviceConnected()) {
+    deosMultiDeviceSyncRuntime.lastError = navigator.onLine === false ? "Hors ligne." : "Connexion au workspace requise.";
+    if (!silent && currentView === "settings") renderSettings(deosMultiDeviceSyncRuntime.lastError);
+    return deosMultiDeviceSyncRuntime;
+  }
+  enableAllMultiDevicePilots();
+  deosMultiDeviceSyncRuntime.syncing = true;
+  deosMultiDeviceSyncRuntime.lastError = "";
+  const results = {};
+  const tasks = [
+    ["links", () => linksHybridRepository.syncNow({ silent: true, source: options.source || "multi-device" })],
+    ["actions", () => actionsHybridRepository.syncNow({ silent: true, source: options.source || "multi-device" })],
+    ["projects", () => projectsHybridRepository.syncNow({ silent: true, source: options.source || "multi-device" })],
+    ["folders", () => foldersHybridRepository.syncNow({ silent: true, source: options.source || "multi-device" })],
+    ["managers", () => managersHybridRepository.syncNow({ silent: true, source: options.source || "multi-device" })],
+    ["decisions", () => deosDecisionsSyncController.syncNow({ silent: true, source: options.source || "multi-device" })],
+    ["documents", () => deosDocumentsSyncController.syncNow({ silent: true, source: options.source || "multi-device" })]
+  ];
+  try {
+    for (const [entity, fn] of tasks) {
+      try {
+        await fn();
+        const runtime = multiDeviceEntityRuntime(entity);
+        results[entity] = { ok: !runtime.lastError, error: runtime.lastError || "", conflicts: Number(runtime.conflictCount || 0) };
+      } catch (error) {
+        results[entity] = { ok: false, error: error?.message || String(error), conflicts: 0 };
+      }
+    }
+    deosMultiDeviceSyncRuntime.lastResults = results;
+    deosMultiDeviceSyncRuntime.lastSyncAt = new Date().toLocaleString("fr-FR");
+    const failures = Object.entries(results).filter(([, r]) => !r.ok);
+    deosMultiDeviceSyncRuntime.lastError = failures.length ? failures.map(([k, r]) => `${k}: ${r.error}`).join(" · ") : "";
+  } finally {
+    deosMultiDeviceSyncRuntime.syncing = false;
+  }
+  if (!silent && currentView === "settings") renderSettings(deosMultiDeviceSyncRuntime.lastError || "Synchronisation multi-appareils terminée.");
+  else if (!silent && !deosMultiDeviceSyncRuntime.lastError) {
+    showDeosToast?.("Synchronisation multi-appareils terminée.", "success");
+    // Rafraîchit uniquement après une synchro demandée par l'utilisateur :
+    // les synchros automatiques ne doivent pas interrompre un formulaire en cours.
+    window.setTimeout(() => {
+      const renderer = { cockpit: renderCockpit, graph: renderGraph, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity }[currentView];
+      if (typeof renderer === "function") renderer();
+    }, 50);
+  }
+  return deosMultiDeviceSyncRuntime;
+}
+window.syncAllMultiDeviceNow = syncAllMultiDeviceNow;
+
+function scheduleMultiDeviceAutoSync(source = "auto") {
+  if (!multiDeviceConnected()) return;
+  const now = Date.now();
+  if (now - deosMultiDeviceSyncRuntime.lastAutoAttemptAt < 12000) return;
+  deosMultiDeviceSyncRuntime.lastAutoAttemptAt = now;
+  window.setTimeout(() => syncAllMultiDeviceNow({ silent: true, source }), 500);
+}
+
+// V5.30L — debounce dédié aux écritures métier. Contrairement au contrôle
+// startup/focus, une modification locale ne doit pas attendre 12 secondes.
+let deosMultiDeviceWriteSyncTimer = null;
+function scheduleMultiDeviceWriteSync(entity = "change") {
+  if (typeof window === "undefined") return;
+  if (!multiDeviceConnected()) return;
+  // Une persistance effectuée pendant une synchro distante ne doit pas
+  // réamorcer une boucle de synchronisation.
+  if (deosMultiDeviceSyncRuntime.syncing) return;
+  if (deosMultiDeviceWriteSyncTimer) window.clearTimeout(deosMultiDeviceWriteSyncTimer);
+  deosMultiDeviceWriteSyncTimer = window.setTimeout(async () => {
+    deosMultiDeviceWriteSyncTimer = null;
+    if (!multiDeviceConnected() || deosMultiDeviceSyncRuntime.syncing) return;
+    await syncAllMultiDeviceNow({ silent: true, source: `write:${entity}` });
+  }, 1200);
+}
+window.scheduleMultiDeviceWriteSync = scheduleMultiDeviceWriteSync;
+
+function bindMultiDeviceSyncListeners() {
+  if (deosMultiDeviceSyncRuntime.listenersBound || typeof window === "undefined") return;
+  window.addEventListener("online", () => scheduleMultiDeviceAutoSync("online"));
+  window.addEventListener("focus", () => scheduleMultiDeviceAutoSync("focus"));
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") scheduleMultiDeviceAutoSync("visible"); });
+  deosMultiDeviceSyncRuntime.listenersBound = true;
+}
+
+function initializeMultiDeviceSyncForAuthenticatedSession(options = {}) {
+  bindMultiDeviceSyncListeners();
+  if (!multiDeviceConnected()) return;
+  enableAllMultiDevicePilots();
+  if (!options.skipSync) scheduleMultiDeviceAutoSync(options.source || "startup");
+}
+
+function multiDeviceSyncSummary() {
+  const rows = DEOS_MULTI_DEVICE_ENTITIES.map(entity => {
+    const runtime = multiDeviceEntityRuntime(entity);
+    return {
+      entity,
+      state: String(runtime.state || (runtime.enabled ? "SYNC_READY" : "LOCAL_ONLY")),
+      conflicts: Number(runtime.conflictCount || 0),
+      error: String(runtime.lastError || ""),
+      lastSyncAt: String(runtime.lastSyncAt || "")
+    };
+  });
+  return { rows, conflicts: rows.reduce((n, r) => n + r.conflicts, 0), errors: rows.filter(r => r.error).length };
+}
+
+function renderMultiDeviceSyncSettingsCardHtml() {
+  const connected = multiDeviceConnected();
+  const summary = multiDeviceSyncSummary();
+  const labelMap = { links:"Liens", actions:"Actions", projects:"Projets", folders:"Dossiers", managers:"Managers", decisions:"Décisions", documents:"Documents" };
+  return `<div id="multiDeviceSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation multi-appareils</h2><p class="muted">V5.30A · un seul workspace pour retrouver automatiquement les 7 objets métier principaux sur PC, iPad et autres navigateurs.</p></div><span class="remote-mode-badge ${connected ? (summary.conflicts ? "red" : "green") : "orange"}">${connected ? (summary.conflicts ? `${summary.conflicts} conflit(s)` : "Cloud connecté") : "Connexion requise"}</span></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Workspace</strong><span>${esc(deosRemoteRuntime.workspace?.name || "--")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchro globale</strong><span>${esc(deosMultiDeviceSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Conflits</strong><span>${summary.conflicts}</span></div><div class="settings-calendar-summary-item"><strong>Erreurs</strong><span>${summary.errors}</span></div></div><div class="row-actions"><button class="action" type="button" onclick="syncAllMultiDeviceNow({silent:false,source:'manual'})" ${connected && !deosMultiDeviceSyncRuntime.syncing ? "" : "disabled"}>${deosMultiDeviceSyncRuntime.syncing ? "Synchronisation…" : "Synchroniser maintenant"}</button></div>${deosMultiDeviceSyncRuntime.lastError ? `<p class="remote-error-box">${esc(deosMultiDeviceSyncRuntime.lastError)}</p>` : ""}</section><section class="settings-card-block"><h3>Objets synchronisés</h3><div class="settings-calendar-summary">${summary.rows.map(r => `<div class="settings-calendar-summary-item"><strong>${esc(labelMap[r.entity] || r.entity)}</strong><span>${r.conflicts ? `${r.conflicts} conflit(s)` : r.error ? "Erreur" : "Actif"}</span></div>`).join("")}</div><p class="muted">Le stockage local reste conservé. En cas de modifications concurrentes, les moteurs existants signalent un conflit au lieu d'écraser silencieusement les données.</p></section></div></div>`;
+}
+
+function mountMultiDeviceSyncSettingsCard() {
+  if (document.getElementById("multiDeviceSyncSettingsCard")) return;
+  const remoteCard = document.getElementById("remoteWorkspaceSettingsCard") || document.querySelector(".settings-remote-card");
+  const host = remoteCard?.parentElement || document.getElementById("app");
+  if (!host) return;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = renderMultiDeviceSyncSettingsCardHtml();
+  const card = wrap.firstElementChild;
+  if (remoteCard?.nextSibling) remoteCard.parentElement.insertBefore(card, remoteCard.nextSibling); else host.appendChild(card);
+}
 function getDefaultRemoteSyncSettings() {
   const remoteApi = window.DeosSupabase;
   const base = remoteApi?.normalizeRemoteConfig
@@ -21772,7 +22473,7 @@ function continueRemoteTemporarilyInLocalMode() {
 // V5.27C — garde-fou Safari/iPad : aucune opération Auth ne doit laisser
 // l'interface bloquée indéfiniment en état "busy".
 const DEOS_REMOTE_AUTH_TIMEOUT_MS = 12000;
-const DEOS_REMOTE_INIT_TIMEOUT_MS = 8000;
+const DEOS_REMOTE_INIT_TIMEOUT_MS = 20000;
 let deosRemoteBusyWatchdogId = null;
 
 function withRemoteTimeout(promise, timeoutMs, code, message) {
@@ -22049,7 +22750,7 @@ async function initializeRemoteServices(options = {}) {
       deosRemoteAuthService.initialize(),
       DEOS_REMOTE_INIT_TIMEOUT_MS,
       "REMOTE_INIT_TIMEOUT",
-      "Initialisation Supabase trop longue. DEOS reste utilisable et la connexion peut être relancée."
+      "Connexion Supabase lente. DEOS reste utilisable ; vous pouvez relancer la connexion si nécessaire."
     );
     deosRemoteAdapter = new window.DeosSupabaseRemote.SupabaseRemoteAdapter(deosRemoteAuthService, {
       debug: config.debug
@@ -22078,6 +22779,7 @@ async function initializeRemoteServices(options = {}) {
           try {
             await refreshRemoteTestRecords({ silent: true });
             initializeLinksHybridSync({ skipAutoSync: false });
+            initializeMultiDeviceSyncForAuthenticatedSession({ source: "auth-state" });
             await maybePromptRemoteLinksRecovery({ silent: true, autoRecover: true });
           } catch (error) {
             deosRemoteRuntime.lastError = error?.message || "Actualisation distante impossible.";
@@ -22091,6 +22793,7 @@ async function initializeRemoteServices(options = {}) {
       await refreshRemoteTestRecords({ silent: true });
       setRemoteLastOperation("Session distante restauree.");
       initializeLinksHybridSync({ skipAutoSync: false });
+      initializeMultiDeviceSyncForAuthenticatedSession({ source: "session-restored" });
       await maybePromptRemoteLinksRecovery({ silent: true, autoRecover: true });
     }
   } catch (error) {
@@ -23289,13 +23992,14 @@ function renderSettings(message = "") {
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "settings"));
   const statusMessage = message || restoreSuccessMessage;
   restoreSuccessMessage = "";
-  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(DEOS_VERSION)}" placeholder="Version" readonly><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données DEOS sont enregistrées dans ce navigateur. Exportez régulièrement une sauvegarde afin de pouvoir les restaurer sur cet appareil ou sur un autre ordinateur.</p><div class="row-actions"><button id="backupExportBtn" class="action" onclick="exportBackup()">Exporter toutes les données</button><button id="backupImportBtn" class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button><input id="backupFileInput" type="file" accept=".json,application/json" style="display:none" onchange="onBackupFileInputChange(event)"></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
+  appHtml(`<div class="card hero settings-hero"><h2>⚙️ Paramètres généraux</h2><p class="muted">Personnalisez uniquement l'identité de l'application. Les données métier restent intactes.</p></div><div class="grid two"><div class="card settings-card"><h2>Identité</h2><div class="form-grid"><input id="setAppName" value="${esc(identity.appName)}" placeholder="Nom de l'application" oninput="updateSettingsPreview()"><input id="setAppVersion" value="${esc(DEOS_VERSION)}" placeholder="Version" readonly><input id="setSiteName" value="${esc(identity.siteName)}" placeholder="Nom du site" oninput="updateSettingsPreview()"><input id="setDirectorName" value="${esc(identity.directorName)}" placeholder="Nom du directeur" oninput="updateSettingsPreview()"><input id="setDirectorRole" value="${esc(identity.directorRole)}" placeholder="Fonction" oninput="updateSettingsPreview()"><input id="setOrganizationName" value="${esc(identity.organizationName)}" placeholder="Organisation / entreprise" oninput="updateSettingsPreview()"><select id="setLogoType" onchange="updateSettingsPreview()"><option value="monogram" ${identity.logoType !== "image" ? "selected" : ""}>Monogramme</option><option value="image" ${identity.logoType === "image" ? "selected" : ""}>Image</option></select><input id="setLogoText" value="${esc(identity.logoText)}" placeholder="Lettre ou initiales" oninput="updateSettingsPreview()"><input id="setLogoImage" class="full" value="${esc(identity.logoImage)}" placeholder="URL d'image optionnelle" oninput="updateSettingsPreview()"></div><div class="row-actions"><button class="action" onclick="saveSettings()">Enregistrer les paramètres</button><button class="secondary" onclick="resetIdentitySettings()">Rétablir les valeurs actuelles</button></div>${statusMessage ? `<p class="settings-confirm">${esc(statusMessage)}</p>` : ""}</div><div class="card settings-card"><h2>Aperçu</h2><div id="settingsPreview">${settingsPreviewHtml(identity)}</div><p class="muted">Cet aperçu correspond aux zones d'identité : barre latérale, titre, Brief du jour, signatures de comptes rendus et valeurs par défaut des créations futures.</p></div></div>${settingsCalendarConnectionCard()}<div class="card settings-card"><h2>Sauvegarde et restauration</h2><p class="muted">Les données restent enregistrées localement dans ce navigateur et, lorsque le Cloud DEOS est connecté, les objets métier compatibles sont également synchronisés entre vos appareils. Conservez néanmoins des sauvegardes régulières.</p><div class="row-actions"><button id="backupExportBtn" class="action" onclick="exportBackup()">Exporter toutes les données</button><button id="backupImportBtn" class="secondary" onclick="triggerBackupImport()">Importer une sauvegarde</button><input id="backupFileInput" type="file" accept=".json,application/json" style="display:none" onchange="onBackupFileInputChange(event)"></div><div class="form-grid"><div class="item"><strong>Date dernière exportation</strong><span class="muted">${esc(getBackupMetadata().lastExport)}</span></div><div class="item"><strong>Date dernière restauration</strong><span class="muted">${esc(getBackupMetadata().lastRestore)}</span></div><div class="item"><strong>Catégories métier actuellement présentes</strong><span class="muted">${esc(String(currentLocalStorageCategoryCount()))}</span></div></div>${backupPreviewOpen ? renderBackupPreviewCard({ date: backupPreviewPayload.date, categoryCount: backupPreviewSummary.categoryCount, counts: backupPreviewSummary.counts }) : ""}${backupPreviewOpen ? `<div class="row-actions"><button class="action" onclick="confirmRestoreBackup()">Confirmer la restauration</button><button class="secondary" onclick="closeBackupPreview()">Annuler</button></div>` : ""}</div><div class="card settings-card"><h2>Ce qui n'est pas modifié</h2><p class="muted">Les dossiers, projets, managers, décisions, actions, documents, journal, KPI, imports, liens utiles et historiques ne sont pas modifiés par ces paramètres.</p></div>`);
 }
 
 const renderSettingsBase = renderSettings;
 renderSettings = function renderSettingsWithRemote(message = "") {
   renderSettingsBase(message);
   mountRemoteSettingsCard();
+  mountMultiDeviceSyncSettingsCard();
   enhanceSettingsAccordions();
 };
 
