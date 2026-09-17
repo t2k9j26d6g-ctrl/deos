@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30O";
+const DEOS_VERSION = "V5.30Q2";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -891,6 +891,139 @@ function saved(name, fallback) {
   return deosDataService.load(name, fallback);
 }
 
+// -----------------------------------------------------------------------------
+// V5.30Q1 — Pont multi-appareils Priorités / To-Do
+//
+// Le backend actuel ne dispose pas encore d'un pilote Supabase "priorities".
+// Pour ne pas perdre les To-Do saisies sur iPad, on transporte la collection
+// dans UN document système caché, déjà couvert par le pilote Documents.
+// Le document est invisible dans les écrans métier et dans les sélecteurs.
+// Une future migration dédiée pourra remplacer ce pont sans changer les To-Do.
+// -----------------------------------------------------------------------------
+const DEOS_PRIORITY_SYNC_DOC_ID = "deos-system-priorities-sync-v1";
+const DEOS_PRIORITY_SYNC_SOURCE = "DEOS_PRIORITY_SYNC";
+let deosInitialEntityLoad = false;
+let deosPrioritySyncApplyingRemote = false;
+let deosPrioritySyncTimer = null;
+
+function isPrioritySyncTransportDocument(item) {
+  const doc = item && typeof item === "object" ? item : {};
+  return String(doc.id || "") === DEOS_PRIORITY_SYNC_DOC_ID
+    || String(doc.sourceType || "") === DEOS_PRIORITY_SYNC_SOURCE
+    || String(doc.documentType || "") === "system_priority_sync";
+}
+
+function prioritySyncPayloadFromDocument(doc) {
+  if (!isPrioritySyncTransportDocument(doc)) return null;
+  const content = doc?.content;
+  if (!content || typeof content !== "object" || Array.isArray(content)) return null;
+  if (!Array.isArray(content.priorities)) return null;
+  return {
+    schema: Number(content.schema || 1),
+    updatedAt: String(content.updatedAt || doc.updatedAt || ""),
+    priorities: content.priorities
+  };
+}
+
+function saveDocumentsLocalOnly() {
+  const repository = getEntityRepository("documents");
+  if (repository) repository.save(state.documents);
+  else deosDataService.save("documents", state.documents);
+}
+
+function stagePrioritySyncTransport() {
+  if (deosInitialEntityLoad || deosPrioritySyncApplyingRemote) return false;
+  if (!Array.isArray(state.documents) || !Array.isArray(state.priorities)) return false;
+
+  const nowIso = new Date().toISOString();
+  const payload = state.priorities.map(item => normalizeEntity("priorities", item));
+  const index = state.documents.findIndex(isPrioritySyncTransportDocument);
+  const existing = index >= 0 ? state.documents[index] : null;
+  const existingPayload = prioritySyncPayloadFromDocument(existing);
+
+  // Évite de modifier le document (et donc sa version distante) quand la
+  // collection n'a pas réellement changé.
+  if (existingPayload && JSON.stringify(existingPayload.priorities) === JSON.stringify(payload)) return false;
+
+  const next = normalizeEntity("documents", {
+    ...(existing || {}),
+    id: DEOS_PRIORITY_SYNC_DOC_ID,
+    title: "DEOS système — Priorités / To-Do",
+    type: "Système",
+    category: "Système",
+    status: "Actif",
+    owner: identityName(),
+    author: identityName(),
+    version: "SYS1",
+    date: localIsoDate(),
+    updatedAt: nowIso,
+    createdAt: existing?.createdAt || nowIso,
+    summary: "Transport interne multi-appareils des Priorités / To-Do.",
+    tags: ["DEOS_SYSTEM", "PRIORITIES_SYNC"],
+    documentType: "system_priority_sync",
+    sourceType: DEOS_PRIORITY_SYNC_SOURCE,
+    sourceId: DEOS_PRIORITY_SYNC_DOC_ID,
+    hiddenSystem: true,
+    content: {
+      schema: 1,
+      updatedAt: nowIso,
+      device: typeof detectLinksSyncDeviceLabel === "function" ? detectLinksSyncDeviceLabel() : "Navigateur",
+      priorities: payload
+    }
+  });
+
+  if (index >= 0) state.documents[index] = next;
+  else state.documents.unshift(next);
+  saveDocumentsLocalOnly();
+  return true;
+}
+
+function applyPrioritySyncTransportFromDocuments(options = {}) {
+  if (!Array.isArray(state.documents)) return false;
+  const doc = state.documents.find(isPrioritySyncTransportDocument);
+  const payload = prioritySyncPayloadFromDocument(doc);
+  if (!payload) return false;
+
+  const incoming = normalizeCollection("priorities", payload.priorities);
+  const current = normalizeCollection("priorities", state.priorities || []);
+  if (JSON.stringify(current) === JSON.stringify(incoming)) return false;
+
+  deosPrioritySyncApplyingRemote = true;
+  try {
+    state.priorities = incoming;
+    const repository = getEntityRepository("priorities");
+    if (repository) repository.save(state.priorities);
+    else deosDataService.save("priorities", state.priorities);
+  } finally {
+    deosPrioritySyncApplyingRemote = false;
+  }
+
+  if (!options.silent) showDeosToast?.("Priorités / To-Do synchronisées sur cet appareil.", "success");
+  // Le Cockpit peut être rafraîchi sans risque de perdre un formulaire en cours.
+  // Sur la vue Priorités, un auto-sync silencieux ne doit pas effacer une saisie non validée.
+  if (currentView === "cockpit") renderCockpit();
+  if (currentView === "priorities" && !options.silent) renderPriorities();
+  return true;
+}
+
+function schedulePrioritySyncWrite() {
+  if (typeof window === "undefined") return;
+  if (deosPrioritySyncTimer) window.clearTimeout(deosPrioritySyncTimer);
+  deosPrioritySyncTimer = window.setTimeout(async () => {
+    deosPrioritySyncTimer = null;
+    // Hors ligne / local temporaire : le document système reste stocké en
+    // local et sera repris par la synchronisation globale dès reconnexion.
+    if (!multiDeviceConnected?.()) return;
+    if (!deosDocumentsSyncController?.syncNow) return;
+    try {
+      await deosDocumentsSyncController.syncNow({ silent: true, source: "priority-bridge" });
+      applyPrioritySyncTransportFromDocuments({ silent: true, source: "priority-bridge" });
+    } catch (error) {
+      console.warn("[DEOS Priorities Sync] Synchronisation différée", error);
+    }
+  }, 1200);
+}
+
 function persist(name) {
   const repository = getEntityRepository(name);
   if (repository) {
@@ -898,7 +1031,14 @@ function persist(name) {
   } else {
     deosDataService.save(name, state[name]);
   }
-  // V5.30L — toute écriture sur un des 7 objets multi-appareils déclenche
+  // V5.30Q1 — les Priorités / To-Do passent par le document système caché
+  // afin de bénéficier immédiatement du pilote Documents existant.
+  if (name === "priorities" && !deosInitialEntityLoad && !deosPrioritySyncApplyingRemote) {
+    const changed = stagePrioritySyncTransport();
+    if (changed) schedulePrioritySyncWrite();
+  }
+
+  // V5.30L — toute écriture sur un objet multi-appareils déclenche
   // une synchronisation Cloud différée. Le stockage local reste immédiat.
   if (["links", "actions", "projects", "folders", "managers", "decisions", "documents"].includes(name)) {
     scheduleMultiDeviceWriteSync(name);
@@ -992,6 +1132,8 @@ function appHtml(html) {
   renderRemoteAuthOverlay();
   renderRemoteUserContext();
   renderRemoteStartupOverlay();
+  // V5.30Q — réinjection légère du résumé Performance après chaque rendu de vue.
+  if (currentView === "performance") requestAnimationFrame(() => { try { renderPerformanceSourcesSummary(); } catch (error) { console.warn("[DEOS][Performance] Résumé Sources indisponible", error); } });
   // V5.21F — les dialogues Liens doivent pouvoir apparaître sur toutes les vues,
   // notamment après une restauration de session sur Safari/iPad.
   renderLinksSyncPreviewOverlay();
@@ -1833,10 +1975,19 @@ async function init() {
   applyIdentity();
   actionTitleMigrationMode = true;
   actionTitleMigrationStats = { corrected: 0, examples: [] };
-  for (const name of entities) {
-    state[name] = saved(name, await loadJson(name));
-    persist(name);
+  deosInitialEntityLoad = true;
+  try {
+    for (const name of entities) {
+      state[name] = saved(name, await loadJson(name));
+      persist(name);
+    }
+  } finally {
+    deosInitialEntityLoad = false;
   }
+  // Si cet appareil possède déjà le document de transport (par exemple après
+  // une synchro précédente), les Priorités locales sont restaurées avant le
+  // démarrage des pilotes distants.
+  applyPrioritySyncTransportFromDocuments({ silent: true, source: "startup-local" });
   actionTitleMigrationMode = false;
   if (actionTitleMigrationStats.corrected > 0) {
     console.info("[DEOS Actions] Migration des titres appliquée", {
@@ -8414,7 +8565,8 @@ function addProject() {
 
 function checkboxList(id, items, selectedIds, labelFn) {
   const selected = new Set((selectedIds || []).map(x => String(x)));
-  return `<div id="${id}" class="check-list">${items.map(item => `<label class="check-row"><input type="checkbox" value="${esc(String(item.id))}" ${selected.has(String(item.id)) ? "checked" : ""}> <span>${esc(cleanDisplayLabel(labelFn(item)))}</span></label>`).join("") || `<div class="empty">Aucune donnée disponible.</div>`}</div>`;
+  const visibleItems = ensureArray(items).filter(item => !(item?.hiddenSystem === true || isPrioritySyncTransportDocument(item)));
+  return `<div id="${id}" class="check-list">${visibleItems.map(item => `<label class="check-row"><input type="checkbox" value="${esc(String(item.id))}" ${selected.has(String(item.id)) ? "checked" : ""}> <span>${esc(cleanDisplayLabel(labelFn(item)))}</span></label>`).join("") || `<div class="empty">Aucune donnée disponible.</div>`}</div>`;
 }
 
 function checkedValues(id) {
@@ -12451,8 +12603,8 @@ function extractGpoIndicators(pages, period) {
   pages.forEach(page => {
     const text = page.text;
     const layout = extractGpoSaintGillesLayout(page) || {};
-    if (/Passage IPO total/i.test(text)) pushMetric(page, "ipo_total", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+total", 240)), "élevée");
-    if (/Passage IPO Variable/i.test(text)) pushMetric(page, "ipo_variable", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+Variable", 240)), "élevée");
+    if (/Passage IPO total/i.test(text)) pushMetric(page, "ipo_total", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+total", 1800)), "élevée");
+    if (/Passage IPO Variable/i.test(text)) pushMetric(page, "ipo_variable", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+Variable", 1800)), "élevée");
     if (/Performance mensuelle/i.test(text)) {
       pushMetric(page, "productivity_preparation", layout.productivity_preparation || extractGpoTripleAround(extractGpoSection(text, "PRÉPARATION|PREPARATION", 180), "PRÉPARATION|PREPARATION", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_preparation));
       pushMetric(page, "productivity_reception", layout.productivity_reception || extractGpoTripleAround(extractGpoSection(text, "RÉCEPTION|RECEPTION", 180), "RÉCEPTION|RECEPTION", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_reception));
@@ -12534,16 +12686,26 @@ function gpoNumbers(text) {
 }
 
 function extractGpoIpoValues(text) {
-  // Sur le GPO Saint-Gilles, les valeurs des trois barres sont visuellement
-  // placées AU-DESSUS des libellés IPO BUDGET / RÉALISÉ / HISTO.
-  // Le fallback "after" reste utile si le modèle PDF évolue.
-  const around = regex => {
-    const before = matchNumberBefore(text, regex);
-    return before !== "" ? before : matchNumberAfter(text, regex);
-  };
-  const h = around(/IPO\s*HISTO/i);
-  const b = around(/IPO\s*BUDGET/i);
-  const r = around(/IPO\s*R[ÉE]ALIS[ÉE]/i);
+  // Structure réelle du GPO :
+  // Budget : valeur AVANT "IPO BUDGET"
+  // Historique : valeur APRÈS "IPO HISTO"
+  // Réalisé : valeur APRÈS "IPO RÉALISÉ"
+
+  const bBefore = matchNumberBefore(text, /IPO\s*BUDGET/i);
+  const b = bBefore !== ""
+    ? bBefore
+    : matchNumberAfter(text, /IPO\s*BUDGET/i);
+
+  const hAfter = matchNumberAfter(text, /IPO\s*HISTO/i);
+  const h = hAfter !== ""
+    ? hAfter
+    : matchNumberBefore(text, /IPO\s*HISTO/i);
+
+  const rAfter = matchNumberAfter(text, /IPO\s*R[ÉE]ALIS[ÉE]/i);
+  const r = rAfter !== ""
+    ? rAfter
+    : matchNumberBefore(text, /IPO\s*R[ÉE]ALIS[ÉE]/i);
+
   return { historical: h, budget: b, actual: r };
 }
 
@@ -12993,7 +13155,7 @@ const CGTAB_KPI_DEFINITIONS = [
   { metricKey: "premium_hours.night_28", label: "Nuit28%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit28%"] },
   { metricKey: "premium_hours.night_30", label: "Nuit30%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit30%"] },
   { metricKey: "premium_hours.night_60", label: "Nuit60%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Nuit60%"] },
-  { metricKey: "premium_hours.additional_hours", label: "Hrs Compl", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Hrs Compl"] },
+  { metricKey: "premium_hours.additional_hours", label: "Hrs Compl", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Hrs Compl"], optionalHeader: true },
   { metricKey: "premium_hours.overtime_25", label: "HS25", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["HS25"] },
   { metricKey: "premium_hours.overtime_50", label: "HS50", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["HS50"] },
   { metricKey: "premium_hours.sunday_100", label: "Dim 100%", category: "premium_hours", unit: "h", aggregationType: "sum", headers: ["Dim 100%"] },
@@ -13569,6 +13731,16 @@ function cgtabAggregateForMetric(definition, employeeRows, sheet, headerMap) {
   const resolvedCols = definition.headers.map(token => cgtabResolveHeaderToken(token, headerMap));
   const missing = resolvedCols.filter(item => !item.col);
   if (missing.length) {
+    if (definition.optionalHeader) {
+      return {
+        unavailable: true,
+        missingHeaders: missing.map(item => item.header),
+        actual: null,
+        contributors: 0,
+        sourceColumns: cgtabBuildSourceColumns(definition.headers, headerMap),
+        sourceCell: ""
+      };
+    }
     throw new Error(`CGTAB: en-tête introuvable (${missing.map(item => item.header).join(", ")})`);
   }
   let sum = 0;
@@ -13600,10 +13772,18 @@ function cgtabDestinationPath(metricKey = "") {
   return `complementary.cgtab.${key}`;
 }
 
-function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap) {
+function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap, skippedMetrics = []) {
   return CGTAB_KPI_DEFINITIONS.map(definition => {
     const destinationPath = cgtabDestinationPath(definition.metricKey);
     const aggregate = cgtabAggregateForMetric(definition, employeeRows, sheet, headerMap);
+    if (aggregate?.unavailable) {
+      skippedMetrics.push({
+        metricKey: definition.metricKey,
+        label: definition.label,
+        missingHeaders: ensureArray(aggregate.missingHeaders)
+      });
+      return null;
+    }
     return {
       id: newId("preview"),
       period,
@@ -13643,7 +13823,7 @@ function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap) {
       selected: true,
       action: ""
     };
-  });
+  }).filter(Boolean);
 }
 
 const GA_ST_GILLES_KNOWN_SHA256 = "D000A9940051F314AAE81B8B73FEFB2683341E6B978C25423C9A936BBDC110B5";
@@ -13867,13 +14047,16 @@ async function analyzeCgtabFile(file, detected) {
   const employeeRows = cgtabFindEmployeeRows(sheet, range, headerMap, PERFORMANCE_IMPORT_SITE.code);
   if (!employeeRows.length) throw new Error(`Aucune ligne salarié ${performanceImportSiteLabel()} détectée dans CGTAB.`);
   const period = cgtabDetectPeriod(sheet, headerMap, employeeRows, file.name || "");
-  const indicators = buildCgtabAggregateRows(period, employeeRows, sheet, headerMap);
+  const skippedMetrics = [];
+  const indicators = buildCgtabAggregateRows(period, employeeRows, sheet, headerMap, skippedMetrics);
+  const skippedLabels = skippedMetrics.map(item => item.label);
   return {
     ...detected, source: "CGTAB", sourceType: "CGTAB XLSB", status: "reconnu", confidence: "élevée",
     site: PERFORMANCE_IMPORT_SITE.name, siteCode: PERFORMANCE_IMPORT_SITE.code, detectedSiteCodes, scope: CGTAB_SCOPE,
     period, periods: [period], selectedPeriods: [period], sheets: ensureArray(workbook.SheetNames || []), selectedSheet: sheetName,
     sourceRowCount: employeeRows.length, excludedNominativeColumns: CGTAB_EXCLUDED_NOMINATIVE_COLUMNS, detectedIndicators: dedupeImportRows(indicators),
-    message: `${indicators.length} agrégat(s) RH anonymisé(s) depuis CGTAB pour ${performanceImportSiteLabel()} (${employeeRows.length} lignes retenues).`
+    skippedMetrics,
+    message: `${indicators.length} agrégat(s) RH anonymisé(s) depuis CGTAB pour ${performanceImportSiteLabel()} (${employeeRows.length} lignes retenues).${skippedLabels.length ? ` KPI non disponible(s) dans ce fichier : ${skippedLabels.join(", ")}.` : ""}`
   };
 }
 
@@ -16045,6 +16228,7 @@ function documentTypeFilterValue(doc) {
 function documentsFilteredItems() {
   const todayDate = isoToday();
   return state.documents.filter(doc => {
+    if (isPrioritySyncTransportDocument(doc) || doc?.hiddenSystem === true) return false;
     if (documentsFilterState.type !== "all" && documentTypeFilterValue(doc) !== documentsFilterState.type) return false;
     if (documentsFilterState.managerId !== "all" && !getDocumentManagerIds(doc).some(id => sameId(id, documentsFilterState.managerId))) return false;
     if (documentsFilterState.status !== "all" && documentStatusFilterValue(doc) !== documentsFilterState.status) return false;
@@ -17244,14 +17428,26 @@ function readLinkForm(existing = {}) {
   return { ...existing, name, url: normalizedUrl, category, description: document.getElementById("lnDescription").value.trim(), status: document.getElementById("lnStatus").value, favorite: document.getElementById("lnFavorite").checked, icon: document.getElementById("lnIcon").value.trim() || suggestLinkIcon(`${name} ${url} ${category}`), updatedAt: isoToday() };
 }
 
+function runLinkSyncSafely(task, context = "link") {
+  try {
+    return typeof task === "function" ? task() : null;
+  } catch (error) {
+    // V5.30Q — une panne Cloud ne doit jamais bloquer l'enregistrement local.
+    console.warn(`[DEOS][Liens] Synchronisation différée (${context})`, error);
+    try { showDeosToast("Lien enregistré localement · synchronisation distante différée.", "info", 2600); } catch (_) {}
+    return null;
+  }
+}
+
 function addLink() {
   const link = readLinkForm({ id: newId("link"), order: Date.now(), createdAt: isoToday() });
   if (!link) return;
   state.links.push(normalizeEntity("links", link));
   persist("links");
-  linksHybridRepository.queueUpsert(byId("links", link.id), "create");
+  runLinkSyncSafely(() => linksHybridRepository.queueUpsert(byId("links", link.id), "create"), "create");
   addActivity("🔗 Lien utile", link.name, link.url, link.id);
   linkEditId = "";
+  try { showDeosToast("Lien créé.", "success"); } catch (_) {}
   renderLinks();
 }
 
@@ -17262,9 +17458,10 @@ function saveLink(id) {
   if (!link) return;
   state.links[i] = normalizeEntity("links", link);
   persist("links");
-  linksHybridRepository.queueUpsert(state.links[i], "update");
+  runLinkSyncSafely(() => linksHybridRepository.queueUpsert(state.links[i], "update"), "update");
   addActivity("🔗 Lien modifié", state.links[i].name, state.links[i].url, id);
   linkEditId = "";
+  try { showDeosToast("Lien mis à jour.", "success"); } catch (_) {}
   renderLinks();
 }
 
@@ -17275,7 +17472,7 @@ function deleteLink(id) {
   const snapshot = cloneLinkBusinessData(state.links[i]);
   state.links.splice(i, 1);
   persist("links");
-  linksHybridRepository.queueDelete(id, snapshot);
+  runLinkSyncSafely(() => linksHybridRepository.queueDelete(id, snapshot), "delete");
   addActivity("🗑️ Lien supprimé", title);
   renderLinks();
 }
@@ -17286,7 +17483,7 @@ function archiveLink(id) {
   link.status = link.status === "archivé" ? "actif" : "archivé";
   link.updatedAt = isoToday();
   persist("links");
-  linksHybridRepository.queueUpsert(link, "archive");
+  runLinkSyncSafely(() => linksHybridRepository.queueUpsert(link, "archive"), "archive");
   addActivity("🗄️ Lien archivé", link.name, link.status, id);
   renderLinks();
 }
@@ -17297,7 +17494,7 @@ function toggleLinkFavorite(id) {
   link.favorite = !link.favorite;
   link.updatedAt = isoToday();
   persist("links");
-  linksHybridRepository.queueUpsert(link, "favorite");
+  runLinkSyncSafely(() => linksHybridRepository.queueUpsert(link, "favorite"), "favorite");
   addActivity("⭐ Favori", link.name, link.favorite ? "Ajouté aux favoris" : "Retiré des favoris", id);
   renderLinks();
 }
@@ -17311,8 +17508,8 @@ function moveLink(id, delta) {
   ordered[index].updatedAt = isoToday();
   ordered[next].updatedAt = isoToday();
   persist("links");
-  linksHybridRepository.queueUpsert(ordered[index], "reorder");
-  linksHybridRepository.queueUpsert(ordered[next], "reorder");
+  runLinkSyncSafely(() => linksHybridRepository.queueUpsert(ordered[index], "reorder"), "reorder");
+  runLinkSyncSafely(() => linksHybridRepository.queueUpsert(ordered[next], "reorder"), "reorder");
   renderLinks();
 }
 
@@ -21852,6 +22049,9 @@ function createSimpleEntitySyncController(config) {
       if (localChanged) {
         const repository=getEntityRepository(entity); if (repository) repository.save(state[entity]); else deosDataService.save(entity,state[entity]);
       }
+      // V5.30Q1 — une mise à jour distante du document système Priorités doit
+      // immédiatement alimenter state.priorities sur l'appareil courant.
+      if (entity === "documents") applyPrioritySyncTransportFromDocuments({ silent: true, source: "documents-sync" });
       const a=await analyze(); refresh({syncing:false,remoteCount:a.remoteCount,lastSyncAt:new Date().toLocaleString("fr-FR"),lastError:"",state:a.conflicts.length?DEOS_LINKS_SYNC_STATUS.CONFLICT:DEOS_LINKS_SYNC_STATUS.SYNCED});
       if (!options.silent && currentView==="settings") renderSettings(`Synchronisation ${plural} terminée.`);
       if (currentView==="documents" && entity==="documents") renderDocuments();
@@ -21896,7 +22096,7 @@ function scheduleSimpleEntityAutoSync(entity){const c=simpleSyncControllerFor(en
 
 // -----------------------------------------------------------------------------
 // V5.30A — Synchronisation multi-appareils unifiée
-// Active les 7 pilotes métier existants et les orchestre sous une seule commande.
+// Active les 7 pilotes métier existants et orchestre aussi Priorités / To-Do via le pont Documents.
 // Les moteurs de conflit existants restent seuls responsables des arbitrages :
 // aucun écrasement silencieux n'est ajouté par cette couche.
 // -----------------------------------------------------------------------------
@@ -22065,7 +22265,7 @@ function renderMultiDeviceSyncSettingsCardHtml() {
   const connected = multiDeviceConnected();
   const summary = multiDeviceSyncSummary();
   const labelMap = { links:"Liens", actions:"Actions", projects:"Projets", folders:"Dossiers", managers:"Managers", decisions:"Décisions", documents:"Documents" };
-  return `<div id="multiDeviceSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation multi-appareils</h2><p class="muted">V5.30A · un seul workspace pour retrouver automatiquement les 7 objets métier principaux sur PC, iPad et autres navigateurs.</p></div><span class="remote-mode-badge ${connected ? (summary.conflicts ? "red" : "green") : "orange"}">${connected ? (summary.conflicts ? `${summary.conflicts} conflit(s)` : "Cloud connecté") : "Connexion requise"}</span></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Workspace</strong><span>${esc(deosRemoteRuntime.workspace?.name || "--")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchro globale</strong><span>${esc(deosMultiDeviceSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Conflits</strong><span>${summary.conflicts}</span></div><div class="settings-calendar-summary-item"><strong>Erreurs</strong><span>${summary.errors}</span></div></div><div class="row-actions"><button class="action" type="button" onclick="syncAllMultiDeviceNow({silent:false,source:'manual'})" ${connected && !deosMultiDeviceSyncRuntime.syncing ? "" : "disabled"}>${deosMultiDeviceSyncRuntime.syncing ? "Synchronisation…" : "Synchroniser maintenant"}</button></div>${deosMultiDeviceSyncRuntime.lastError ? `<p class="remote-error-box">${esc(deosMultiDeviceSyncRuntime.lastError)}</p>` : ""}</section><section class="settings-card-block"><h3>Objets synchronisés</h3><div class="settings-calendar-summary">${summary.rows.map(r => `<div class="settings-calendar-summary-item"><strong>${esc(labelMap[r.entity] || r.entity)}</strong><span>${r.conflicts ? `${r.conflicts} conflit(s)` : r.error ? "Erreur" : "Actif"}</span></div>`).join("")}</div><p class="muted">Le stockage local reste conservé. En cas de modifications concurrentes, les moteurs existants signalent un conflit au lieu d'écraser silencieusement les données.</p></section></div></div>`;
+  return `<div id="multiDeviceSyncSettingsCard" class="card settings-card settings-remote-card"><div class="settings-card-heading"><div><h2>Synchronisation multi-appareils</h2><p class="muted">V5.30Q1 · un seul workspace pour retrouver automatiquement les objets métier principaux sur PC, iPad et autres navigateurs, y compris Priorités / To-Do via Documents.</p></div><span class="remote-mode-badge ${connected ? (summary.conflicts ? "red" : "green") : "orange"}">${connected ? (summary.conflicts ? `${summary.conflicts} conflit(s)` : "Cloud connecté") : "Connexion requise"}</span></div><div class="settings-card-grid"><section class="settings-card-block"><h3>État</h3><div class="settings-calendar-summary"><div class="settings-calendar-summary-item"><strong>Workspace</strong><span>${esc(deosRemoteRuntime.workspace?.name || "--")}</span></div><div class="settings-calendar-summary-item"><strong>Dernière synchro globale</strong><span>${esc(deosMultiDeviceSyncRuntime.lastSyncAt || "Jamais")}</span></div><div class="settings-calendar-summary-item"><strong>Conflits</strong><span>${summary.conflicts}</span></div><div class="settings-calendar-summary-item"><strong>Erreurs</strong><span>${summary.errors}</span></div></div><div class="row-actions"><button class="action" type="button" onclick="syncAllMultiDeviceNow({silent:false,source:'manual'})" ${connected && !deosMultiDeviceSyncRuntime.syncing ? "" : "disabled"}>${deosMultiDeviceSyncRuntime.syncing ? "Synchronisation…" : "Synchroniser maintenant"}</button></div>${deosMultiDeviceSyncRuntime.lastError ? `<p class="remote-error-box">${esc(deosMultiDeviceSyncRuntime.lastError)}</p>` : ""}</section><section class="settings-card-block"><h3>Objets synchronisés</h3><div class="settings-calendar-summary">${summary.rows.map(r => `<div class="settings-calendar-summary-item"><strong>${esc(labelMap[r.entity] || r.entity)}</strong><span>${r.conflicts ? `${r.conflicts} conflit(s)` : r.error ? "Erreur" : "Actif"}</span></div>`).join("")}</div><p class="muted">Le stockage local reste conservé. En cas de modifications concurrentes, les moteurs existants signalent un conflit au lieu d'écraser silencieusement les données.</p></section></div></div>`;
 }
 
 function mountMultiDeviceSyncSettingsCard() {
@@ -22510,6 +22710,194 @@ function clearRemoteBusyWatchdog() {
   deosRemoteBusyWatchdogId = null;
 }
 
+// V5.30Q2 — chemin Auth rapide et résilient.
+// Le SDK Supabase peut authentifier correctement alors que le chargement du contexte
+// (profil/workspace/site) reste bloqué. On ne laisse plus ce chargement bloquer DEOS.
+function ensureRecoveredRemoteAdapter() {
+  if (!deosRemoteAdapter && deosRemoteAuthService && window.DeosSupabaseRemote?.SupabaseRemoteAdapter) {
+    deosRemoteAdapter = new window.DeosSupabaseRemote.SupabaseRemoteAdapter(deosRemoteAuthService, {
+      debug: resolvedRemoteConfig().debug
+    });
+  }
+  return deosRemoteAdapter;
+}
+
+function remoteFastSetSession(session) {
+  if (!deosRemoteAuthService) return;
+  deosRemoteAuthService.session = session || null;
+  deosRemoteAuthService.user = session?.user || null;
+  deosRemoteAuthService.initialized = true;
+  deosRemoteAuthService.connectionStatus = session?.user ? "authenticated" : "signed_out";
+  deosRemoteAuthService.lastError = null;
+}
+
+async function remoteFastHydrateContext(session) {
+  const client = deosRemoteAuthService?.getClient?.() || deosRemoteAuthService?.client || null;
+  const user = session?.user || deosRemoteAuthService?.user || null;
+  if (!client || !user) return deosRemoteAuthService?.getStateSnapshot?.() || {};
+
+  remoteFastSetSession(session);
+
+  try {
+    const [profileResponse, membershipResponse] = await withRemoteTimeout(
+      Promise.all([
+        client.from("profiles").select("id, display_name, created_at, updated_at").eq("id", user.id).maybeSingle(),
+        client.from("workspace_members").select("workspace_id, role, created_at").eq("user_id", user.id).order("created_at", { ascending: true })
+      ]),
+      6000,
+      "REMOTE_CONTEXT_CORE_TIMEOUT",
+      "Contexte utilisateur trop lent."
+    );
+
+    if (!profileResponse?.error) deosRemoteAuthService.profile = profileResponse?.data || null;
+    const memberships = Array.isArray(membershipResponse?.data) ? membershipResponse.data : [];
+
+    const preferenceKey = String(deosRemoteAuthService.workspacePreferenceKey || "deos_remote_workspace_preference");
+    const preferredWorkspaceId = String(localStorage.getItem(preferenceKey) || "");
+    const selectedMembership = memberships.find(item => String(item.workspace_id) === preferredWorkspaceId) || memberships[0] || null;
+
+    if (!selectedMembership) {
+      deosRemoteAuthService.currentWorkspace = null;
+      deosRemoteAuthService.currentSite = null;
+      deosRemoteAuthService.currentRole = "";
+      deosRemoteAuthService.availableWorkspaces = [];
+      return deosRemoteAuthService.getStateSnapshot?.() || {};
+    }
+
+    const workspaceId = selectedMembership.workspace_id;
+    const [workspaceResponse, sitesResponse] = await withRemoteTimeout(
+      Promise.all([
+        client.from("workspaces").select("id, name, created_by, created_at, updated_at").eq("id", workspaceId).maybeSingle(),
+        client.from("sites").select("id, workspace_id, name, code, created_at, updated_at").eq("workspace_id", workspaceId).order("created_at", { ascending: true }).limit(1)
+      ]),
+      6000,
+      "REMOTE_CONTEXT_WORKSPACE_TIMEOUT",
+      "Chargement du workspace trop lent."
+    );
+
+    const workspace = workspaceResponse?.error ? null : (workspaceResponse?.data || null);
+    const site = sitesResponse?.error ? null : (Array.isArray(sitesResponse?.data) ? sitesResponse.data[0] || null : null);
+
+    deosRemoteAuthService.currentWorkspace = workspace;
+    deosRemoteAuthService.currentSite = site;
+    deosRemoteAuthService.currentRole = selectedMembership.role || "";
+    deosRemoteAuthService.availableWorkspaces = workspace ? [{
+      workspaceId: workspace.id,
+      workspaceName: workspace.name || "Workspace",
+      siteName: site?.name || "",
+      role: selectedMembership.role || ""
+    }] : [];
+
+    if (workspace?.id) {
+      try { localStorage.setItem(preferenceKey, String(workspace.id)); } catch (_) {}
+    }
+  } catch (error) {
+    // L'authentification reste valide même si le contexte métier est lent.
+    console.warn("[DEOS Q2] Contexte distant partiel :", error?.message || error);
+  }
+
+  return deosRemoteAuthService.getStateSnapshot?.() || {};
+}
+
+function bindRecoveredRemoteAuthSubscription() {
+  if (!deosRemoteAuthService?.onAuthStateChange || deosRemoteAuthSubscription) return;
+  try {
+    deosRemoteAuthSubscription = deosRemoteAuthService.onAuthStateChange((_event, session, snapshot) => {
+      if (snapshot) updateRemoteRuntime(snapshot);
+      if (session?.user || snapshot?.authenticated) {
+        deosRemoteRuntime.temporaryLocal = false;
+        setTimeout(async () => {
+          try {
+            const effectiveSession = session || deosRemoteAuthService.session || null;
+            const hydrated = await remoteFastHydrateContext(effectiveSession);
+            updateRemoteRuntime(hydrated);
+            ensureRecoveredRemoteAdapter();
+            initializeLinksHybridSync({ skipAutoSync: false });
+            initializeMultiDeviceSyncForAuthenticatedSession({ source: "q2-auth-state" });
+            syncRemoteStartupOverlayState();
+            if (!shouldShowRemoteStartupOverlay()) closeRemoteStartupOverlay();
+            renderRemoteUserContext();
+            setView(currentView || "cockpit");
+          } catch (_) {}
+        }, 0);
+      }
+    });
+  } catch (_) {}
+}
+
+async function recoverRemoteAfterInitTimeout() {
+  const client = deosRemoteAuthService?.getClient?.() || deosRemoteAuthService?.client || null;
+  if (!client) return false;
+
+  ensureRecoveredRemoteAdapter();
+  bindRecoveredRemoteAuthSubscription();
+
+  try {
+    const sessionResult = await withRemoteTimeout(
+      client.auth.getSession(),
+      5000,
+      "REMOTE_FAST_SESSION_TIMEOUT",
+      "Lecture de session trop lente."
+    );
+    if (sessionResult?.error) throw sessionResult.error;
+    const session = sessionResult?.data?.session || null;
+    remoteFastSetSession(session);
+    if (session?.user) {
+      const snapshot = await remoteFastHydrateContext(session);
+      updateRemoteRuntime(snapshot);
+      deosRemoteRuntime.connectionStatus = "authenticated";
+      deosRemoteRuntime.temporaryLocal = false;
+      setRemoteLastOperation("Session distante restaurée (mode rapide Q2).");
+      initializeLinksHybridSync({ skipAutoSync: false });
+      initializeMultiDeviceSyncForAuthenticatedSession({ source: "q2-fast-session" });
+    } else {
+      updateRemoteRuntime(deosRemoteAuthService.getStateSnapshot?.() || {
+        initialized: true,
+        connectionStatus: "signed_out",
+        user: null,
+        lastError: null
+      });
+      deosRemoteRuntime.connectionStatus = "signed_out";
+      deosRemoteRuntime.lastError = "";
+      deosRemoteRuntime.lastErrorCode = "";
+      setRemoteLastOperation("Supabase prêt pour la connexion (mode rapide Q2).");
+    }
+    return true;
+  } catch (error) {
+    console.warn("[DEOS Q2] Récupération rapide impossible :", error?.message || error);
+    return false;
+  }
+}
+
+async function directStartupPasswordSignIn(email, password) {
+  const client = deosRemoteAuthService?.getClient?.() || deosRemoteAuthService?.client || null;
+  if (!client?.auth?.signInWithPassword) return false;
+
+  const result = await withRemoteTimeout(
+    client.auth.signInWithPassword({ email, password }),
+    DEOS_REMOTE_AUTH_TIMEOUT_MS,
+    "REMOTE_DIRECT_AUTH_TIMEOUT",
+    "Connexion Supabase trop longue."
+  );
+  if (result?.error) throw result.error;
+  const session = result?.data?.session || null;
+  if (!session?.user) throw new Error("Session Supabase non reçue.");
+
+  remoteFastSetSession(session);
+  const snapshot = await remoteFastHydrateContext(session);
+  updateRemoteRuntime(snapshot);
+  deosRemoteRuntime.connectionStatus = "authenticated";
+  deosRemoteRuntime.temporaryLocal = false;
+  deosRemoteRuntime.lastError = "";
+  deosRemoteRuntime.lastErrorCode = "";
+  ensureRecoveredRemoteAdapter();
+  bindRecoveredRemoteAuthSubscription();
+  initializeLinksHybridSync({ skipAutoSync: false });
+  initializeMultiDeviceSyncForAuthenticatedSession({ source: "q2-direct-login" });
+  setRemoteLastOperation("Connexion distante réussie (mode rapide Q2).");
+  return true;
+}
+
 async function submitStartupPasswordSignIn() {
   readRemoteStartupDialogValues();
   if (!deosRemoteStartupDialog.email || !deosRemoteStartupDialog.password) {
@@ -22526,17 +22914,28 @@ async function submitStartupPasswordSignIn() {
   armRemoteBusyWatchdog("Connexion");
   if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
   try {
-    await withRemoteTimeout(
-      deosRemoteAuthService.signInWithPassword(deosRemoteStartupDialog.email, deosRemoteStartupDialog.password),
-      DEOS_REMOTE_AUTH_TIMEOUT_MS,
-      "REMOTE_AUTH_TIMEOUT",
-      "Connexion trop longue. Vérifiez le réseau puis réessayez."
-    );
+    let signedIn = false;
+    try {
+      signedIn = await directStartupPasswordSignIn(deosRemoteStartupDialog.email, deosRemoteStartupDialog.password);
+    } catch (directError) {
+      console.warn("[DEOS Q2] Connexion directe échouée, repli service Auth :", directError?.message || directError);
+    }
+    if (!signedIn) {
+      await withRemoteTimeout(
+        deosRemoteAuthService.signInWithPassword(deosRemoteStartupDialog.email, deosRemoteStartupDialog.password),
+        DEOS_REMOTE_AUTH_TIMEOUT_MS,
+        "REMOTE_AUTH_TIMEOUT",
+        "Connexion trop longue. Vérifiez le réseau puis réessayez."
+      );
+    }
     deosRemoteRuntime.temporaryLocal = false;
-    updateRemoteStartupDialog({ linksPromptDismissed: false });
+    deosRemoteRuntime.connectionStatus = "authenticated";
+    deosRemoteRuntime.lastError = "";
+    deosRemoteRuntime.lastErrorCode = "";
+    updateRemoteStartupDialog({ linksPromptDismissed: false, busy: false, error: "", message: "" });
     closeRemoteStartupOverlay();
     renderRemoteUserContext();
-    if (currentView === "settings") renderSettings("Connexion distante reussie."); else setView(currentView || "cockpit");
+    if (currentView === "settings") renderSettings("Connexion distante réussie."); else setView(currentView || "cockpit");
   } catch (error) {
     updateRemoteStartupDialog({ busy: false, error: error.message || "Connexion impossible.", message: "" });
     if (currentView === "settings") renderSettings(); else setView(currentView || "cockpit");
@@ -22797,11 +23196,22 @@ async function initializeRemoteServices(options = {}) {
       await maybePromptRemoteLinksRecovery({ silent: true, autoRecover: true });
     }
   } catch (error) {
-    deosRemoteRuntime.connectionStatus = "error";
-    deosRemoteRuntime.lastError = error.message || String(error);
-    deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_INIT_FAILED";
-    updateRemoteStartupDialog({ busy: false, error: deosRemoteRuntime.lastError, message: "" });
-    setRemoteLastOperation("Initialisation distante en echec.", deosRemoteRuntime.lastErrorCode);
+    const timeoutCode = String(error?.code || "");
+    let recovered = false;
+    if (timeoutCode === "REMOTE_INIT_TIMEOUT") {
+      recovered = await recoverRemoteAfterInitTimeout();
+    }
+    if (!recovered) {
+      deosRemoteRuntime.connectionStatus = "error";
+      deosRemoteRuntime.lastError = error.message || String(error);
+      deosRemoteRuntime.lastErrorCode = error.code || "REMOTE_INIT_FAILED";
+      updateRemoteStartupDialog({ busy: false, error: deosRemoteRuntime.lastError, message: "" });
+      setRemoteLastOperation("Initialisation distante en échec.", deosRemoteRuntime.lastErrorCode);
+    } else {
+      deosRemoteRuntime.lastError = "";
+      deosRemoteRuntime.lastErrorCode = "";
+      updateRemoteStartupDialog({ busy: false, error: "", message: "" });
+    }
   }
 
   syncRemoteStartupOverlayState();
@@ -25494,4 +25904,397 @@ function deleteDecision(id) {
   window.deosFocusInlineFormTop = focusInlineForm;
   window.deosFocusModalTop = focusModalTop;
 })();
+// ============================================================================
+// V5.30Q — PERFORMANCE : résumé compact des sources importées
+// ============================================================================
 
+function ensurePerformanceSourcesSummaryStyle() {
+  if (document.getElementById("performanceSourcesSummaryStyle")) return;
+
+  const style = document.createElement("style");
+  style.id = "performanceSourcesSummaryStyle";
+  style.textContent = `
+    .perf-sources-summary {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      margin-left: 8px;
+    }
+
+    .perf-sources-summary-btn {
+      border: 1px solid #d7dfeb;
+      background: #eef2f7;
+      color: #111827;
+      border-radius: 12px;
+      padding: 9px 14px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .perf-sources-summary-btn:hover {
+      background: #e5eaf1;
+    }
+
+    .perf-sources-summary-panel {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      width: min(430px, 88vw);
+      background: #fff;
+      border: 1px solid #d7dfeb;
+      border-radius: 14px;
+      padding: 10px;
+      box-shadow: 0 10px 30px rgba(15,23,42,.16);
+      z-index: 9999;
+    }
+
+    .perf-sources-summary.open .perf-sources-summary-panel {
+      display: block;
+    }
+
+    .perf-source-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 8px;
+      border-bottom: 1px solid #edf0f4;
+    }
+
+    .perf-source-row:last-child {
+      border-bottom: 0;
+    }
+
+    .perf-source-name {
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .perf-source-detail {
+      color: #64748b;
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .perf-source-status {
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .perf-source-status.ok { color: #16794b; }
+    .perf-source-status.partial { color: #92400e; }
+    .perf-source-status.missing { color: #667085; }
+
+    .perf-sources-summary-title {
+      font-weight: 800;
+      padding: 4px 8px 9px;
+      border-bottom: 1px solid #edf0f4;
+      margin-bottom: 2px;
+    }
+  `;
+
+  document.head.appendChild(style);
+}
+
+function getPerformanceSelectedPeriod() {
+  // V5.30Q — la période de référence est d'abord la période Performance réellement ouverte.
+  // Le filtre "Période : toutes" ne doit jamais faire perdre le mois affiché.
+  if (performanceDashboardFilters && performanceDashboardFilters.period && performanceDashboardFilters.period !== "all") {
+    return String(performanceDashboardFilters.period).trim();
+  }
+
+  const selected = typeof perfSelected === "function" ? perfSelected() : null;
+  if (selected && Number(selected.month) >= 1 && Number(selected.month) <= 12 && Number(selected.year)) {
+    return performancePeriodKey(selected);
+  }
+
+  const text = document.body?.innerText || "";
+  const numericPeriod = text.match(/\b(0[1-9]|1[0-2])\/20\d{2}\b/);
+  if (numericPeriod) return numericPeriod[0];
+
+  const months = {
+    janvier: "01", février: "02", fevrier: "02", mars: "03", avril: "04", mai: "05", juin: "06",
+    juillet: "07", août: "08", aout: "08", septembre: "09", octobre: "10", novembre: "11", décembre: "12", decembre: "12"
+  };
+  const monthMatch = text.match(/\b(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+(20\d{2})\b/i);
+  if (monthMatch) return `${months[monthMatch[1].toLowerCase()]}/${monthMatch[2]}`;
+  return "";
+}
+
+function readPerformanceImportedSources() {
+  const expectedSources = [
+    { key: "GPO", label: "GPO" },
+    { key: "CGTAB", label: "CGTAB" },
+    { key: "Z_GEMED", label: "Z GEMED" },
+    { key: "SUIVI_GA", label: "Suivi GA" },
+    { key: "T_BAG", label: "T-Bag" },
+    { key: "GA_DETAIL", label: "GA détail agrégé" }
+  ];
+
+  const selectedPeriod = getPerformanceSelectedPeriod();
+
+  // V5.30Q — l'état DEOS est prioritaire, complété par le localStorage en mode local.
+  const importsById = new Map();
+  const appendImports = list => ensureArray(list).forEach(item => {
+    if (!item || typeof item !== "object") return;
+    const key = String(item.id || `${item.sourceType || item.source || "source"}|${item.sourceFile || ""}|${item.importDate || ""}|${item.period || ""}`);
+    importsById.set(key, item);
+  });
+
+  appendImports(state.performance_imports);
+  try {
+    const raw = localStorage.getItem("deos_performance_imports");
+    appendImports(raw ? JSON.parse(raw) : []);
+  } catch (error) {
+    console.warn("[DEOS] Lecture deos_performance_imports impossible", error);
+  }
+  const imports = [...importsById.values()];
+
+  function normalizeSource(value) {
+    const source = String(value || "")
+      .trim()
+      .toUpperCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ");
+
+    if (source.includes("GPO")) return "GPO";
+    if (source.includes("CGTAB")) return "CGTAB";
+    if (source.includes("Z GEMED")) return "Z_GEMED";
+    if (source.includes("SUIVI GA")) return "SUIVI_GA";
+    if (source.includes("T BAG") || source.includes("TBAG")) return "T_BAG";
+    if (source.includes("GA DETAIL")) return "GA_DETAIL";
+
+    return source;
+  }
+
+  function normalizePeriod(value, sourceFile = "") {
+    const text = String(value || "").trim();
+
+    let match = text.match(/\b(0[1-9]|1[0-2])\/(20\d{2})\b/);
+    if (match) return `${match[1]}/${match[2]}`;
+
+    match = text.match(/\b(20\d{2})-(0[1-9]|1[0-2])\b/);
+    if (match) return `${match[2]}/${match[1]}`;
+
+    // Fallback pour des noms tels que CGTAB 082026.xlsb
+    const file = String(sourceFile || "");
+    match = file.match(/\b(0[1-9]|1[0-2])(20\d{2})\b/);
+
+    if (match) return `${match[1]}/${match[2]}`;
+
+    return "";
+  }
+
+  return expectedSources.map(source => {
+    const candidates = imports.filter(item => {
+      const itemSource = normalizeSource(
+        item.sourceType ||
+        item.source ||
+        item.type ||
+        item.sourceName ||
+        ""
+      );
+
+      const itemPeriod = normalizePeriod(
+        item.period,
+        item.sourceFile
+      );
+
+      return (
+        itemSource === source.key &&
+        (!selectedPeriod || itemPeriod === selectedPeriod)
+      );
+    });
+
+    if (!candidates.length) {
+      return {
+        ...source,
+        found: false,
+        status: "missing",
+        details: ""
+      };
+    }
+
+    // Le plus récent en premier.
+    candidates.sort((a, b) => {
+      const parseFrenchDate = value => {
+        const m = String(value || "").match(
+          /(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/
+        );
+
+        if (!m) return 0;
+
+        return new Date(
+          Number(m[3]),
+          Number(m[2]) - 1,
+          Number(m[1]),
+          Number(m[4]),
+          Number(m[5]),
+          Number(m[6])
+        ).getTime();
+      };
+
+      return parseFrenchDate(b.importDate) - parseFrenchDate(a.importDate);
+    });
+
+    const latest = candidates[0];
+
+    // Un import à 0 peut simplement signifier "déjà à jour".
+    const bestCount = Math.max(
+      ...candidates.map(item =>
+        Number(
+          item.detectedCount ||
+          item.importedCount ||
+          (Array.isArray(item.indicators) ? item.indicators.length : 0) ||
+          0
+        )
+      )
+    );
+
+    const valid = candidates.some(item =>
+      String(item.status || "").toLowerCase().includes("valid")
+    );
+
+    // Cas particulier : trace validée mais métadonnées KPI incomplètes.
+    const partial = valid && bestCount === 0;
+
+    const details = [];
+
+    if (selectedPeriod) details.push(selectedPeriod);
+
+    if (bestCount > 0) {
+      details.push(`${bestCount} KPI`);
+    }
+
+    if (latest.importDate) {
+      details.push(latest.importDate);
+    }
+
+    return {
+      ...source,
+      found: valid && !partial,
+      partial,
+      status: partial ? "partial" : "ok",
+      details: details.join(" · ")
+    };
+  });
+}
+function renderPerformanceSourcesSummary() {
+  ensurePerformanceSourcesSummaryStyle();
+
+  // Retire une ancienne version du composant avant recalcul.
+  document.getElementById("performanceSourcesSummary")?.remove();
+
+  const importButton = [...document.querySelectorAll("button, a")]
+    .find(el => /Importer des données/i.test(el.textContent || ""));
+
+  if (!importButton) return;
+
+  const sources = readPerformanceImportedSources();
+  const currentCount = sources.filter(s => s.status === "ok").length;
+  const partialCount = sources.filter(s => s.status === "partial").length;
+  const missingCount = sources.filter(s => s.status === "missing").length;
+
+  const wrapper = document.createElement("div");
+  wrapper.id = "performanceSourcesSummary";
+  wrapper.className = "perf-sources-summary";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "perf-sources-summary-btn";
+
+  button.textContent =
+    `Sources : ${currentCount}/${sources.length} à jour` +
+    (partialCount ? ` · ${partialCount} à vérifier` : "") +
+    " ▾";
+
+  const panel = document.createElement("div");
+  panel.className = "perf-sources-summary-panel";
+
+  panel.innerHTML = `
+    <div class="perf-sources-summary-title">Sources de la période</div>
+    ${sources.map(source => `
+      <div class="perf-source-row">
+        <div>
+          <div class="perf-source-name">${source.label}</div>
+          <div class="perf-source-detail">
+            ${source.status === "ok"
+              ? (source.details || "Import disponible")
+              : source.status === "partial"
+                ? (source.details || "Import présent, métadonnées à vérifier")
+                : "Aucun import pour cette période"}
+          </div>
+        </div>
+        <div class="perf-source-status ${source.status === "ok" ? "ok" : source.status === "partial" ? "partial" : "missing"}">
+          ${source.status === "ok" ? "✓ À jour" : source.status === "partial" ? "⚠ À vérifier" : "○ Non importé"}
+        </div>
+      </div>
+    `).join("")}
+  `;
+
+  wrapper.appendChild(button);
+  wrapper.appendChild(panel);
+
+  // Placement juste à côté du bouton Importer des données.
+  importButton.insertAdjacentElement("afterend", wrapper);
+
+  button.addEventListener("click", event => {
+    event.stopPropagation();
+    wrapper.classList.toggle("open");
+  });
+
+  panel.addEventListener("click", event => event.stopPropagation());
+
+  document.addEventListener("click", event => {
+  if (!wrapper.contains(event.target)) {
+    wrapper.classList.remove("open");
+  }
+});
+}
+// ============================================================================
+// V5.30Q — Activation automatique du résumé des sources dans Performance
+// ============================================================================
+
+(function initPerformanceSourcesSummaryObserver() {
+
+  function tryRenderPerformanceSourcesSummary() {
+    // Ne rien faire si le composant est déjà affiché
+    if (document.getElementById("performanceSourcesSummary")) return;
+
+    // Vérifie que nous sommes bien sur un écran contenant
+    // le bouton "Importer des données"
+    const importButton = [...document.querySelectorAll("button, a")]
+      .find(el => /Importer des données/i.test(el.textContent || ""));
+
+    if (!importButton) return;
+
+    renderPerformanceSourcesSummary();
+  }
+
+  const observer = new MutationObserver(() => {
+    requestAnimationFrame(tryRenderPerformanceSourcesSummary);
+  });
+
+  function startObserver() {
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    // Premier contrôle au chargement
+    tryRenderPerformanceSourcesSummary();
+  }
+
+  if (document.body) {
+    startObserver();
+  } else {
+    document.addEventListener("DOMContentLoaded", startObserver, { once: true });
+  }
+
+})();
