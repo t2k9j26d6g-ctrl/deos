@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30Q2";
+const DEOS_VERSION = "V5.30RDP";
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -9691,9 +9691,9 @@ const performanceImportTargetCatalog = [
   { id: "hours.direct", label: "Heures directes", path: "hours.direct.actual", type: "existing", unit: "heures", aliases: ["heures directes", "heures direct"] },
   { id: "hours.indirect", label: "Heures indirectes", path: "hours.indirect.actual", type: "existing", unit: "heures", aliases: ["heures indirectes", "heures indirect"] },
   { id: "hours.indirect_share", label: "Poids heures indirectes", path: "hours.indirect.totalShare", type: "existing", unit: "pourcentage", aliases: ["pourcentage heures indirectes", "poids heures indirectes", "% heures indirectes"] },
-  { id: "hours.night", label: "Heures de nuit cumul", path: "hours", destinationField: "night", type: "existing", unit: "h", aliases: ["heures de nuit", "heures de nuit cumul", "hrs nuit"] },
-  { id: "hours.overtime", label: "Heures supplémentaires cumul", path: "hours", destinationField: "overtime", type: "existing", unit: "h", aliases: ["heures supplementaires", "heures supplémentaires", "heures supplémentaires cumul", "hrs supp"] },
-  { id: "hours.sundays", label: "Dimanches / fériés cumul", path: "hours", destinationField: "sundays", type: "existing", unit: "h", aliases: ["dimanches feries", "dimanches / fériés", "dimanches fériés cumul", "hrs dim"] },
+  { id: "hours.night", label: "Heures de nuit du mois", path: "hours", destinationField: "night", type: "existing", unit: "h", aliases: ["heures de nuit", "heures de nuit cumul", "hrs nuit"] },
+  { id: "hours.overtime", label: "Heures supplémentaires du mois", path: "hours", destinationField: "overtime", type: "existing", unit: "h", aliases: ["heures supplementaires", "heures supplémentaires", "heures supplémentaires cumul", "hrs supp"] },
+  { id: "hours.sundays", label: "Dimanches / fériés du mois", path: "hours", destinationField: "sundays", type: "existing", unit: "h", aliases: ["dimanches feries", "dimanches / fériés", "dimanches fériés cumul", "hrs dim"] },
   { id: "gpo.hours_gap_budget", label: "Écart heures vs Budget", path: "complementary.gpo.hours.total.budget_gap", type: "complementary", unit: "heures", aliases: ["ecart heures vs budget", "écart heures vs budget"] },
   { id: "gpo.hours_gap_historical", label: "Écart heures vs Historique", path: "complementary.gpo.hours.total.historical_gap", type: "complementary", unit: "heures", aliases: ["ecart heures vs historique", "écart heures vs historique"] },
   { id: "absenteeism.total", label: "Absentéisme total", path: "absenteeism.total.actual", type: "existing", unit: "pourcentage", aliases: ["absenteisme total", "absentéisme total", "taux d absence"] },
@@ -9746,7 +9746,8 @@ const performanceSummaryMetricDefinitions = [
   { metricKey: "productivity.preparation", label: "Productivité Préparation", family: "pilotage_direction", unit: "colis/h", targetPath: "productivity.Préparation.actual", metricPath: "productivity.Préparation", aliases: ["préparation"] },
   { metricKey: "hours.indirect", label: "Heures indirectes", family: "pilotage_direction", unit: "h", targetPath: "hours.indirect.actual", metricPath: "hours.indirect", aliases: ["heures indirectes"] },
   { metricKey: "absenteeism.total", label: "Absentéisme", family: "pilotage_direction", unit: "%", targetPath: "absenteeism.total.actual", metricPath: "absenteeism.total", aliases: ["absentéisme total"] },
-  { metricKey: "economy.cout_total_par_colis", label: "Coût total par colis", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy_cout_total_par_colis", metricPath: "", aliases: ["cout total par colis", "coût total par colis"] },
+  { metricKey: "economy.cout_total_par_colis", label: "Coût colis total", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy.cout_total_par_colis", metricPath: "", aliases: ["cout total par colis", "coût total par colis", "cout colis total", "coût colis total"] },
+  { metricKey: "economy.cout_exploitation_par_colis", label: "Coût colis exploitation (Exploit)", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy.cout_exploitation_par_colis", metricPath: "", aliases: ["cout exploitation par colis", "coût exploitation par colis", "cout colis exploitation", "coût colis exploitation"] },
   { metricKey: "ipo.variable", label: "IPO variable", family: "activite", unit: IPO_UNIT, targetPath: "ipo.variable.actual", metricPath: "ipo.variable", aliases: ["ipo variable"] },
   { metricKey: "activity.colis_total", label: "Colis", family: "activite", unit: "colis", targetPath: "activity.actual", metricPath: "activity", aliases: ["colis"] },
   { metricKey: "activity.uo_reception", label: "Palettes réceptionnées", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_reception", metricPath: "", aliases: ["uo reception", "palettes réceptionnées"] },
@@ -9907,6 +9908,10 @@ function zGemedMetricDefinition(label = "") {
 function zGemedResolvedMapping(label = "", periodType = "monthly") {
   const definition = zGemedMetricDefinition(label);
   if (!definition) return null;
+
+  // V5.30Q5F — mapping Z GEMED explicite.
+  // Chaque définition connue est considérée comme fiable et conserve
+  // strictement la distinction Mensuel / Cumul.
   if (definition.targetType === "existing" && periodType === "monthly") {
     return {
       metricKey: definition.metricKey,
@@ -9920,7 +9925,13 @@ function zGemedResolvedMapping(label = "", periodType = "monthly") {
       confidence: "élevée"
     };
   }
-  const targetId = zGemedComplementaryTargetPath(definition.metricKey, periodType === "cumulative" ? "cumulative" : "monthly");
+
+  const isCumulative = periodType === "cumulative";
+  const targetId = zGemedComplementaryTargetPath(
+    definition.metricKey,
+    isCumulative ? "cumulative" : "monthly"
+  );
+
   return {
     metricKey: definition.metricKey,
     category: definition.category,
@@ -9929,8 +9940,10 @@ function zGemedResolvedMapping(label = "", periodType = "monthly") {
     path: targetId,
     targetId,
     targetType: "complementary",
-    targetLabel: periodType === "cumulative" && definition.cumulativeTargetLabel ? definition.cumulativeTargetLabel : definition.label,
-    confidence: definition.targetType === "existing" ? "élevée" : "moyenne"
+    targetLabel: isCumulative
+      ? (definition.cumulativeTargetLabel || `${definition.label} (Cumul)`)
+      : definition.label,
+    confidence: "élevée"
   };
 }
 
@@ -9994,6 +10007,23 @@ function perfStatus(metric) {
   if (abs >= 10) return "red";
   if (abs >= 5) return "orange";
   return "green";
+}
+
+// V5.30Q5F — statut spécifique productivité : plus haut = mieux.
+// Une donnée absente ne doit jamais ressortir "Maîtrisé".
+function perfProductivityStatus(metric) {
+  if (!metric || !perfHas(metric.actual) || !perfHas(metric.budget)) return "";
+  const gap = perfGap(metric.actual, metric.budget).pct;
+  if (gap === "") return "";
+  if (gap >= 0) return "green";
+  if (gap >= -3) return "orange";
+  return "red";
+}
+
+function perfProductivityBadge(metric) {
+  const status = perfProductivityStatus(metric);
+  if (!status) return `<span class="badge" style="background:#eef1f5;color:#64748b">À compléter</span>`;
+  return badge(status);
 }
 
 function perfPeriodLabel(p) {
@@ -10148,6 +10178,29 @@ function performanceMatchesMetricDef(row = {}, metricDef = {}) {
   const aliases = [metricDef.label, ...(metricDef.aliases || [])].map(normalizePerformanceLabel).filter(Boolean);
   if (metricDef.targetPath && rowPath && (rowPath === metricDef.targetPath || `${rowPath}.actual` === metricDef.targetPath)) return true;
   if (metricDef.metricKey && rowMetricKey && rowMetricKey === String(metricDef.metricKey).toLowerCase()) return true;
+  // V5.30Q5F : "Activité principale / Colis" doit correspondre uniquement
+  // à COLIS TOTAUX PREPARES, jamais à colis hétérogènes/homogènes/contrôlés.
+  if (String(metricDef.metricKey || "").toLowerCase() === "activity.colis_total"
+      && rowMetricKey
+      && rowMetricKey !== "activity.colis_totaux_prepares"
+      && rowMetricKey !== "activity.colis_total") return false;
+
+  // V5.30Q5F : les coûts unitaires Z GEMED ont des libellés très proches.
+  // Si un metricKey explicite est déjà présent, on interdit tout fallback
+  // par sous-chaîne vers un autre coût unitaire (ex. "COUT COLIS TOTAL FIXES"
+  // ne doit jamais alimenter "Coût colis total").
+  const unitCostKeys = new Set([
+    "economy.cout_fixe_par_colis",
+    "economy.cout_variable_par_colis",
+    "quality.cout_demarque_par_colis",
+    "economy.cout_variable_exploitation_par_colis",
+    "economy.cout_transport_par_colis",
+    "economy.cout_exploitation_par_colis",
+    "economy.cout_total_par_colis"
+  ]);
+  const defMetricKey = String(metricDef.metricKey || "").toLowerCase();
+  if (unitCostKeys.has(defMetricKey) && rowMetricKey && rowMetricKey !== defMetricKey) return false;
+
   // V5.28P : les alias très courts (ex. « AT ») ne doivent jamais matcher
   // par simple sous-chaîne (« préparation » contient les lettres « at »).
   return aliases.some(alias => {
@@ -10211,7 +10264,9 @@ function performanceMetricCandidates(metricDef, period, periodRecord, importRows
       sourceLabel: performanceSourceLabel(performanceSourceKey(row.source || row.sourceType || "Import")),
       confidence: row.confidence || "moyenne",
       sourceRef: row.sourceRef || row.sourceCell || "",
-      periodType: row.periodType || "monthly"
+      periodType: performanceSourceKey(row.source || row.sourceType || "Import") === "GPO"
+        ? "cumulative"
+        : (row.periodType || "monthly")
     });
   });
   const primary = performancePrimaryValueForMetric(periodRecord, metricDef);
@@ -10238,6 +10293,7 @@ function getPreferredPerformanceValue(metricKey, period) {
       source: "",
       sourceLabel: "Source inconnue",
       confidence: "faible",
+      periodType: "",
       alternatives: [],
       warnings: ["Donnée manquante"]
     };
@@ -10265,6 +10321,7 @@ function getPreferredPerformanceValue(metricKey, period) {
       source: priority[0] || "",
       sourceLabel: priority[0] === "GPO" ? "Donnée GPO non disponible" : "Donnée non disponible",
       confidence: "faible",
+      periodType: "",
       alternatives,
       warnings: [...new Set(["Donnée manquante", ...(requiresOfficial ? ["Donnée GPO non disponible"] : [])])]
     };
@@ -10283,6 +10340,7 @@ function getPreferredPerformanceValue(metricKey, period) {
     source: selected.source,
     sourceLabel: selected.sourceLabel,
     confidence,
+    periodType: selected.periodType || "monthly",
     alternatives,
     warnings
   };
@@ -10322,8 +10380,12 @@ function performanceSummaryFormatValue(value, unit, metricKey = "") {
     const ratioValue = numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric;
     return `${ratioValue.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} %`;
   }
-  const digits = /hours|heures|\bh\b/.test(normalizedUnit) ? 2 : (metricKey.startsWith("ipo.") ? 2 : 1);
-  const formatted = numeric.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  const isUnitCost = metricKey === "economy.cout_total_par_colis" || metricKey === "economy.cout_exploitation_par_colis";
+  const digits = isUnitCost ? 3 : (/hours|heures|\bh\b/.test(normalizedUnit) ? 2 : (metricKey.startsWith("ipo.") ? 2 : 1));
+  const formatted = numeric.toLocaleString("fr-FR", {
+    minimumFractionDigits: isUnitCost ? 3 : 0,
+    maximumFractionDigits: digits
+  });
   return unit ? `${formatted} ${unit}` : formatted;
 }
 
@@ -10344,11 +10406,48 @@ function performanceSummaryBuildRows(period) {
   return performanceSummaryMetricDefinitions.map(def => {
     const preferred = getPreferredPerformanceValue(def.metricKey, period);
     const status = performanceSummaryMetricStatus(def.metricKey, period, preferred);
-    const value = perfHas(preferred.value) ? Number(preferred.value) : "";
-    const budget = perfHas(preferred.budget) ? Number(preferred.budget) : "";
-    const historical = perfHas(preferred.historical) ? Number(preferred.historical) : "";
+    const unitCostMetric = def.metricKey === "economy.cout_total_par_colis" || def.metricKey === "economy.cout_exploitation_par_colis";
+    const rawValue = perfHas(preferred.value) ? Number(preferred.value) : "";
+    const rawBudget = perfHas(preferred.budget) ? Number(preferred.budget) : "";
+    const rawHistorical = perfHas(preferred.historical) ? Number(preferred.historical) : "";
+    // V5.30Q5F : Z GEMED stocke les charges avec un signe comptable négatif.
+    // Pour le pilotage, les coûts unitaires sont affichés en valeur positive,
+    // sans modifier la donnée source enregistrée.
+    const value = Number.isFinite(rawValue) ? (unitCostMetric ? Math.abs(rawValue) : rawValue) : "";
+    const budget = Number.isFinite(rawBudget) ? (unitCostMetric ? Math.abs(rawBudget) : rawBudget) : "";
+    const historical = Number.isFinite(rawHistorical) ? (unitCostMetric ? Math.abs(rawHistorical) : rawHistorical) : "";
     const gap = (Number.isFinite(value) && Number.isFinite(budget)) ? value - budget : "";
     const trend = (Number.isFinite(value) && Number.isFinite(historical)) ? value - historical : "";
+
+    // V5.30Q5F — statuts Direction homogènes, basés sur l'écart relatif au budget.
+    // higher = plus haut = mieux ; lower = plus bas = mieux.
+    const directionSense = {
+      "ipo.total": "higher",
+      "activity.colis_total": "higher",
+      "productivity.preparation": "higher",
+      "hours.indirect": "lower",
+      "absenteeism.total": "lower",
+      "economy.cout_total_par_colis": "lower",
+      "economy.cout_exploitation_par_colis": "lower"
+    };
+    let directionStatusLabel = status.label;
+    let directionStatusTone = status.tone;
+    const metricSense = directionSense[def.metricKey] || "";
+    if (metricSense && Number.isFinite(value) && Number.isFinite(budget) && budget !== 0) {
+      const pctVsBudget = ((value - budget) / Math.abs(budget)) * 100;
+      const favorableGap = metricSense === "higher" ? pctVsBudget : -pctVsBudget;
+      if (favorableGap >= 0) {
+        directionStatusLabel = "Maîtrisé";
+        directionStatusTone = "ok";
+      } else if (favorableGap >= -3) {
+        directionStatusLabel = "À suivre";
+        directionStatusTone = "warning";
+      } else {
+        directionStatusLabel = "Critique";
+        directionStatusTone = "critical";
+      }
+    }
+
     return {
       metricKey: def.metricKey,
       label: def.label,
@@ -10362,10 +10461,17 @@ function performanceSummaryBuildRows(period) {
       source: preferred.source,
       sourceLabel: preferred.sourceLabel,
       confidence: preferred.confidence,
+      periodType: preferred.periodType || "",
       alternatives: preferred.alternatives,
-      warnings: status.badges,
-      statusLabel: status.label,
-      statusTone: status.tone
+      warnings: ensureArray(status.badges).filter(flag => ![
+        "Valeur suspecte",
+        "Seuil à définir",
+        "Sources différentes",
+        "Source secondaire",
+        "Unité à vérifier"
+      ].includes(flag)),
+      statusLabel: metricSense ? directionStatusLabel : status.label,
+      statusTone: metricSense ? directionStatusTone : status.tone
     };
   });
 }
@@ -10749,12 +10855,15 @@ function performanceWarningsBadgesV519(row) {
 }
 
 function performanceDirectionCards(period) {
-  const cardOrder = ["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis"];
+  const cardOrder = ["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis", "economy.cout_exploitation_par_colis"];
   const rows = performanceSummaryRowsFiltered(period).filter(row => cardOrder.includes(row.metricKey));
-  const ordered = cardOrder.map(key => rows.find(row => row.metricKey === key)).filter(Boolean).slice(0, 6);
+  const ordered = cardOrder.map(key => rows.find(row => row.metricKey === key)).filter(Boolean).slice(0, 7);
   if (!ordered.length) return `<div class="empty">Aucune carte Direction disponible avec les filtres en cours.</div>`;
-  const cards = ordered.map(row => `
-    <article class="performance-summary-direction-card">
+  const cards = ordered.map(row => {
+    const isUnitCostCard = row.metricKey === "economy.cout_total_par_colis" || row.metricKey === "economy.cout_exploitation_par_colis";
+    const spanStyle = isUnitCostCard ? "grid-column: span 3;" : "grid-column: span 2;";
+    return `
+    <article class="performance-summary-direction-card" style="${spanStyle}">
       <header>
         <h3>${esc(row.label)}</h3>
         ${performanceStatusBadgeV519(row)}
@@ -10766,11 +10875,12 @@ function performanceDirectionCards(period) {
         <div>Écart : ${esc(performanceSummaryFormatDelta(row.gap, row.unit, row.metricKey))}</div>
         <div>Tendance : ${esc(performanceSummaryFormatDelta(row.trend, row.unit, row.metricKey))}</div>
       </div>
-      <div class="performance-summary-direction-badges">${performanceWarningsBadgesV519(row)}</div>
+      ${ensureArray(row.warnings).length ? `<div class="performance-summary-direction-badges">${performanceWarningsBadgesV519(row)}</div>` : ""}
       <button class="secondary" onclick="openPerformanceSummaryDetail('${esc(row.metricKey)}')">Voir le détail</button>
     </article>
-  `).join("");
-  return `<div class="performance-summary-direction-grid">${cards}</div>`;
+  `;
+  }).join("");
+  return `<div class="performance-summary-direction-grid" style="grid-template-columns:repeat(6,minmax(0,1fr));">${cards}</div>`;
 }
 
 function performanceSummaryCards(records) {
@@ -10888,7 +10998,7 @@ function performanceLatestImportMeta(period) {
 function performanceSummaryRowsForPeriod(period) {
   const rows = performanceSummaryRowsFiltered(period);
   if (performanceDashboardFilters.view === "direction") {
-    const directionSet = new Set(["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis"]);
+    const directionSet = new Set(["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis", "economy.cout_exploitation_par_colis"]);
     return rows.filter(row => directionSet.has(row.metricKey));
   }
   return rows;
@@ -11205,8 +11315,8 @@ function performanceView(p) {
   const actions = state.actions.filter(a => (a.linkedPerformance || []).includes(p.id) || (p.link || "").includes(perfPeriodLabel(p)));
   const decisions = state.decisions.filter(d => (d.linkedPerformance || []).includes(p.id));
   const documents = state.documents.filter(d => (d.linkedPerformance || []).includes(p.id));
-  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} · Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two">${performanceOverviewSection()}<div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", viewP.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", viewP.ipo.total)}${perfMetricBlock("IPO variable", viewP.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(viewP)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", viewP.hours.total)}${perfMetricBlock("Heures indirectes", viewP.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", viewP.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(viewP)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(viewP)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(viewP))}</p></div>${performanceSourceBlock(p)}<div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="openDocument('${d.id}')"><strong>${esc(d.title || d.name || "Document")}</strong><span class="muted">${esc(d.type || d.category || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div></div>`;
-  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} ? Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two"><div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", viewP.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", viewP.ipo.total)}${perfMetricBlock("IPO variable", viewP.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(viewP)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", viewP.hours.total)}${perfMetricBlock("Heures indirectes", viewP.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", viewP.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(viewP)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(viewP)}</div><div class="card"><h2>Synthèse DE</h2><p>${esc(p.synthesis || buildPerformanceSynthesis(viewP))}</p></div><div class="card full-span"><h2>Historique et tendances</h2>${perfCharts()}</div><div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")} · ${esc(d.category || "")} · ${esc(d.status || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div>${performanceSourceBlock(p)}<div class="card full-span">${performanceImportHistory()}</div></div>`;
+  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} · Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two">${performanceOverviewSection()}<div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", viewP.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", viewP.ipo.total)}${perfMetricBlock("IPO variable", viewP.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(viewP)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", viewP.hours.total)}${perfMetricBlock("Heures indirectes", viewP.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", viewP.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(viewP)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(viewP)}</div><div class="card"><h2>Synthèse DE</h2>${renderPerformanceSynthesisCard(p, viewP)}</div>${performanceSourceBlock(p)}<div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="openDocument('${d.id}')"><strong>${esc(d.title || d.name || "Document")}</strong><span class="muted">${esc(d.type || d.category || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div></div>`;
+  return `<div class="card"><div class="row"><div><h2>${esc(perfPeriodLabel(p))}</h2><span class="muted">Statut : ${esc(p.status)} ? Dernière mise à jour : ${esc(p.updatedAt || "")}</span></div><div class="row-actions"><button class="action" onclick="performanceEdit=true;renderPerformance()">Modifier</button><button class="secondary" onclick="startPerformanceRdp('${p.id}')">Générer une synthèse RDP</button></div></div></div><div class="grid two"><div class="card"><h2>Activité</h2>${perfMetricBlock("Colis", viewP.activity)}</div><div class="card"><h2>IPO</h2>${perfMetricBlock("IPO total", viewP.ipo.total)}${perfMetricBlock("IPO variable", viewP.ipo.variable)}</div><div class="card full-span"><h2>Productivité par métier</h2>${perfProductivityTable(viewP)}</div><div class="card"><h2>Heures</h2>${perfMetricBlock("Heures totales", viewP.hours.total)}${perfMetricBlock("Heures indirectes", viewP.hours.indirect)}</div><div class="card"><h2>Absentéisme</h2>${perfMetricBlock("Absentéisme total", viewP.absenteeism.total)}</div><div class="card"><h2>Qualité et Gains & Pertes</h2>${perfQualitySummary(viewP)}</div><div class="card"><h2>Hauteur palette</h2>${perfPalletSummary(viewP)}</div><div class="card"><h2>Synthèse DE</h2>${renderPerformanceSynthesisCard(p, viewP)}</div><div class="card full-span"><h2>Historique et tendances</h2>${perfCharts()}</div><div class="card"><h2>Actions liées</h2>${actions.map(a => `<div class="item"><strong>${esc(a.title)}</strong><span class="muted">${esc(a.owner || "")} · ${esc(a.due || "")}</span></div>`).join("") || `<div class="empty">Aucune action liée.</div>`}</div><div class="card"><h2>Décisions liées</h2>${decisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card full-span"><h2>Documents et comptes rendus liés</h2>${documents.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")} · ${esc(d.category || "")} · ${esc(d.status || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div>${performanceSourceBlock(p)}<div class="card full-span">${performanceImportHistory()}</div></div>`;
 }
 
 function performanceSourceBlock(p) {
@@ -11302,13 +11412,13 @@ function performanceLegacyImportSummaryCard(item) {
 function perfMetricBlock(label, metric) {
   const rb = perfGap(metric.actual, metric.budget);
   const rh = perfGap(metric.actual, metric.historical);
-  return `<div class="performance-metric"><strong>${esc(label)}</strong><span>Historique ${perfFmt(metric.historical)} ? Budget ${perfFmt(metric.budget)} ? Réalisé ${perfFmt(metric.actual)}</span><small>Écart budget ${perfFmt(rb.value)} (${perfFmt(rb.pct, "%")}) ? Écart historique ${perfFmt(rh.value)} (${perfFmt(rh.pct, "%")})</small></div>`;
+  return `<div class="performance-metric"><strong>${esc(label)}</strong><span>Historique ${perfFmt(metric.historical)} · Budget ${perfFmt(metric.budget)} · Réalisé ${perfFmt(metric.actual)}</span><small>Écart budget ${perfFmt(rb.value)} (${perfFmt(rb.pct, "%")}) · Écart historique ${perfFmt(rh.value)} (${perfFmt(rh.pct, "%")})</small></div>`;
 }
 
 function perfProductivityTable(p) {
   return `<table class="perf-table"><thead><tr><th>Métier</th><th>Historique</th><th>Budget</th><th>Réalisé</th><th>Écart budget</th><th>Écart historique</th><th>Statut</th><th></th></tr></thead><tbody>${perfJobs.map(job => {
-    const m = p.productivity[job], rb = perfGap(m.actual, m.budget), rh = perfGap(m.actual, m.historical), st = perfStatus(m);
-    return `<tr><td>${esc(job)}</td><td>${perfFmt(m.historical)}</td><td>${perfFmt(m.budget)}</td><td>${perfFmt(m.actual)}</td><td>${perfFmt(rb.value)}</td><td>${perfFmt(rh.value)}</td><td>${badge(st)}</td><td><button class="secondary" onclick="performanceIndicatorAction('${p.id}','Productivité ${esc(job)}')">Créer une action</button><button class="secondary" onclick="performanceIndicatorDecision('${p.id}','Productivité ${esc(job)}')">Créer une décision</button></td></tr>`;
+    const m = p.productivity[job], rb = perfGap(m.actual, m.budget), rh = perfGap(m.actual, m.historical);
+    return `<tr><td>${esc(job)}</td><td>${perfFmt(m.historical)}</td><td>${perfFmt(m.budget)}</td><td>${perfFmt(m.actual)}</td><td>${perfFmt(rb.value)}</td><td>${perfFmt(rh.value)}</td><td>${perfProductivityBadge(m)}</td><td><button class="secondary" onclick="performanceIndicatorAction('${p.id}','Productivité ${esc(job)}')">Créer une action</button><button class="secondary" onclick="performanceIndicatorDecision('${p.id}','Productivité ${esc(job)}')">Créer une décision</button></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 
@@ -11397,9 +11507,85 @@ function buildPerformanceSynthesis(p) {
     ["Activité", p.activity], ["IPO total", p.ipo.total], ["IPO variable", p.ipo.variable], ["Heures totales", p.hours.total], ["Absentéisme", p.absenteeism.total], ["Hauteur palette", { historical: p.palletHeight.historical, budget: p.palletHeight.budget, actual: p.palletHeight.actual }]
   ];
   const gaps = metrics.map(([label, m]) => ({ label, pct: perfGap(m.actual, m.budget).pct, comment: m.comment || m.causes || "" })).filter(x => x.pct !== "");
-  const positives = gaps.filter(x => x.pct >= 0).slice(0, 3).map(x => `- ${x.label} : ${perfFmt(x.pct, "%")}`).join("\n") || "À compléter";
-  const vigilance = gaps.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct)).slice(0, 3).map(x => `- ${x.label} : ${perfFmt(x.pct, "%")} ${x.comment}`).join("\n") || "À compléter";
+  const direction = {
+    "Activité": "higher",
+    "IPO total": "higher",
+    "IPO variable": "higher",
+    "Heures totales": "lower",
+    "Absentéisme": "lower",
+    "Hauteur palette": "higher"
+  };
+  const scored = gaps.map(x => ({
+    ...x,
+    favorable: (direction[x.label] || "higher") === "lower" ? x.pct <= 0 : x.pct >= 0
+  }));
+  const positives = scored
+    .filter(x => x.favorable)
+    .slice(0, 3)
+    .map(x => `- ${x.label} : ${perfFmt(x.pct, "%")}`)
+    .join("\n") || "À compléter";
+  const vigilance = scored
+    .filter(x => !x.favorable)
+    .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))
+    .slice(0, 3)
+    .map(x => `- ${x.label} : ${perfFmt(x.pct, "%")} ${x.comment}`)
+    .join("\n") || "À compléter";
   return `Points positifs\n${positives}\n\nPoints de vigilance\n${vigilance}\n\nIndicateurs éloignés du budget\n${vigilance}\n\nActions prioritaires\n${reportActions(state.actions.filter(a => (a.linkedPerformance || []).includes(p.id)))}\n\nDécisions attendues\n${reportDecisions(state.decisions.filter(d => (d.linkedPerformance || []).includes(p.id)))}`;
+}
+
+// V5.30Q5F — rendu compact de la Synthèse DE sans augmenter la hauteur.
+function renderPerformanceSynthesisCard(p, viewP) {
+  const raw = String(p.synthesis || buildPerformanceSynthesis(viewP) || "").trim();
+
+  const headings = [
+    "Points positifs",
+    "Points de vigilance",
+    "Indicateurs éloignés du budget",
+    "Actions prioritaires",
+    "Décisions attendues"
+  ];
+
+  const normalized = raw.replace(/\r/g, "");
+  const sections = {};
+  headings.forEach((heading, index) => {
+    const start = normalized.indexOf(heading);
+    if (start < 0) return;
+    let end = normalized.length;
+    headings.slice(index + 1).forEach(next => {
+      const pos = normalized.indexOf(next, start + heading.length);
+      if (pos >= 0 && pos < end) end = pos;
+    });
+    sections[heading] = normalized
+      .slice(start + heading.length, end)
+      .trim()
+      .replace(/^\s*[-–]\s*/gm, "")
+      .replace(/\n+/g, " · ");
+  });
+
+  // Si une ancienne synthèse stockée est "à plat", on la segmente aussi par libellé.
+  if (!Object.keys(sections).length) {
+    const markerRegex = /(Points positifs|Points de vigilance|Indicateurs éloignés du budget|Actions prioritaires|Décisions attendues)/g;
+    const parts = normalized.split(markerRegex).filter(Boolean);
+    for (let i = 0; i < parts.length - 1; i += 2) {
+      if (headings.includes(parts[i])) sections[parts[i]] = String(parts[i + 1] || "").trim();
+    }
+  }
+
+  const cell = (title, icon, value, tone) => `
+    <div style="min-width:0;padding:6px 8px;border:1px solid #e5eaf1;border-radius:10px;background:${tone};">
+      <div style="font-size:12px;font-weight:800;margin-bottom:3px;white-space:nowrap">${icon} ${esc(title)}</div>
+      <div style="font-size:12px;line-height:1.25;color:#334155;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${esc(value || "À compléter")}</div>
+    </div>`;
+
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px 8px;">
+      ${cell("Points positifs", "✓", sections["Points positifs"], "#f5fbf7")}
+      ${cell("Points de vigilance", "!", sections["Points de vigilance"], "#fff9f2")}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px 8px;margin-top:7px;">
+      ${cell("Actions prioritaires", "→", sections["Actions prioritaires"], "#f8fafc")}
+      ${cell("Décisions attendues", "◆", sections["Décisions attendues"], "#f8fafc")}
+    </div>`;
 }
 
 function perfCharts() {
@@ -11415,7 +11601,7 @@ function perfChart(label, path) {
   const rows = state.performance.slice().sort((a, b) => a.year - b.year || a.month - b.month).map(p => ({ p, m: perfPath(p, path) })).filter(x => x.m && (perfHas(x.m.historical) || perfHas(x.m.budget) || perfHas(x.m.actual)));
   if (rows.length < 1) return `<div class="perf-chart"><strong>${esc(label)}</strong><div class="empty">Données insuffisantes</div></div>`;
   const max = Math.max(1, ...rows.flatMap(x => [perfNum(x.m.historical), perfNum(x.m.budget), perfNum(x.m.actual)]));
-  return `<div class="perf-chart"><strong>${esc(label)}</strong>${rows.map(x => `<div class="perf-bars"><span>${esc(perfMonths[x.p.month - 1].slice(0, 3))}</span><i style="height:${perfNum(x.m.historical) / max * 70}px"></i><i class="budget" style="height:${perfNum(x.m.budget) / max * 70}px"></i><i class="actual" style="height:${perfNum(x.m.actual) / max * 70}px"></i></div>`).join("")}<small>Historique ? Budget ? Réalisé</small></div>`;
+  return `<div class="perf-chart"><strong>${esc(label)}</strong>${rows.map(x => `<div class="perf-bars"><span>${esc(perfMonths[x.p.month - 1].slice(0, 3))}</span><i style="height:${perfNum(x.m.historical) / max * 70}px"></i><i class="budget" style="height:${perfNum(x.m.budget) / max * 70}px"></i><i class="actual" style="height:${perfNum(x.m.actual) / max * 70}px"></i></div>`).join("")}<small>Historique · Budget · Réalisé</small></div>`;
 }
 
 function performanceIndicatorAction(id, label) {
@@ -11442,6 +11628,11 @@ function startPerformanceRdp(id) {
   const p = byId("performance", id);
   if (!p) return;
   startReport("performance", id, "Revue de performance");
+  // V5.30Q5G : le bouton Performance ouvre directement le modèle mensuel RDP enrichi.
+  if (reportWizard) {
+    reportWizard.step = 4;
+    renderReportWizard();
+  }
 }
 
 const performanceImportSources = [
@@ -11828,22 +12019,34 @@ function performanceImportStepPreview() {
     const statusText = row.status || performanceImportStatusLabel(row.status);
     const selectable = row.targetType !== "ignore";
     const roleHint = gaRoleLabel(row);
-    const targetHint = row.targetType === "complementary" ? "KPI complémentaire · À vérifier" : row.targetType === "existing" ? "KPI DEOS existant" : "À vérifier";
+    const explicitZGemedMapping = performanceSourceKey(row.source || row.sourceType || "") === "Z_GEMED"
+      && Boolean(currentTargetId)
+      && Boolean(row.destinationPath)
+      && Number(row.confidenceScore || 0) >= 85;
+    const targetHint = explicitZGemedMapping
+      ? "Mapping Z GEMED explicite"
+      : row.targetType === "complementary"
+        ? "KPI complémentaire · À vérifier"
+        : row.targetType === "existing"
+          ? "KPI DEOS existant"
+          : "À vérifier";
     const catalogHasCurrentTarget = targetOptions.some(target => target.id === currentTargetId);
     const dynamicTargetOption = currentTargetId && !catalogHasCurrentTarget
       ? `<option value="${esc(currentTargetId)}" selected>${esc(row.destinationLabel || row.label || row.indicator || currentTargetId)}</option>`
       : "";
     const selectHtml = dynamicTargetOption + targetOptions.map(target => `<option value="${esc(target.id)}" ${currentTargetId === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("");
     const explicitGpoMapping = performanceSourceKey(row.source || row.sourceType || "") === "GPO" && Boolean(currentTargetId) && Boolean(row.destinationPath);
-    const destinationHtml = explicitGpoMapping
-      ? `<div class="import-target-select"><strong>${esc(row.destinationLabel || row.label || row.indicator || currentTargetId)}</strong><small class="muted">Mapping GPO explicite${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div>`
+    const explicitFixedMapping = explicitGpoMapping || explicitZGemedMapping;
+    const mappingSourceLabel = explicitGpoMapping ? "GPO" : "Z GEMED";
+    const destinationHtml = explicitFixedMapping
+      ? `<div class="import-target-select"><strong>${esc(row.destinationLabel || row.label || row.indicator || currentTargetId)}</strong><small class="muted">Mapping ${esc(mappingSourceLabel)} explicite${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div>`
       : `<div class="import-target-select"><select onchange="setImportPreviewTarget('${row.id}', this.value)">${selectHtml}</select><small class="muted">${esc(targetHint)}${row.confidenceText ? ` · confiance ${esc(row.confidenceText)}` : ""}</small></div>`;
     return `<tr class="import-${esc(row.tone)}"><td><input type="checkbox" ${row.selected ? "checked" : ""} onchange="toggleImportPreviewRow('${row.id}',this.checked)" ${selectable ? "" : "disabled"}></td><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(categoryLabel(row))}${roleHint ? `<br><small class="muted">${esc(roleHint)}</small>` : ""}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(formatImportNumber(row.budget))}</td><td>${esc(formatImportNumber(row.historical))}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${destinationHtml}</td><td>${esc(row.currentValue === "" || row.currentValue === null || row.currentValue === undefined ? "" : perfFmt(row.currentValue))}</td><td>${esc(row.confidenceText || "")}</td><td><strong>${esc(plannedActionLabel(row))}</strong><br><small>${esc(statusText)}</small>${row.status === "Conflit" || row.status === "Différente" ? `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="keep" ${row.action === "keep" ? "selected" : ""}>Conserver DEOS</option><option value="use" ${row.action === "use" ? "selected" : ""}>Remplacer</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>` : `<select onchange="setImportPreviewAction('${row.id}',this.value)"><option value="use" ${row.action === "use" ? "selected" : ""}>Utiliser source</option><option value="ignore" ${row.action === "ignore" ? "selected" : ""}>Ne pas importer</option></select>`}</td></tr>`;
   }).join("");
   const unmappedTable = unmappedRows.length ? `<div class="card"><h3>Indicateurs détectés mais non mappés</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>Indicateur source</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Confiance</th><th>Destination</th></tr></thead><tbody>${unmappedRows.map(row => `<tr class="import-orange"><td>${esc(row.period || "à confirmer")}</td><td>${esc(typeLabel(row))}</td><td>${esc(row.category || "")}</td><td>${esc(row.population || "")}</td><td>${esc(row.banner || "")}</td><td>${esc(row.costCenter || "")}</td><td>${esc(row.directness || "")}</td><td>${esc(row.label || row.indicator)}</td><td>${esc(formatImportActualDisplay(row))}</td><td>${esc(row.budget ?? "")}</td><td>${esc(row.historical ?? "")}</td><td>${esc(deltaLabel(row.deltaBudget, row.deltaBudgetPercent))}</td><td>${esc(deltaLabel(row.deltaHistorical, row.deltaHistoricalPercent))}</td><td>${esc(row.unit || "")}</td><td>${esc(row.aggregationType || "")}</td><td>${esc(row.employeeCount ?? "")}</td><td>${esc(row.privacyRule || "")}</td><td>${esc(row.sourceColumns || "")}</td><td>${esc(row.privacyLevel || "")}</td><td>${esc(row.sourceSheet || row.sourcePage || "")}</td><td>${esc(row.sourceCell || row.pageSource || row.sourceRef || "")}</td><td>${esc(row.confidenceText || "")}</td><td><select onchange="setImportPreviewTarget('${row.id}', this.value)">${targetOptions.map(target => `<option value="${esc(target.id)}" ${(row.targetId || row.destinationId || "ignore") === target.id ? "selected" : ""}>${esc(target.label)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : "";
   const maskedGroupsTable = maskedGroups.length ? `<div class="card"><h3>Groupes masqués pour confidentialité</h3><table class="perf-table import-preview-table"><thead><tr><th>Période</th><th>Type</th><th>Valeur</th><th>Contributeurs</th><th>Règle</th><th>Feuille</th></tr></thead><tbody>${maskedGroups.map(row => `<tr class="import-gray"><td>${esc(row.period || "")}</td><td>${esc(row.groupType || "")}</td><td>${esc(row.label || row.value || "")}</td><td>${esc(row.employeeCount || "")}</td><td>${esc(row.rule || "")}</td><td>${esc(row.sourceSheet || "")}</td></tr>`).join("")}</tbody></table></div>` : "";
   const emptyDiagnostic = performanceImportEmptyDiagnostic();
-  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p><div class="item alert-blue"><strong>Règle V5.28O</strong><span class="muted">Les 21 KPI GPO reconnus utilisent désormais un mapping explicite. Les anciennes valeurs DEOS restent comparées, mais les destinations GPO ne sont plus proposées via une liste générique. Vous gardez la validation finale.</span></div>${privacyBanner}${tbagPrivacyBanner}${gaDetailPrivacyBanner}${gaDetailComparisonCards}${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="26">${emptyDiagnostic}</td></tr>`}</tbody></table>${maskedGroupsTable}${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
+  return `<div class="card"><h2>Aperçu avant import</h2><p class="muted">Aucune donnée Performance existante ne sera écrasée silencieusement. Les correspondances sont proposées, révisables et mémorisées uniquement si vous les validez.</p><div class="item alert-blue"><strong>Règle V5.28O</strong><span class="muted">Les 21 KPI GPO reconnus utilisent désormais un mapping explicite. CGTAB est traité comme analytique mensuel et n’écrase jamais les KPI cumulés GPO. Z GEMED utilise un mapping explicite et sépare systématiquement les données Mensuel / Cumul. Les anciennes valeurs DEOS restent comparées, mais les destinations GPO ne sont plus proposées via une liste générique. Vous gardez la validation finale.</span></div>${privacyBanner}${tbagPrivacyBanner}${gaDetailPrivacyBanner}${gaDetailComparisonCards}${periodSelector}<table class="perf-table import-preview-table"><thead><tr><th></th><th>Période</th><th>Type</th><th>Catégorie</th><th>Population</th><th>Bannière</th><th>Centre de coûts</th><th>Direct.</th><th>KPI</th><th>Réel</th><th>Budget</th><th>Historique</th><th>Écart Budget</th><th>Écart Historique</th><th>Unité</th><th>Agrégation</th><th>Contributeurs</th><th>Règle confidentialité</th><th>Colonnes source</th><th>Niveau privacy</th><th>Feuille</th><th>Cellule</th><th>Destination DEOS</th><th>Valeur DEOS</th><th>Confiance</th><th>Action prévue</th></tr></thead><tbody>${rows || `<tr><td colspan="26">${emptyDiagnostic}</td></tr>`}</tbody></table>${maskedGroupsTable}${unmappedTable}<div class="row-actions"><button class="secondary" onclick="setPerformanceImportStep(2)">Retour</button><button class="secondary" onclick="cancelPerformanceImport()">Annuler</button><button class="action" onclick="setPerformanceImportStep(4)">Valider l'aperçu</button></div></div>`;
 }
 
 function performanceImportRawIndicators(file) {
@@ -13773,8 +13976,17 @@ function cgtabDestinationPath(metricKey = "") {
 }
 
 function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap, skippedMetrics = []) {
-  return CGTAB_KPI_DEFINITIONS.map(definition => {
-    const destinationPath = cgtabDestinationPath(definition.metricKey);
+  // V5.30Q5F — CGTAB = analytique MENSUEL.
+  // IMPORTANT : ne jamais écrire les heures mensuelles CGTAB dans les KPI cumulés GPO.
+  // Toutes les valeurs CGTAB restent donc dans un espace complémentaire mensuel dédié.
+  const monthlyLabelByMetricKey = {
+    "hours.paid": "Heures payées du mois",
+    "hours.productive": "Heures directes du mois",
+    "hours.non_productive": "Heures indirectes du mois"
+  };
+
+  const aggregatesByMetricKey = new Map();
+  const rows = CGTAB_KPI_DEFINITIONS.map(definition => {
     const aggregate = cgtabAggregateForMetric(definition, employeeRows, sheet, headerMap);
     if (aggregate?.unavailable) {
       skippedMetrics.push({
@@ -13784,6 +13996,12 @@ function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap, skipped
       });
       return null;
     }
+
+    aggregatesByMetricKey.set(definition.metricKey, { definition, aggregate });
+    const monthlyLabel = monthlyLabelByMetricKey[definition.metricKey] || definition.label;
+    const destinationPath = cgtabDestinationPath(definition.metricKey);
+    const destinationField = "";
+
     return {
       id: newId("preview"),
       period,
@@ -13805,18 +14023,20 @@ function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap, skipped
       unit: definition.unit,
       scope: CGTAB_SCOPE,
       activityType: definition.category === "workforce" ? "workforce" : "aggregated",
-      directness: "",
+      directness: definition.metricKey === "hours.productive" ? "direct" : definition.metricKey === "hours.non_productive" ? "indirect" : "",
       costCenter: "",
       aggregationType: definition.aggregationType,
       employeeCount: normalizeImportNullableNumericValue(aggregate.contributors),
       sourceColumns: aggregate.sourceColumns,
       privacyLevel: "aggregated",
       confidence: "élevée",
+      sourceConfidenceScore: monthlyLabelByMetricKey[definition.metricKey] ? 98 : 92,
       sourceSheet: CGTAB_REQUIRED_SHEET,
       sourceCell: aggregate.sourceCell,
       sourceRef: `CGTAB · ${aggregate.sourceColumns}`,
       destinationPath,
-      destinationLabel: `${definition.label} · ${CGTAB_SCOPE}`,
+      destinationLabel: `${monthlyLabel} · ${CGTAB_SCOPE} · ${period}`,
+      destinationField,
       destinationId: destinationPath,
       targetId: destinationPath,
       targetType: "complementary",
@@ -13824,6 +14044,86 @@ function buildCgtabAggregateRows(period, employeeRows, sheet, headerMap, skipped
       action: ""
     };
   }).filter(Boolean);
+
+  const sumMetrics = metricKeys => metricKeys.reduce((total, key) => {
+    const value = normalizeImportNullableNumericValue(aggregatesByMetricKey.get(key)?.aggregate?.actual);
+    return total + (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  }, 0);
+
+  const sourceColumnsFor = metricKeys => metricKeys
+    .map(key => aggregatesByMetricKey.get(key)?.aggregate?.sourceColumns || "")
+    .filter(Boolean)
+    .join(" + ");
+
+  const makeDerivedMonthlyRow = ({ metricKey, label, sourceMetricKeys }) => {
+    const actual = cgtabRound(sumMetrics(sourceMetricKeys), 2);
+    const contributors = sourceMetricKeys.reduce(
+      (max, key) => Math.max(max, Number(aggregatesByMetricKey.get(key)?.aggregate?.contributors || 0)),
+      0
+    );
+    const destinationPath = cgtabDestinationPath(metricKey);
+    return {
+      id: newId("preview"),
+      period,
+      periodType: "monthly",
+      source: "CGTAB",
+      sourceType: "CGTAB XLSB",
+      category: "hours",
+      metricKey,
+      indicator: label,
+      label,
+      actual,
+      value: actual,
+      budget: null,
+      historical: null,
+      deltaBudget: null,
+      deltaHistorical: null,
+      deltaBudgetPercent: null,
+      deltaHistoricalPercent: null,
+      unit: "h",
+      scope: CGTAB_SCOPE,
+      activityType: "aggregated",
+      directness: "",
+      costCenter: "",
+      aggregationType: "sum",
+      employeeCount: contributors,
+      sourceColumns: sourceColumnsFor(sourceMetricKeys),
+      privacyLevel: "aggregated",
+      confidence: "élevée",
+      sourceConfidenceScore: 98,
+      sourceSheet: CGTAB_REQUIRED_SHEET,
+      sourceCell: "agrégé",
+      sourceRef: `CGTAB · agrégation ${sourceColumnsFor(sourceMetricKeys)}`,
+      destinationPath,
+      destinationLabel: `${label} · ${CGTAB_SCOPE} · ${period}`,
+      destinationField: "",
+      destinationId: destinationPath,
+      targetId: destinationPath,
+      targetType: "complementary",
+      selected: true,
+      action: ""
+    };
+  };
+
+  [
+    makeDerivedMonthlyRow({
+      metricKey: "hours.night",
+      label: "Heures de nuit du mois",
+      sourceMetricKeys: ["premium_hours.night_10_25", "premium_hours.night_28", "premium_hours.night_30", "premium_hours.night_60"]
+    }),
+    makeDerivedMonthlyRow({
+      metricKey: "hours.overtime",
+      label: "Heures supplémentaires du mois",
+      sourceMetricKeys: ["premium_hours.overtime_25", "premium_hours.overtime_50"]
+    }),
+    makeDerivedMonthlyRow({
+      metricKey: "hours.sundays",
+      label: "Dimanches / fériés du mois",
+      sourceMetricKeys: ["premium_hours.sunday_100", "premium_hours.sunday_200", "premium_hours.public_holiday_worked"]
+    })
+  ].filter(Boolean).forEach(row => rows.push(row));
+
+  return rows;
 }
 
 const GA_ST_GILLES_KNOWN_SHA256 = "D000A9940051F314AAE81B8B73FEFB2683341E6B978C25423C9A936BBDC110B5";
@@ -14686,7 +14986,12 @@ function zGemedHeaderMap(row = []) {
 
 function zGemedIsHeaderRow(row = []) {
   const text = normalizeText(row.join(" "));
-  return text.includes("numero") && text.includes("budget") && (text.includes("reel") || text.includes("realise"));
+  const standardHeader = text.includes("numero") && text.includes("budget") && (text.includes("reel") || text.includes("realise"));
+  const ratioHeader = !text.includes("numero")
+    && text.includes("budget")
+    && text.includes("histo")
+    && (text.includes("reel") || text.includes("realise"));
+  return standardHeader || ratioHeader;
 }
 
 function zGemedCellRef(row, index) {
@@ -14730,7 +15035,13 @@ function extractZGemedIndicatorsFromSheet(rows, defaultPeriod, sourceFormat, sou
       headerCount += 1;
       if (/cumul/i.test(row.join(" "))) periodType = "cumulative";
       if (/mensuel|mois/i.test(row.join(" "))) periodType = "monthly";
-      acceptsLabelWithoutCode = false;
+      // V5.30Q5F : les blocs Ratios / coût par colis n'ont pas de code "Numero".
+      // Leur mini-entête contient seulement REEL / BUDGET / HISTO.
+      const headerText = normalizeText(row.join(" "));
+      acceptsLabelWithoutCode = !headerText.includes("numero")
+        && headerText.includes("budget")
+        && headerText.includes("histo")
+        && (headerText.includes("reel") || headerText.includes("realise"));
       continue;
     }
     if (!headerMap) continue;
@@ -14783,6 +15094,8 @@ function extractZGemedIndicatorsFromSheet(rows, defaultPeriod, sourceFormat, sou
       unit: definition ? zGemedInferUnit(definition, rows, headerIndex, i) : "",
       scope: mapping?.targetType === "existing" ? "principal" : "complementary",
       confidence: mapping?.confidence || "faible",
+      sourceConfidenceScore: mapping ? 96 : 40,
+      confidenceScore: mapping ? 96 : 40,
       sourceSheet,
       sourceCell: sourceCells,
       sourceRef: `${sourceSheet}${sourceCells ? ` · ${sourceCells}` : ` ligne ${i + 1}`}`,
@@ -15209,7 +15522,862 @@ function reportBuildTitle(template, ctx) {
   if (template === "CODIR") return `Compte rendu CODIR - ${source.date || isoToday()}`;
   if (template === "Entretien Manager") return `Entretien - ${ctx.managers[0]?.name || source.name || "Manager"} - ${source.date || isoToday()}`;
   if (template === "Point Projet") return `Point projet - ${ctx.projects[0]?.name || source.name || "Projet"} - ${source.date || isoToday()}`;
+  if (template === "Revue de performance" && ctx.sourceType === "performance") return `Revue de performance mensuelle - ${perfPeriodLabel(source)} - Saint-Gilles`;
   return `${template} - ${reportSourceTitle(ctx.sourceType, ctx.sourceId)} - ${source.date || isoToday()}`;
+}
+
+
+
+function reportPerformanceExecutiveSynthesis(source, directionRows = []) {
+  const directionKeys = [
+    "ipo.total",
+    "activity.colis_total",
+    "productivity.preparation",
+    "hours.indirect",
+    "absenteeism.total",
+    "economy.cout_total_par_colis",
+    "economy.cout_exploitation_par_colis"
+  ];
+
+  // V5.30Q5J : ne conserver que les 7 KPI Direction et supprimer tout doublon
+  // éventuel provenant des vues détaillées (ex. "Colis" en plus de "Activité principale").
+  const cleanRows = [];
+  const seen = new Set();
+  directionRows.forEach(r => {
+    if (!r || !directionKeys.includes(r.metricKey) || seen.has(r.metricKey)) return;
+    seen.add(r.metricKey);
+    cleanRows.push(r);
+  });
+
+  const row = key => cleanRows.find(r => r.metricKey === key) || null;
+  const fmt = r => r ? performanceSummaryFormatValue(r.value, r.unit, r.metricKey) : "À compléter";
+  const fmtBudget = r => r ? performanceSummaryFormatValue(r.budget, r.unit, r.metricKey) : "À compléter";
+
+  const prod = source.productivity || {};
+  const masteredProd = ["Réception", "Manutention", "Chargement"]
+    .map(name => ({ name, metric: prod[name] || {} }))
+    .filter(x => perfHas(x.metric.actual) && perfHas(x.metric.budget) && Number(x.metric.actual) >= Number(x.metric.budget));
+
+  const prep = prod["Préparation"] || {};
+  const prepBelow = perfHas(prep.actual) && perfHas(prep.budget) && Number(prep.actual) < Number(prep.budget);
+
+  const criticalRows = cleanRows.filter(r => r.statusLabel === "Critique");
+  const watchRows = cleanRows.filter(r => r.statusLabel === "À suivre");
+  const masteredRows = cleanRows.filter(r => r.statusLabel === "Maîtrisé");
+
+  const positiveLines = [
+    ...masteredProd.map(x => `- ${x.name} : ${perfFmt(x.metric.actual)} vs budget ${perfFmt(x.metric.budget)}`),
+    ...masteredRows.map(r => `- ${r.label} : ${fmt(r)} vs budget ${fmtBudget(r)}`)
+  ];
+  const positives = [...new Set(positiveLines)];
+
+  const critical = criticalRows.map(r => `- ${r.label} : ${fmt(r)} vs budget ${fmtBudget(r)}`);
+  const watch = watchRows.map(r => `- ${r.label} : ${fmt(r)} vs budget ${fmtBudget(r)}`);
+
+  const messageParts = [];
+  if (masteredProd.length) {
+    messageParts.push(`${masteredProd.map(x => x.name).join(", ")} ${masteredProd.length > 1 ? "sont au-dessus" : "est au-dessus"} du budget`);
+  }
+  if (prepBelow) {
+    messageParts.push(`La Préparation reste sous le budget à ${perfFmt(prep.actual)} colis/h contre ${perfFmt(prep.budget)}`);
+  }
+  if (criticalRows.length) {
+    messageParts.push(`${criticalRows.map(r => r.label).join(", ")} ${criticalRows.length > 1 ? "constituent les principaux points critiques" : "constitue le principal point critique"}`);
+  }
+
+  const messageKey = messageParts.length
+    ? `La situation de performance arrêtée à la période est contrastée ; les indicateurs GPO sont lus en cumul à date, tandis que Z GEMED et T-Bag sont mensuels. ${messageParts.join(". ")}.`
+    : "La lecture du mois doit être finalisée à partir des écarts au budget, à l'historique et de leur tendance.";
+
+  const priorities = [];
+  if (prepBelow) priorities.push("- Préparation : expliquer l'écart au budget, isoler les leviers actionnables et suivre le plan de redressement.");
+  if (row("hours.indirect")?.statusLabel && row("hours.indirect").statusLabel !== "Maîtrisé") priorities.push("- Heures indirectes : décomposer l'écart et identifier les gisements de réduction sans déplacer la charge.");
+  if (row("absenteeism.total")?.statusLabel === "Critique") priorities.push("- Absentéisme : analyser les causes, notamment maladie / AT, et consolider les actions de prévention.");
+  if (row("economy.cout_total_par_colis")?.statusLabel === "Critique" || row("economy.cout_exploitation_par_colis")?.statusLabel === "Critique") priorities.push("- Coûts unitaires : expliquer la dérive vs budget et relier les écarts aux postes opérationnels contributeurs.");
+
+  return `MESSAGE CLÉ
+${messageKey}
+
+FAITS MAÎTRISÉS
+${positives.length ? positives.join("\n") : "À compléter"}
+
+ÉCARTS CRITIQUES
+${critical.length ? critical.join("\n") : "Aucun écart critique identifié sur les KPI Direction."}
+
+POINTS À SUIVRE
+${watch.length ? watch.join("\n") : "Aucun point à suivre identifié sur les KPI Direction."}
+
+CAUSES / HYPOTHÈSES À CONFIRMER
+- Ne retenir comme cause que ce qui est démontré par les données.
+- Préparation : vérifier équipes / créneaux, mix CDI-ETT-CDD, multiclients, rattrapages de manquants, démarrage et second tour.
+- Absentéisme / coûts : identifier les postes réellement contributeurs avant d'arrêter une causalité.
+
+PRIORITÉS DE PILOTAGE
+${priorities.length ? priorities.join("\n") : "À compléter"}
+
+ARBITRAGES / DÉCISIONS ATTENDUS
+- À compléter avant la revue : décisions attendues du N+1 / N+2, besoins de ressources, arbitrages et sujets à escalader.`;
+}
+
+
+function reportPerformanceDirectionRowsOnly(rows = []) {
+  const allowed = new Set([
+    "ipo.total",
+    "activity.colis_total",
+    "productivity.preparation",
+    "hours.indirect",
+    "absenteeism.total",
+    "economy.cout_total_par_colis",
+    "economy.cout_exploitation_par_colis"
+  ]);
+  const seen = new Set();
+  return rows.filter(r => {
+    if (!r || !allowed.has(r.metricKey) || seen.has(r.metricKey)) return false;
+    seen.add(r.metricKey);
+    return true;
+  });
+}
+
+function reportPerformanceClosingMessage(source, directionRows = [], decisions = "") {
+  const rows = reportPerformanceDirectionRowsOnly(directionRows);
+  const row = key => rows.find(r => r.metricKey === key) || null;
+  const prep = row("productivity.preparation");
+  const abs = row("absenteeism.total");
+  const cost = row("economy.cout_total_par_colis");
+  const exploit = row("economy.cout_exploitation_par_colis");
+  const ipo = row("ipo.total");
+
+  const positives = ["Réception", "Manutention", "Chargement"]
+    .map(name => ({ name, m: source.productivity?.[name] || {} }))
+    .filter(x => perfHas(x.m.actual) && perfHas(x.m.budget) && Number(x.m.actual) >= Number(x.m.budget))
+    .map(x => x.name);
+
+  const sentence1 = positives.length
+    ? `Sur le cumul GPO, ${positives.join(", ")} restent au-dessus du budget.`
+    : "Les points maîtrisés doivent être confirmés en séance.";
+
+  const drifts = [];
+  if (prep && prep.statusLabel !== "Maîtrisé") drifts.push(`Préparation ${performanceSummaryFormatValue(prep.value, prep.unit, prep.metricKey)} vs budget ${performanceSummaryFormatValue(prep.budget, prep.unit, prep.metricKey)} (cumul GPO)`);
+  if (ipo && ipo.statusLabel !== "Maîtrisé") drifts.push(`IPO ${performanceSummaryFormatValue(ipo.value, ipo.unit, ipo.metricKey)} vs budget ${performanceSummaryFormatValue(ipo.budget, ipo.unit, ipo.metricKey)} (cumul GPO)`);
+  if (abs?.statusLabel === "Critique") drifts.push(`absentéisme ${performanceSummaryFormatValue(abs.value, abs.unit, abs.metricKey)} (cumul GPO)`);
+  if (cost?.statusLabel === "Critique") drifts.push(`coût colis total ${performanceSummaryFormatValue(cost.value, cost.unit, cost.metricKey)} (mensuel Z GEMED)`);
+  if (exploit?.statusLabel === "Critique") drifts.push(`coût colis Exploit ${performanceSummaryFormatValue(exploit.value, exploit.unit, exploit.metricKey)} (mensuel Z GEMED)`);
+
+  const decisionLine = decisions && decisions !== "À compléter"
+    ? "Les décisions déjà liées sont reprises dans la section dédiée."
+    : "Les arbitrages attendus du N+1 / N+2 restent à formaliser avant la revue.";
+
+  return `BILAN
+${sentence1} ${drifts.length ? `Les principaux écarts à traiter sont : ${drifts.join(" ; ")}.` : "Aucun écart majeur n'est identifié sur les KPI Direction."}
+
+TROIS PRIORITÉS
+1. Restaurer la performance Préparation et objectiver les causes réellement contributives.
+2. Réduire les dérives d'absentéisme / heures et sécuriser les actions de prévention.
+3. Expliquer puis réduire l'écart des coûts unitaires par rapport au budget.
+
+DÉCISIONS / ARBITRAGES
+${decisionLine}
+
+PROJECTION M+1
+À compléter avant la revue : activité attendue, ressources / ETT, risques opérationnels et trajectoire des KPI critiques.`;
+}
+
+function reportComplementaryMetric(perf, metricKey = "", population = "", banner = "") {
+  const items = ensureArray(perf?.complementaryKpis);
+  const wantedMetric = String(metricKey || "").trim().toLowerCase();
+  const wantedPopulation = String(population || "").trim().toUpperCase();
+  const wantedBanner = String(banner || "").trim().toUpperCase();
+  const candidates = items.filter(item => {
+    if (String(item.metricKey || "").trim().toLowerCase() !== wantedMetric) return false;
+    if (wantedPopulation && String(item.population || "").trim().toUpperCase() !== wantedPopulation) return false;
+    if (wantedBanner && String(item.banner || "").trim().toUpperCase() !== wantedBanner) return false;
+    return true;
+  });
+  return candidates.find(item => String(item.periodType || "monthly") === "monthly") || candidates[0] || null;
+}
+
+function reportMetricActual(metric) {
+  if (!metric) return "";
+  const value = metric.actual ?? metric.value;
+  return perfHas(value) ? Number(value) : "";
+}
+
+function reportPercentShare(value, total) {
+  const v = Number(value), t = Number(total);
+  if (!Number.isFinite(v) || !Number.isFinite(t) || t === 0) return "À compléter";
+  return `${(v / t * 100).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
+}
+
+function reportTBagPreparationAnalysis(source) {
+  const pop = code => ({
+    volume: reportComplementaryMetric(source, `preparation.volume.${code.toLowerCase()}`, code, "TOTAL BANNIERE"),
+    hours: reportComplementaryMetric(source, `preparation.hours.${code.toLowerCase()}`, code, "TOTAL BANNIERE"),
+    productivity: reportComplementaryMetric(source, `preparation.productivity.${code.toLowerCase()}`, code, "TOTAL BANNIERE")
+  });
+
+  const cdi = pop("CDI");
+  const cdd = pop("CDD");
+  const ett = pop("ETT");
+  const totalProd = reportComplementaryMetric(source, "preparation.productivity.total", "TOTAL", "TOTAL BANNIERE");
+  const totalVol = reportComplementaryMetric(source, "preparation.volume.total", "TOTAL", "TOTAL BANNIERE");
+  const totalHours = reportComplementaryMetric(source, "preparation.hours.total", "TOTAL", "TOTAL BANNIERE");
+
+  const cdiHours = reportMetricActual(cdi.hours);
+  const cddHours = reportMetricActual(cdd.hours);
+  const ettHours = reportMetricActual(ett.hours);
+  const computedHours = [cdiHours, cddHours, ettHours].filter(Number.isFinite).reduce((a, b) => a + b, 0);
+  const importedTotalHours = reportMetricActual(totalHours);
+  const referenceHours = Number.isFinite(importedTotalHours) ? importedTotalHours : computedHours;
+
+  const fmt = (metric, unit = "") => {
+    const v = reportMetricActual(metric);
+    return Number.isFinite(v) ? `${perfFmt(v)}${unit ? " " + unit : ""}` : "À compléter";
+  };
+
+  const populationProductivity = population => {
+    const imported = reportMetricActual(population.productivity);
+    if (Number.isFinite(imported)) return imported;
+    const volume = reportMetricActual(population.volume);
+    const hours = reportMetricActual(population.hours);
+    if (Number.isFinite(volume) && Number.isFinite(hours) && hours > 0) return volume / hours;
+    return "";
+  };
+
+  const cdiProductivity = populationProductivity(cdi);
+  const ettProductivity = populationProductivity(ett);
+  const cddProductivity = populationProductivity(cdd);
+
+  const fmtProductivity = value => Number.isFinite(value)
+    ? `${value.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} colis/h`
+    : "À compléter";
+
+  const officialPrep = source.productivity?.["Préparation"]?.actual;
+  const periodKey = performancePeriodKey(source) || canonicalPerformancePeriod(sourceTypePeriod(source)) || "";
+  const gpoPreferred = periodKey ? getPreferredPerformanceValue("productivity.preparation", periodKey) : null;
+  const gpoPeriodType = gpoPreferred?.periodType || "cumulative";
+  const tbagPeriodType = totalProd?.periodType || totalVol?.periodType || totalHours?.periodType || "monthly";
+
+  const tbagImported = reportMetricActual(totalProd);
+  const tbagVolume = reportMetricActual(totalVol);
+  const tbagHours = Number.isFinite(importedTotalHours) ? importedTotalHours : computedHours;
+  const tbagDerived = Number.isFinite(tbagVolume) && Number.isFinite(tbagHours) && tbagHours > 0
+    ? tbagVolume / tbagHours
+    : "";
+  const tbagTotal = Number.isFinite(tbagImported) ? tbagImported : tbagDerived;
+
+  const comparableScopes = Boolean(gpoPeriodType && tbagPeriodType && gpoPeriodType === tbagPeriodType);
+  const reconciliationText = comparableScopes && perfHas(officialPrep) && Number.isFinite(tbagTotal)
+    ? `- Écart T-Bag vs référence officielle GPO : ${(tbagTotal - Number(officialPrep) >= 0 ? "+" : "")}${(tbagTotal - Number(officialPrep)).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} colis/h`
+    : `- Comparaison T-Bag / GPO non calculée : T-Bag ${reportScopeLabel(tbagPeriodType)} vs GPO ${reportScopeLabel(gpoPeriodType)}.`;
+
+  return {
+    text: `RÉFÉRENCE OFFICIELLE GPO
+- Productivité Préparation : ${perfHas(officialPrep) ? perfFmt(officialPrep) + " colis/h" : "À compléter"}
+- Périmètre : ${reportScopeLabel(gpoPeriodType)}
+
+ANALYSE T-BAG — AGRÉGÉE
+- Périmètre : ${reportScopeLabel(tbagPeriodType)}
+- CDI : productivité ${fmtProductivity(cdiProductivity)} | volume ${fmt(cdi.volume, "colis")} | heures ${fmt(cdi.hours, "h")} | part des heures ${reportPercentShare(cdiHours, referenceHours)}
+- ETT : productivité ${fmtProductivity(ettProductivity)} | volume ${fmt(ett.volume, "colis")} | heures ${fmt(ett.hours, "h")} | part des heures ${reportPercentShare(ettHours, referenceHours)}
+- CDD : productivité ${fmtProductivity(cddProductivity)} | volume ${fmt(cdd.volume, "colis")} | heures ${fmt(cdd.hours, "h")} | part des heures ${reportPercentShare(cddHours, referenceHours)}
+- Total T-Bag : productivité ${Number.isFinite(tbagTotal) ? tbagTotal.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " colis/h" : "À compléter"} | volume ${Number.isFinite(tbagVolume) ? perfFmt(tbagVolume) + " colis" : "À compléter"} | heures ${Number.isFinite(tbagHours) ? perfFmt(tbagHours) + " h" : "À compléter"}
+
+RAPPROCHEMENT DES SOURCES
+${reconciliationText}
+- La valeur GPO reste la référence de présentation globale.
+- T-Bag est utilisé pour analyser la composition CDI / ETT / CDD et le mix d'heures.
+- Aucun écart de productivité T-Bag / GPO n'est interprété lorsque les périmètres temporels diffèrent.
+
+ANALYSES NÉCESSITANT UNE SOURCE PLUS DÉTAILLÉE
+- médiane par population ;
+- part atteignant le standard de 125 colis/h ;
+- dispersion ;
+- ancienneté ETT ;
+- équipes / créneaux les plus contributeurs.`,
+    available: [cdiProductivity, ettProductivity, cddProductivity, tbagTotal].some(Number.isFinite)
+  };
+}
+
+function reportProductivityHoursImpact(volume, actualProductivity, budgetProductivity) {
+  const v = Number(volume), a = Number(actualProductivity), b = Number(budgetProductivity);
+  if (![v, a, b].every(Number.isFinite) || v <= 0 || a <= 0 || b <= 0) return "";
+  return (v / a) - (v / b);
+}
+
+function reportFmtSignedHours(value) {
+  if (value === "" || value === null || value === undefined) return "À compléter";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "À compléter";
+  const rounded = Math.round(n);
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toLocaleString("fr-FR")} h`;
+}
+
+function reportTBagBannerAnalysis(source) {
+  const rows = ensureArray(source?.complementaryKpis)
+    .filter(item => String(item.metricKey || "").toLowerCase() === "preparation.banner.hours")
+    .map(item => ({ banner: String(item.banner || "").trim(), hours: reportMetricActual(item) }))
+    .filter(item => item.banner && Number.isFinite(item.hours) && item.hours >= 0)
+    .sort((a, b) => b.hours - a.hours);
+
+  const totalMetric = reportComplementaryMetric(source, "preparation.hours.total", "TOTAL", "TOTAL BANNIERE");
+  const importedTotal = reportMetricActual(totalMetric);
+  const sumBanners = rows.reduce((sum, item) => sum + item.hours, 0);
+  const reference = Number.isFinite(importedTotal) && importedTotal > 0 ? importedTotal : sumBanners;
+
+  if (!rows.length || !Number.isFinite(reference) || reference <= 0) {
+    return { available: false, text: "Répartition des heures par bannière T-Bag : À compléter" };
+  }
+
+  const detail = rows.slice(0, 8).map(item => {
+    const share = item.hours / reference * 100;
+    return `- ${item.banner} : ${item.hours.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} h | ${share.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
+  });
+  const top3 = rows.slice(0, 3).reduce((sum, item) => sum + item.hours, 0);
+  const top3Share = top3 / reference * 100;
+
+  return {
+    available: true,
+    text: `RÉPARTITION DES HEURES PAR BANNIÈRE — T-BAG
+${detail.join("\n")}
+- Concentration Top 3 bannières : ${top3Share.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %
+- Nombre de bannières avec heures : ${rows.length}
+
+Lecture : cette répartition décrit le mix de charge par bannière. Elle ne démontre pas, à elle seule, un effet causal du multiclient sur la productivité.`
+  };
+}
+
+function reportTBagPopulationGapAnalysis(source) {
+  const population = code => {
+    const volume = reportMetricActual(reportComplementaryMetric(source, `preparation.volume.${code.toLowerCase()}`, code, "TOTAL BANNIERE"));
+    const hours = reportMetricActual(reportComplementaryMetric(source, `preparation.hours.${code.toLowerCase()}`, code, "TOTAL BANNIERE"));
+    const imported = reportMetricActual(reportComplementaryMetric(source, `preparation.productivity.${code.toLowerCase()}`, code, "TOTAL BANNIERE"));
+    const productivity = Number.isFinite(imported) ? imported : (Number.isFinite(volume) && Number.isFinite(hours) && hours > 0 ? volume / hours : "");
+    return { code, productivity };
+  };
+
+  const cdi = population("CDI"), ett = population("ETT"), cdd = population("CDD");
+  const rows = [cdi, ett, cdd].filter(item => Number.isFinite(item.productivity));
+  if (rows.length < 2) return "Écarts de productivité par population : À compléter";
+
+  const fmt = n => n.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  const lines = [];
+  if (Number.isFinite(cdi.productivity) && Number.isFinite(ett.productivity)) lines.push(`- CDI vs ETT : ${cdi.productivity >= ett.productivity ? "+" : ""}${fmt(cdi.productivity - ett.productivity)} colis/h`);
+  if (Number.isFinite(cdi.productivity) && Number.isFinite(cdd.productivity)) lines.push(`- CDI vs CDD : ${cdi.productivity >= cdd.productivity ? "+" : ""}${fmt(cdi.productivity - cdd.productivity)} colis/h`);
+  if (Number.isFinite(ett.productivity) && Number.isFinite(cdd.productivity)) lines.push(`- ETT vs CDD : ${ett.productivity >= cdd.productivity ? "+" : ""}${fmt(ett.productivity - cdd.productivity)} colis/h`);
+
+  return `ÉCARTS OBSERVÉS ENTRE POPULATIONS
+${lines.join("\n")}
+Lecture : ces écarts sont descriptifs. Ils ne prouvent pas que le statut contractuel est la cause de l'écart de performance.`;
+}
+
+
+function reportPreparationVolumeForImpact(source) {
+  const candidates = [
+    reportComplementaryMetric(source, "preparation.volume.total", "TOTAL", "TOTAL BANNIERE"),
+    reportComplementaryMetric(source, "preparation.volume.total"),
+    reportComplementaryMetric(source, "activity.preparation"),
+    reportComplementaryMetric(source, "preparation.colis")
+  ];
+
+  for (const metric of candidates) {
+    const value = reportMetricActual(metric);
+    if (Number.isFinite(value) && value > 0) {
+      return { value, source: "Préparation / T-Bag", periodType: metric?.periodType || "monthly" };
+    }
+  }
+
+  // Important: never use site-wide activity as a fallback for GPO preparation productivity.
+  return { value: "", source: "", periodType: "" };
+}
+
+
+function reportPreferredMetricActual(metricKey, periodKey) {
+  const preferred = getPreferredPerformanceValue(metricKey, periodKey);
+  const value = preferred?.value;
+  return perfHas(value) && Number.isFinite(Number(value)) ? Number(value) : "";
+}
+
+function reportIndirectHoursShare(totalHours, indirectHours) {
+  const total = Number(totalHours), indirect = Number(indirectHours);
+  if (![total, indirect].every(Number.isFinite) || total <= 0 || indirect < 0) return "";
+  return indirect / total * 100;
+}
+
+
+function reportFirstFinite(values = []) {
+  for (const value of values) {
+    if (value === "" || value === null || value === undefined) continue;
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return "";
+}
+
+function reportComplementaryActualByKeys(source, keys = []) {
+  for (const key of keys) {
+    const metric = reportComplementaryMetric(source, key);
+    const value = reportMetricActual(metric);
+    if (Number.isFinite(value)) return value;
+  }
+  return "";
+}
+
+function reportSectorUo(source, periodKey, sector) {
+  const defs = {
+    reception: {
+      summaryKey: "activity.uo_reception",
+      complementaryKeys: ["activity.palettes_receptionnees", "activity.uo_reception"],
+      unit: "palettes"
+    },
+    manutention: {
+      summaryKey: "activity.uo_manutention",
+      complementaryKeys: ["activity.palettes_manutentionnees", "activity.uo_manutention"],
+      unit: "palettes"
+    },
+    chargement: {
+      summaryKey: "activity.uo_chargement",
+      complementaryKeys: ["activity.supports_charges", "activity.uo_chargement"],
+      unit: "supports"
+    }
+  };
+  const def = defs[sector];
+  if (!def) return { value: "", unit: "" };
+
+  // 1. KPI complementary carrying the real Z GEMED metric key.
+  for (const key of def.complementaryKeys) {
+    const metric = reportComplementaryMetric(source, key);
+    const direct = reportMetricActual(metric);
+    if (Number.isFinite(direct) && direct > 0) {
+      return { value: direct, unit: def.unit, periodType: metric?.periodType || "monthly" };
+    }
+  }
+
+  // 2. Native DEOS preferred-value resolver.
+  const preferred = getPreferredPerformanceValue(def.summaryKey, periodKey);
+  const preferredValue = preferred?.value;
+  if (perfHas(preferredValue) && Number.isFinite(Number(preferredValue)) && Number(preferredValue) > 0) {
+    return { value: Number(preferredValue), unit: def.unit, periodType: preferred?.periodType || "" };
+  }
+
+  // 3. Performance summary rows already resolve aliases/source hierarchy.
+  const row = performanceSummaryBuildRows(periodKey).find(r => r.metricKey === def.summaryKey);
+  if (row && perfHas(row.value) && Number.isFinite(Number(row.value)) && Number(row.value) > 0) {
+    return { value: Number(row.value), unit: def.unit, periodType: row?.periodType || "" };
+  }
+
+  return { value: "", unit: def.unit, periodType: "" };
+}
+
+function reportHoursShare(total, part) {
+  const t = Number(total), p = Number(part);
+  if (![t, p].every(Number.isFinite) || t <= 0 || p < 0) return "";
+  return p / t * 100;
+}
+
+function reportFmtPercent1(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "À compléter";
+  return `${n.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
+}
+
+function reportDataAvailabilityLabel(value, missingLabel = "Donnée source non disponible") {
+  return perfHas(value) && Number.isFinite(Number(value)) ? value : missingLabel;
+}
+
+
+function reportMetricTriplet(metric, unit = "") {
+  if (!metric) return "Donnée source non disponible";
+  const actual = reportMetricActual(metric);
+  const budget = metric?.budget;
+  const historical = metric?.historical;
+  const hasAny = Number.isFinite(actual) || perfHas(budget) || perfHas(historical);
+  if (!hasAny) return "Donnée source non disponible";
+  const fmt = value => perfHas(value) && Number.isFinite(Number(value))
+    ? `${perfFmt(Number(value))}${unit ? " " + unit : ""}`
+    : "Donnée source non disponible";
+  return `Réel ${fmt(actual)} | Budget ${fmt(budget)} | Historique ${fmt(historical)}`;
+}
+
+function reportPreparationVolumeReconciliation(source) {
+  const tbagVolumeMetric = reportComplementaryMetric(source, "preparation.volume.total", "TOTAL", "TOTAL BANNIERE")
+    || reportComplementaryMetric(source, "preparation.volume.total");
+  const tbagVolume = reportMetricActual(tbagVolumeMetric);
+  const zGemedVolume = perfHas(source?.activity?.actual) ? Number(source.activity.actual) : "";
+
+  if (!Number.isFinite(tbagVolume) || !Number.isFinite(zGemedVolume) || zGemedVolume <= 0) {
+    return {
+      available: false,
+      comparable: false,
+      tbagVolume,
+      zGemedVolume,
+      difference: "",
+      pct: "",
+      text: "Rapprochement volumes Préparation : données insuffisantes."
+    };
+  }
+
+  const difference = zGemedVolume - tbagVolume;
+  const pct = difference / zGemedVolume * 100;
+
+  // A non-trivial volume gap means the functional perimeters are not reconciled.
+  // 1% is deliberately conservative: DEOS must not manufacture a pseudo-precise hour impact.
+  const comparable = Math.abs(pct) <= 1;
+
+  return {
+    available: true,
+    comparable,
+    tbagVolume,
+    zGemedVolume,
+    difference,
+    pct,
+    text: `RAPPROCHEMENT DES VOLUMES
+- Volume T-Bag : ${tbagVolume.toLocaleString("fr-FR")} colis
+- Volume Z GEMED — colis totaux préparés : ${zGemedVolume.toLocaleString("fr-FR")} colis
+- Écart de périmètre : ${Math.abs(difference).toLocaleString("fr-FR")} colis (${Math.abs(pct).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} % du volume Z GEMED)
+- Périmètre T-Bag : Mensuel.
+- Périmètre productivité officielle GPO : Cumul à date (GPO).
+- Conclusion : ${comparable ? "périmètres fonctionnels suffisamment proches pour une lecture indicative." : "périmètres non réconciliés ; aucun impact heures Préparation ne doit être calculé."}`
+  };
+}
+function reportPerformancePeriodSeries(metricKey, currentPeriod, limit = 12) {
+  const current = parsePerformancePeriod(currentPeriod || "");
+  if (!current) return [];
+  const currentStamp = current.year * 100 + current.month;
+  const periods = [];
+  const seen = new Set();
+
+  ensureArray(state.performance).forEach(record => {
+    const parsed = performanceRecordPeriod(record);
+    if (!parsed) return;
+    const stamp = parsed.year * 100 + parsed.month;
+    if (stamp > currentStamp || seen.has(parsed.key)) return;
+    seen.add(parsed.key);
+    periods.push(parsed);
+  });
+
+  if (!seen.has(current.key)) periods.push(current);
+  periods.sort((a, b) => (b.year * 100 + b.month) - (a.year * 100 + a.month));
+
+  return periods.slice(0, limit).map(period => {
+    const preferred = getPreferredPerformanceValue(metricKey, period.key);
+    const value = perfHas(preferred?.value) && Number.isFinite(Number(preferred.value))
+      ? Number(preferred.value) : "";
+    return { ...period, value };
+  }).filter(item => Number.isFinite(item.value));
+}
+
+function reportTrendDirection(metricKey) {
+  return new Set([
+    "hours.indirect",
+    "absenteeism.total",
+    "economy.cout_total_par_colis",
+    "economy.cout_exploitation_par_colis"
+  ]).has(metricKey) ? "lower" : "higher";
+}
+
+function reportThreeMonthMovement(metricKey, periodKey) {
+  const series = reportPerformancePeriodSeries(metricKey, periodKey, 3);
+  if (series.length < 3) return "";
+  const [m0, m1, m2] = series;
+  const d1 = m0.value - m1.value;
+  const d2 = m1.value - m2.value;
+  const sense = reportTrendDirection(metricKey);
+  const favorable = delta => sense === "higher" ? delta > 0 : delta < 0;
+  const unfavorable = delta => sense === "higher" ? delta < 0 : delta > 0;
+  if (favorable(d1) && favorable(d2)) return "redressement";
+  if (unfavorable(d1) && unfavorable(d2)) return "dégradation";
+  return "mixte";
+}
+
+function reportMultiPeriodTrendSummary(periodKey) {
+  const defs = [
+    ["IPO", "ipo.total"],
+    ["Activité", "activity.colis_total"],
+    ["Préparation", "productivity.preparation"],
+    ["Heures indirectes", "hours.indirect"],
+    ["Absentéisme", "absenteeism.total"],
+    ["Coût colis total", "economy.cout_total_par_colis"],
+    ["Coût colis Exploit", "economy.cout_exploitation_par_colis"]
+  ];
+
+  const availablePeriods = new Set();
+  ensureArray(state.performance).forEach(record => {
+    const parsed = performanceRecordPeriod(record);
+    if (parsed) availablePeriods.add(parsed.key);
+  });
+
+  const prepSeries = reportPerformancePeriodSeries("productivity.preparation", periodKey, 12);
+  let bestWorst = "Non évaluable";
+  if (prepSeries.length >= 2) {
+    const best = [...prepSeries].sort((a, b) => b.value - a.value)[0];
+    const worst = [...prepSeries].sort((a, b) => a.value - b.value)[0];
+    bestWorst = `Préparation — meilleur mois disponible : ${String(best.month).padStart(2, "0")}/${best.year} à ${best.value.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} colis/h ; plus faible : ${String(worst.month).padStart(2, "0")}/${worst.year} à ${worst.value.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} colis/h`;
+  }
+
+  if (availablePeriods.size < 3) {
+    return `- Tendance 3 périodes : non évaluable (moins de 3 périodes Performance homogènes chargées).
+- Meilleur / plus faible mois : ${bestWorst}
+- Profondeur historique disponible dans DEOS : ${availablePeriods.size} période(s).
+- Action : charger au moins 3 périodes homogènes avant toute conclusion de tendance.`;
+  }
+
+  const degrading = [];
+  const improving = [];
+  defs.forEach(([label, key]) => {
+    const movement = reportThreeMonthMovement(key, periodKey);
+    if (movement === "dégradation") degrading.push(label);
+    if (movement === "redressement") improving.push(label);
+  });
+
+  return `- KPI en dégradation continue sur 3 périodes : ${degrading.length ? degrading.join(", ") : "aucun"}
+- KPI en redressement continu sur 3 périodes : ${improving.length ? improving.join(", ") : "aucun"}
+- Meilleur / plus faible mois : ${bestWorst}
+- Profondeur historique disponible dans DEOS : ${availablePeriods.size} période(s).`;
+}
+
+function reportScopeLabel(periodType = "") {
+  if (periodType === "cumulative") return "Cumul à date (GPO)";
+  if (periodType === "monthly") return "Mensuel";
+  return "Périmètre non qualifié";
+}
+
+function reportImpactScopeCompatible(volumeInfo, productivityInfo) {
+  const volumeType = String(volumeInfo?.periodType || "");
+  const productivityType = String(productivityInfo?.periodType || "");
+  return Boolean(
+    Number.isFinite(Number(volumeInfo?.value))
+    && Number(volumeInfo.value) > 0
+    && Number.isFinite(Number(productivityInfo?.value))
+    && Number.isFinite(Number(productivityInfo?.budget))
+    && volumeType
+    && productivityType
+    && volumeType === productivityType
+  );
+}
+
+function reportImpactScopeText(volumeInfo, productivityInfo) {
+  const volumeType = reportScopeLabel(volumeInfo?.periodType || "");
+  const productivityType = reportScopeLabel(productivityInfo?.periodType || "");
+  if (reportImpactScopeCompatible(volumeInfo, productivityInfo)) {
+    return `${volumeType} / ${productivityType}`;
+  }
+  return `non comparable : volume ${volumeType}, productivité ${productivityType}`;
+}
+
+function reportImpactValue(volumeInfo, productivityInfo) {
+  if (!reportImpactScopeCompatible(volumeInfo, productivityInfo)) return "";
+  return reportProductivityHoursImpact(volumeInfo.value, productivityInfo.value, productivityInfo.budget);
+}
+
+function reportPreparationImpactCompatible(volumeInfo, productivityInfo, reconciliation) {
+  return reportImpactScopeCompatible(volumeInfo, productivityInfo)
+    && Boolean(reconciliation?.available)
+    && Boolean(reconciliation?.comparable);
+}
+
+function reportPreparationImpactScopeText(volumeInfo, productivityInfo, reconciliation) {
+  if (!reportImpactScopeCompatible(volumeInfo, productivityInfo)) {
+    return reportImpactScopeText(volumeInfo, productivityInfo);
+  }
+  if (!reconciliation?.available) return "périmètre fonctionnel Préparation non réconcilié";
+  if (!reconciliation?.comparable) {
+    const pct = Number(reconciliation.pct);
+    return `périmètre fonctionnel non réconcilié (${Number.isFinite(pct) ? Math.abs(pct).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " %" : "écart significatif"})`;
+  }
+  return "compatible";
+}
+
+
+function reportPerformanceMonthlySections(source, ctx, actions, decisions, documents) {
+  const periodKey = performancePeriodKey(source) || canonicalPerformancePeriod(sourceTypePeriod(source)) || "";
+  const directionRows = periodKey ? performanceSummaryBuildRows(periodKey) : [];
+  const directionCoreRows = reportPerformanceDirectionRowsOnly(directionRows);
+  const rowByKey = key => directionRows.find(row => row.metricKey === key) || null;
+  const fmtRow = row => {
+    if (!row) return "Donnée non disponible";
+    return `${performanceSummaryFormatValue(row.value, row.unit, row.metricKey)} | Budget ${performanceSummaryFormatValue(row.budget, row.unit, row.metricKey)} | Historique ${performanceSummaryFormatValue(row.historical, row.unit, row.metricKey)} | Écart ${performanceSummaryFormatDelta(row.gap, row.unit, row.metricKey)} | Statut ${row.statusLabel || "À compléter"} | Source ${row.sourceLabel || performanceSourceLabel(row.source)} · ${reportScopeLabel(row.periodType)}`;
+  };
+  const metricLine = (label, metric, unit = "") => {
+    if (!metric) return `- ${label} : Donnée source non disponible`;
+    const hasAny = [metric.actual, metric.budget, metric.historical].some(perfHas);
+    if (!hasAny) return `- ${label} : Donnée source non disponible`;
+    const actual = perfHas(metric.actual) ? `${perfFmt(metric.actual)}${unit ? " " + unit : ""}` : "Donnée source non disponible";
+    const budget = perfHas(metric.budget) ? `${perfFmt(metric.budget)}${unit ? " " + unit : ""}` : "Donnée source non disponible";
+    const historical = perfHas(metric.historical) ? `${perfFmt(metric.historical)}${unit ? " " + unit : ""}` : "Donnée source non disponible";
+    return `- ${label} : Réel ${actual} | Budget ${budget} | Historique ${historical}`;
+  };
+  const prep = source.productivity?.["Préparation"] || {};
+  const reception = source.productivity?.["Réception"] || {};
+  const manut = source.productivity?.["Manutention"] || {};
+  const chargement = source.productivity?.["Chargement"] || {};
+  const transit = source.productivity?.["Transit"] || {};
+  const qualityTotal = source.quality?.indicators?.["Total Gains & Pertes"] || {};
+  const qualityTotalComplementary = reportComplementaryMetric(source, "quality.total_gains_pertes");
+  const qualityTotalActual = reportFirstFinite([qualityTotal.actual, reportMetricActual(qualityTotalComplementary)]);
+  const qualityTotalBudget = reportFirstFinite([qualityTotal.budget, qualityTotalComplementary?.budget]);
+  const qualityTotalHistorical = reportFirstFinite([qualityTotal.historical, qualityTotalComplementary?.historical]);
+  const tbagPrepAnalysis = reportTBagPreparationAnalysis(source);
+  const tbagBannerAnalysis = reportTBagBannerAnalysis(source);
+  const tbagPopulationGapAnalysis = reportTBagPopulationGapAnalysis(source);
+  const prepVolumeReconciliation = reportPreparationVolumeReconciliation(source);
+
+  const resultOpMetric = reportComplementaryMetric(source, "economy.resultat_operationnel");
+  const ebitMetric = reportComplementaryMetric(source, "economy.ebit");
+  const demarqueMetric = reportComplementaryMetric(source, "quality.demarque_marchandises");
+
+  const prepImpactVolume = reportPreparationVolumeForImpact(source);
+  const receptionUo = reportSectorUo(source, periodKey, "reception");
+  const manutentionUo = reportSectorUo(source, periodKey, "manutention");
+  const chargementUo = reportSectorUo(source, periodKey, "chargement");
+  const uoReception = receptionUo.value;
+  const uoManutention = manutentionUo.value;
+  const uoChargement = chargementUo.value;
+
+  const prepPreferred = getPreferredPerformanceValue("productivity.preparation", periodKey);
+  const receptionPreferred = getPreferredPerformanceValue("productivity.reception", periodKey);
+  const manutentionPreferred = getPreferredPerformanceValue("productivity.manutention", periodKey);
+  const chargementPreferred = getPreferredPerformanceValue("productivity.chargement", periodKey);
+
+  const impactPrepAuto = reportPreparationImpactCompatible(prepImpactVolume, prepPreferred, prepVolumeReconciliation)
+    ? reportImpactValue(prepImpactVolume, prepPreferred)
+    : "";
+  const impactReceptionAuto = reportImpactValue(receptionUo, receptionPreferred);
+  const impactManutAuto = reportImpactValue(manutentionUo, manutentionPreferred);
+  const impactChargementAuto = reportImpactValue(chargementUo, chargementPreferred);
+
+  const hoursTotalPreferred = getPreferredPerformanceValue("hours.total", periodKey);
+  const hoursDirectPreferred = getPreferredPerformanceValue("hours.direct", periodKey);
+  const hoursIndirectPreferred = getPreferredPerformanceValue("hours.indirect", periodKey);
+
+  const indirectHoursShareAuto = reportHoursShare(source.hours?.total?.actual, source.hours?.indirect?.actual);
+  const totalHoursGap = (perfHas(source.hours?.total?.actual) && perfHas(source.hours?.total?.budget))
+    ? Number(source.hours.total.actual) - Number(source.hours.total.budget) : "";
+  const directHoursGap = (perfHas(source.hours?.direct?.actual) && perfHas(source.hours?.direct?.budget))
+    ? Number(source.hours.direct.actual) - Number(source.hours.direct.budget) : "";
+  const indirectHoursGap = (perfHas(source.hours?.indirect?.actual) && perfHas(source.hours?.indirect?.budget))
+    ? Number(source.hours.indirect.actual) - Number(source.hours.indirect.budget) : "";
+  const multiPeriodTrendSummary = reportMultiPeriodTrendSummary(periodKey);
+
+  const linkedDocs = documents || "À compléter";
+
+  const direction = [
+    ["IPO total", "ipo.total"],
+    ["Activité principale", "activity.colis_total"],
+    ["Productivité Préparation", "productivity.preparation"],
+    ["Heures indirectes", "hours.indirect"],
+    ["Absentéisme", "absenteeism.total"],
+    ["Coût colis total", "economy.cout_total_par_colis"],
+    ["Coût colis exploitation (Exploit)", "economy.cout_exploitation_par_colis"]
+  ].map(([label, key]) => `- ${label} : ${fmtRow(rowByKey(key))}`).join("\n");
+
+  const strengths = directionRows.filter(r => r.statusLabel === "Maîtrisé").map(r => `- ${r.label} : ${performanceSummaryFormatValue(r.value, r.unit, r.metricKey)}`).join("\n") || "À compléter";
+  const watch = directionRows.filter(r => ["À suivre", "Critique"].includes(r.statusLabel)).map(r => `- ${r.label} : ${r.statusLabel} | ${performanceSummaryFormatValue(r.value, r.unit, r.metricKey)} vs budget ${performanceSummaryFormatValue(r.budget, r.unit, r.metricKey)}`).join("\n") || "À compléter";
+
+  return [
+    {
+      title: "1. Cadre de la revue",
+      body: `Site : Saint-Gilles\nPériode analysée : ${perfPeriodLabel(source)}\nPréparé par : ${identityName()}\nDate de préparation : ${isoToday()}\nObjet : préparer la revue mensuelle de performance, expliquer les écarts, objectiver les causes, arrêter les priorités et préparer les arbitrages.\nStatut du générateur : RDP STABLE — contrôles de cohérence et de périmètre activés.\n\nRègle de lecture : distinguer systématiquement les faits, les hypothèses explicatives et les causalités démontrées. Comparer le réalisé au budget, à l'historique et, lorsque disponible, au cumul / à la tendance.`
+    },
+    {
+      title: "2. Synthèse exécutive",
+      body: reportPerformanceExecutiveSynthesis(source, directionRows)
+    },
+    {
+      title: "3. Tableau de bord Direction",
+      body: direction
+    },
+    {
+      title: "4. Productivités par secteur et IPO",
+      body: `${metricLine("Préparation", prep, "colis/h")}\n${metricLine("Réception", reception, "palettes/h")}\n${metricLine("Manutention", manut, "palettes/h")}\n${metricLine("Chargement", chargement, "palettes/h")}\n${metricLine("Transit", transit, "palettes/h")}\n\nRéférence productivités officielles GPO : ${reportScopeLabel(prepPreferred.periodType)}. Les volumes Z GEMED / T-Bag restent mensuels.\n\nIPO total : ${fmtRow(rowByKey("ipo.total"))}\nIPO variable : Réel ${perfFmt(source.ipo?.variable?.actual)} | Budget ${perfFmt(source.ipo?.variable?.budget)} | Historique ${perfFmt(source.ipo?.variable?.historical)}\n\nImpacts en heures par secteur :
+- Préparation : ${reportPreparationImpactCompatible(prepImpactVolume, prepPreferred, prepVolumeReconciliation) ? reportFmtSignedHours(impactPrepAuto) + " vs budget" : "Non calculable — " + reportPreparationImpactScopeText(prepImpactVolume, prepPreferred, prepVolumeReconciliation)}
+- Réception : ${reportImpactScopeCompatible(receptionUo, receptionPreferred) ? reportFmtSignedHours(impactReceptionAuto) + " vs budget" : "Non calculable — " + reportImpactScopeText(receptionUo, receptionPreferred)}
+- Manutention : ${reportImpactScopeCompatible(manutentionUo, manutentionPreferred) ? reportFmtSignedHours(impactManutAuto) + " vs budget" : "Non calculable — " + reportImpactScopeText(manutentionUo, manutentionPreferred)}
+- Chargement : ${reportImpactScopeCompatible(chargementUo, chargementPreferred) ? reportFmtSignedHours(impactChargementAuto) + " vs budget" : "Non calculable — " + reportImpactScopeText(chargementUo, chargementPreferred)}
+
+Volumes de calcul disponibles :
+- Préparation : ${Number.isFinite(Number(prepImpactVolume.value)) && Number(prepImpactVolume.value) > 0 ? Number(prepImpactVolume.value).toLocaleString("fr-FR") + " colis · " + reportScopeLabel(prepImpactVolume.periodType) : "Donnée source non disponible"}
+- Réception : ${Number.isFinite(Number(uoReception)) && Number(uoReception) > 0 ? Number(uoReception).toLocaleString("fr-FR") + " palettes · " + reportScopeLabel(receptionUo.periodType) : "Donnée source non disponible"}
+- Manutention : ${Number.isFinite(Number(uoManutention)) && Number(uoManutention) > 0 ? Number(uoManutention).toLocaleString("fr-FR") + " palettes · " + reportScopeLabel(manutentionUo.periodType) : "Donnée source non disponible"}
+- Chargement : ${Number.isFinite(Number(uoChargement)) && Number(uoChargement) > 0 ? Number(uoChargement).toLocaleString("fr-FR") + " supports · " + reportScopeLabel(chargementUo.periodType) : "Donnée source non disponible"}
+
+Règle : aucun impact horaire n'est calculé lorsque le volume et la productivité ne portent pas sur le même périmètre temporel.`
+    },
+    {
+      title: "5. Activité, heures et capacité",
+      body: `${metricLine("Activité / colis", source.activity, "colis")}\n${metricLine("Heures totales", source.hours?.total, "h")}\n${metricLine("Heures directes", source.hours?.direct, "h")}\n${metricLine("Heures indirectes", source.hours?.indirect, "h")}\n\nPérimètre heures GPO : ${reportScopeLabel(hoursTotalPreferred.periodType)}. Ces heures ne doivent pas être lues comme les seules heures du mois.\nPoids des heures indirectes : ${reportFmtPercent1(indirectHoursShareAuto)}.\n\nÉcarts heures vs budget — ${reportScopeLabel(hoursTotalPreferred.periodType)} :
+- Heures totales : ${reportFmtSignedHours(totalHoursGap)}
+- Heures directes : ${reportFmtSignedHours(directHoursGap)}
+- Heures indirectes : ${reportFmtSignedHours(indirectHoursGap)}\n\nCapacité / charge M+1 : À préparer (volume attendu, risques de saturation, recours ETT, jours atypiques, opérations commerciales, contraintes transport).\nLecture hebdomadaire / rupture de tendance : voir section 10 et compléter uniquement si un événement opérationnel doit être contextualisé.`
+    },
+    {
+      title: "6. Préparation — performance main-d'œuvre",
+      body: `${tbagPrepAnalysis.text}\n\n${prepVolumeReconciliation.text}\n\nCONFIDENTIALITÉ\nLes données utilisées dans cette section sont agrégées. Aucune donnée nominative T-Bag n'est reprise dans la RDP.`
+    },
+    {
+      title: "7. Leviers opérationnels Préparation",
+      body: `ANALYSES AUTOMATIQUES DISPONIBLES\n${tbagBannerAnalysis.text}\n\n${tbagPopulationGapAnalysis}\n\nDONNÉES ENCORE NON DISPONIBLES DANS LES SOURCES IMPORTÉES\n- Écart matin / après-midi : Donnée source non disponible\n- Démarrage de poste / second tour : Donnée source non disponible\n- Qualification explicite mono / multiclient : Donnée source non disponible\n- Colis / ligne et complexité : Donnée source non disponible\n- Manquants premier tour / rattrapage : Donnée source non disponible\n- Implantation / distances / typologie articles : Donnée source non disponible\n- Répartition CDI / ETT / CDD par équipe : Donnée source non disponible\n\nRÈGLE D'ANALYSE\nNe pas transformer une association en causalité. Une répartition par bannière ou un écart entre populations constitue un constat descriptif, pas une preuve de causalité.`
+    },
+    {
+      title: "8. Absentéisme, sécurité et présentéisme",
+      body: `Absentéisme total : ${fmtRow(rowByKey("absenteeism.total"))}\nMaladie : ${perfHas(source.absenteeism?.details?.["Maladie"]?.actual) ? perfFmt(source.absenteeism.details["Maladie"].actual) + " %" : "Donnée source non disponible"}\nAccidents du travail : ${perfHas(source.absenteeism?.details?.["Accidents du travail"]?.actual) ? perfFmt(source.absenteeism.details["Accidents du travail"].actual) + " %" : "Donnée source non disponible"}\nFormation : ${perfHas(source.absenteeism?.details?.["Formation"]?.actual) ? perfFmt(source.absenteeism.details["Formation"].actual) + " %" : "Donnée source non disponible"}\nAutres absences : ${perfHas(source.absenteeism?.details?.["Autres absences"]?.actual) ? perfFmt(source.absenteeism.details["Autres absences"].actual) + " %" : "Donnée source non disponible"}\n\nÀ préparer : analyse des causes AT, secteurs concernés, récurrence, actions de prévention, impact opérationnel de l'absentéisme et évolution vs mois précédent / historique.`
+    },
+    {
+      title: "9. Économie, qualité et coûts unitaires",
+      body: `Coût colis total : ${fmtRow(rowByKey("economy.cout_total_par_colis"))}\nCoût colis exploitation (Exploit) : ${fmtRow(rowByKey("economy.cout_exploitation_par_colis"))}\nGains & Pertes : Réel ${Number.isFinite(qualityTotalActual) ? perfFmt(qualityTotalActual) : "Donnée source non disponible"} | Budget ${Number.isFinite(qualityTotalBudget) ? perfFmt(qualityTotalBudget) : "Donnée source non disponible"} | Historique ${Number.isFinite(qualityTotalHistorical) ? perfFmt(qualityTotalHistorical) : "Donnée source non disponible"}${(!Number.isFinite(qualityTotalActual) || !Number.isFinite(qualityTotalBudget)) ? " — comparaison non évaluable" : ""}\nRésultat opérationnel (Z GEMED mensuel) : ${reportMetricTriplet(resultOpMetric, "k€")}\nEBIT (Z GEMED mensuel) : ${reportMetricTriplet(ebitMetric, "k€")}\nDémarque marchandises (Z GEMED mensuel) : ${reportMetricTriplet(demarqueMetric, "k€")}\n\nPareto à préparer : litiges, casse, non-livrés, périmés, contrôle stock, dons et autres postes significatifs.\n\nLecture attendue : chiffrer l'écart mensuel et cumul, identifier les 2 ou 3 postes expliquant l'essentiel de la dérive et rattacher chaque poste à un responsable / plan d'action.`
+    },
+    {
+      title: "10. Historique, profondeur de données et projection",
+      body: `LECTURE VS HISTORIQUE — KPI DIRECTION (même périmètre que la source)
+${directionCoreRows.map(r => `- ${r.label} : ${performanceSummaryFormatValue(r.value, r.unit, r.metricKey)} | Historique ${performanceSummaryFormatValue(r.historical, r.unit, r.metricKey)} | Écart historique ${performanceSummaryFormatDelta(r.trend, r.unit, r.metricKey)} | Statut ${r.statusLabel || "À compléter"}`).join("\n") || "Donnée source non disponible"}
+
+LECTURE OPÉRATIONNELLE COMPLÉMENTAIRE
+- Productivité Réception : ${perfHas(reception.actual) ? perfFmt(reception.actual) : "Donnée source non disponible"} vs historique ${perfHas(reception.historical) ? perfFmt(reception.historical) : "Donnée source non disponible"}
+- Productivité Manutention : ${perfHas(manut.actual) ? perfFmt(manut.actual) : "Donnée source non disponible"} vs historique ${perfHas(manut.historical) ? perfFmt(manut.historical) : "Donnée source non disponible"}
+- Productivité Chargement : ${perfHas(chargement.actual) ? perfFmt(chargement.actual) : "Donnée source non disponible"} vs historique ${perfHas(chargement.historical) ? perfFmt(chargement.historical) : "Donnée source non disponible"}
+- Heures totales : ${perfHas(source.hours?.total?.actual) ? perfFmt(source.hours.total.actual) : "Donnée source non disponible"} vs historique ${perfHas(source.hours?.total?.historical) ? perfFmt(source.hours.total.historical) : "Donnée source non disponible"}
+- Heures directes : ${perfHas(source.hours?.direct?.actual) ? perfFmt(source.hours.direct.actual) : "Donnée source non disponible"} vs historique ${perfHas(source.hours?.direct?.historical) ? perfFmt(source.hours.direct.historical) : "Donnée source non disponible"}
+
+RUPTURES / TENDANCES MULTI-PÉRIODES
+${multiPeriodTrendSummary}
+
+PROJECTION — À PRÉPARER
+- cumul YTD vs budget / historique ;
+- projection fin d'année ;
+- principaux risques M+1 ;
+- hypothèses de volume, effectif, absentéisme, ETT et opérations commerciales.
+
+Ces éléments prospectifs ne sont pas inventés par DEOS : ils doivent être renseignés à partir du budget, du forecast et des hypothèses opérationnelles validées.`
+    },
+    {
+      title: "11. Priorités et plan d'actions",
+      body: `Plan d'actions DEOS lié à la période :\n${actions}\n\nÀ structurer pour la revue :\n- Priorité 1 : sujet / action immédiate / responsable / échéance / KPI attendu\n- Priorité 2 : sujet / action immédiate / responsable / échéance / KPI attendu\n- Priorité 3 : sujet / action immédiate / responsable / échéance / KPI attendu\n- Priorité 4 : sujet / action immédiate / responsable / échéance / KPI attendu\n- Priorité 5 : sujet / action immédiate / responsable / échéance / KPI attendu`
+    },
+    {
+      title: "12. Décisions et arbitrages attendus",
+      body: `Décisions déjà liées :\n${decisions}\n\nÀ préparer :\n- décisions à obtenir du N+1 / N+2 ;\n- arbitrages de ressources ;\n- demandes de support régional / national ;\n- risques à accepter, réduire ou escalader ;\n- sujets à ne pas laisser sans décision à l'issue de la revue.`
+    },
+    {
+      title: "13. Questions à anticiper en revue",
+      body: `- Qu'est-ce qui explique réellement l'écart de Préparation ?\n- Quelle part est structurelle et quelle part est conjoncturelle ?\n- Pourquoi l'IPO dérive-t-il et quels leviers sont immédiatement activables ?\n- Quelle est la contribution des heures indirectes ?\n- Quels gains des autres secteurs compensent la Préparation ?\n- Quel est le coût financier des écarts ?\n- Pourquoi les coûts colis sont-ils au-dessus / en dessous du budget ?\n- Quels sont les trois risques du mois suivant ?\n- Quelles actions ont un responsable, une échéance et un résultat mesurable ?\n- Quelles décisions attends-tu de la revue ?`
+    },
+    {
+      title: "14. Fiabilité des données et points à valider",
+      body: `Sources de référence : GPO / Guide de performance, Z GEMED, T-Bag, CGTAB, GA / Suivi GA, Litiges / GC-GE selon disponibilité.\n\nPoints de contrôle avant présentation :\n- réconcilier les périmètres lorsqu'une même notion diffère entre sources ;\n- distinguer mensuel et cumul ;\n- vérifier les unités ;\n- documenter les valeurs atypiques ;\n- ne pas additionner des impacts financiers calculés sur des périmètres qui se recouvrent ;\n- signaler explicitement toute donnée manquante ou non fiabilisée ;\n- ne jamais calculer un impact en heures avec un volume provenant d'un périmètre différent de la productivité analysée ;\n- réconcilier explicitement le volume Préparation T-Bag avec le volume Z GEMED / GPO avant de considérer l'impact heures Préparation comme définitif ;\n- distinguer "Donnée source non disponible" (absence réelle de donnée) et "À compléter" (contenu managérial à préparer) ;
+- ne jamais comparer ou convertir en impact horaire une donnée mensuelle avec une productivité cumulée à date ;
+- considérer dans DEOS : GPO = cumul à date ; Z GEMED / T-Bag = mensuel, sauf métadonnée explicite contraire ;
+- ne conclure à une tendance qu'avec au moins 3 périodes homogènes chargées ;
+- ne jamais transformer une absence de donnée en zéro ni une incompatibilité de périmètre en estimation.\n\nDocuments liés :\n${linkedDocs}`
+    },
+    {
+      title: "15. Message de clôture de la revue",
+      body: `MESSAGE DE CLÔTURE — PROPOSITION DEOS
+${reportPerformanceClosingMessage(source, directionRows, decisions)}
+
+RÈGLE
+Le message de clôture doit rester court, factuel et directement relié aux décisions et actions de la revue.`
+    }
+  ];
 }
 
 function reportBuildSections(template, ctx) {
@@ -15278,12 +16446,9 @@ function reportBuildSections(template, ctx) {
     { title: "Engagements, décisions et actions", body: `Engagements pris : À compléter\nDécisions :\n${decisions}\nActions :\n${actions}` },
     { title: "Suites", body: `Points restant à traiter : À compléter\nDocuments liés :\n${documents}` }
   ];
-  if (template === "Revue de performance") return [
-    { title: "Période et activité", body: `Période analysée : ${sourceTypePeriod(source)}\nActivité : ${source.activity ? `Colis réalisés ${perfFmt(source.activity.actual)} / budget ${perfFmt(source.activity.budget)}` : (source.summary || source.description || source.context || "À compléter")}` },
-    { title: "Indicateurs disponibles", body: source.activity ? `Performance / IPO : total ${perfFmt(source.ipo.total.actual)} / budget ${perfFmt(source.ipo.total.budget)}\nProductivité Préparation : ${perfFmt(source.productivity["Préparation"].actual)} / budget ${perfFmt(source.productivity["Préparation"].budget)}\nHeures directes : ${perfFmt(source.hours.direct.actual)}\nHeures indirectes : ${perfFmt(source.hours.indirect.actual)}\nAbsentéisme : ${perfFmt(source.absenteeism.total.actual)}\nQualité / Gains & Pertes : ${perfFmt(source.quality.indicators["Total Gains & Pertes"].actual)}\nHauteur palette : ${perfFmt(source.palletHeight.actual)}` : "Performance / IPO : À compléter\nProductivité : À compléter\nHeures directes : À compléter\nHeures indirectes : À compléter\nAbsentéisme : À compléter\nQualité : À compléter\nSécurité : À compléter" },
-    { title: "Analyse", body: source.activity ? `Faits marquants : ${source.activity.highlights || source.quality.highlights || "À compléter"}\nCauses des écarts : ${source.activity.causes || source.ipo.rootCauses || source.quality.causes || "À compléter"}\nPoints positifs et vigilance :\n${source.synthesis || buildPerformanceSynthesis(source)}` : `Faits marquants : ${source.facts || source.objectives || "À compléter"}\nCauses des écarts : À compléter\nPoints positifs : À compléter\nPoints de vigilance : ${source.risks || source.watchPoints || "À compléter"}` },
-    { title: "Décisions et plan d'action", body: `Décisions :\n${decisions}\nPlan d'action :\n${actions}\nProjection : À compléter` }
-  ];
+  if (template === "Revue de performance") {
+    return reportPerformanceMonthlySections(source, ctx, actions, decisions, documents);
+  }
   return [
     { title: "Informations", body: `Date : ${source.date || isoToday()}\nSource : ${reportEntityLabel(ctx.sourceType)} - ${reportSourceTitle(ctx.sourceType, ctx.sourceId)}` },
     { title: "Synthèse", body: source.summary || source.description || source.context || source.note || source.content || "À compléter" },
@@ -15352,6 +16517,7 @@ function renderReportWizard() {
   document.getElementById("viewTitle").textContent = "Générer un compte rendu";
   const steps = ["Type", "Source", "Liens", "Aperçu", "Validation"].map((label, i) => `<span class="${reportWizard.step === i + 1 ? "active-step" : ""}">${i + 1}. ${label}</span>`).join("");
   appHtml(`<div class="card hero report-hero"><button class="secondary" onclick="cancelReportWizard()">Retour Documents</button><h2>Générer un compte rendu</h2><p class="muted">Assistant structuré basé uniquement sur les données enregistrées dans ${esc(identity.appName)}.</p><div class="report-steps">${steps}</div></div>${reportWizardBody()}`);
+  if (reportWizard.step === 4) requestAnimationFrame(reportAutoSizeTextareas);
 }
 
 function reportWizardBody() {
@@ -15372,11 +16538,88 @@ function reportPreviewText() {
   return `${reportWizard.title}\n\n${reportWizard.sections.map(s => `${s.title}\n${s.body}`).join("\n\n")}\n\n${identitySignature()}`;
 }
 
-function reportPreviewStep() {
-  const sections = reportWizard.sections.map((s, i) => `<div class="report-section" data-report-section="${esc(s.id)}"><div class="row"><input class="report-section-title" value="${esc(s.title)}"><div class="row-actions"><button class="secondary" onclick="moveReportSection(${i},-1)">?</button><button class="secondary" onclick="moveReportSection(${i},1)">?</button><button class="danger" onclick="deleteReportSection('${s.id}')">Supprimer</button></div></div><textarea class="report-section-body">${esc(s.body)}</textarea></div>`).join("");
-  return `<div class="card"><h2>Aperçu complet</h2><div class="form-grid"><input id="rwTitle" class="full" value="${esc(reportWizard.title)}"><input id="rwAuthor" value="${esc(reportWizard.author || identityName())}" placeholder="Auteur"><select id="rwStatus"><option ${reportWizard.status === "Brouillon" ? "selected" : ""}>Brouillon</option><option ${reportWizard.status === "Validé" ? "selected" : ""}>Validé</option></select></div>${sections}<div class="row-actions"><button class="secondary" onclick="addReportSection()">Ajouter une section</button><button class="secondary" onclick="copyReportText()">Copier le compte rendu</button><button class="secondary" onclick="printReportText()">Imprimer</button></div><div class="card report-transform"><h2>Transformer une ligne</h2><textarea id="rwLine" placeholder="Coller ou saisir une ligne du compte rendu"></textarea><div class="form-grid"><input id="rwLineOwner" placeholder="Responsable proposé"><input id="rwLineDue" type="date"><select id="rwLinePriority"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div><button class="secondary" onclick="createReportAction()">Créer une action ${esc(identity.appName)}</button><button class="secondary" onclick="createReportDecision()">Créer une décision ${esc(identity.appName)}</button></div><div class="row-actions"><button class="secondary" onclick="setReportStep(3)">Retour</button><button class="action" onclick="setReportStep(5)">Continuer</button></div></div>`;
+
+function reportAutoSizeTextareas() {
+  document.querySelectorAll(".report-section-body").forEach(area => {
+    if (area.dataset.collapsed === "1") return;
+    area.style.height = "auto";
+    area.style.overflowY = "hidden";
+    area.style.height = `${Math.max(area.scrollHeight + 4, 110)}px`;
+  });
 }
 
+function toggleReportSection(id) {
+  const section = document.querySelector(`[data-report-section="${id}"]`);
+  if (!section) return;
+  const body = section.querySelector(".report-section-body");
+  const toggle = section.querySelector(".report-section-toggle");
+  if (!body) return;
+  const collapsed = body.dataset.collapsed === "1";
+  if (collapsed) {
+    body.dataset.collapsed = "0";
+    body.style.display = "";
+    if (toggle) toggle.textContent = "Replier";
+    requestAnimationFrame(reportAutoSizeTextareas);
+  } else {
+    body.dataset.collapsed = "1";
+    body.style.display = "none";
+    if (toggle) toggle.textContent = "Déplier";
+  }
+}
+
+function reportPreviewStep() {
+  const isMonthlyRdp = reportWizard.template === "Revue de performance" && reportWizard.sourceType === "performance";
+  const sections = reportWizard.sections.map((s, i) => {
+    const sectionKind = /Synthèse exécutive/i.test(s.title) ? "Synthèse" :
+      /Décisions|arbitrages/i.test(s.title) ? "Décisions" :
+      /Priorités|plan d'actions/i.test(s.title) ? "Actions" :
+      /Fiabilité|points à valider/i.test(s.title) ? "À valider" :
+      /Tableau de bord|Productivités|Activité|Absentéisme|Économie|Historique/i.test(s.title) ? "Faits & analyse" : "";
+    return `<section class="report-section" data-report-section="${esc(s.id)}" style="border:1px solid #dbe3ef;border-radius:14px;padding:14px 16px;margin:12px 0;background:#fff;">
+      <div class="row" style="align-items:center;gap:10px;">
+        <input class="report-section-title" value="${esc(s.title)}" style="font-weight:800;font-size:15px;border:none;background:#f8fafc;">
+        ${sectionKind ? `<span class="badge" style="white-space:nowrap">${esc(sectionKind)}</span>` : ""}
+        <div class="row-actions" style="gap:6px;margin-left:auto;">
+          <button class="secondary report-section-toggle" title="Replier ou déplier" onclick="toggleReportSection('${esc(s.id)}')">Replier</button>
+          <button class="secondary" title="Monter la section" onclick="moveReportSection(${i},-1)">↑</button>
+          <button class="secondary" title="Descendre la section" onclick="moveReportSection(${i},1)">↓</button>
+          <button class="secondary" title="Supprimer la section" onclick="deleteReportSection('${esc(s.id)}')">×</button>
+        </div>
+      </div>
+      <textarea class="report-section-body" oninput="reportAutoSizeTextareas()" style="margin-top:10px;line-height:1.55;resize:none;min-height:110px;">${esc(s.body)}</textarea>
+    </section>`;
+  }).join("");
+
+  return `<div class="card">
+    <div class="row" style="align-items:flex-start;justify-content:space-between;gap:16px;">
+      <div>
+        <h2 style="margin-bottom:4px">${isMonthlyRdp ? "Préparation de la revue de performance mensuelle" : "Aperçu complet"}</h2>
+        ${isMonthlyRdp ? `<p class="muted" style="margin:0">Dossier de travail : faits → analyse → priorités → décisions.</p>` : ""}
+      </div>
+      ${isMonthlyRdp ? `<span class="badge">RDP mensuelle</span>` : ""}
+    </div>
+    <div class="form-grid" style="margin-top:14px">
+      <input id="rwTitle" class="full" value="${esc(reportWizard.title)}">
+      <input id="rwAuthor" value="${esc(reportWizard.author || identityName())}" placeholder="Auteur">
+      <select id="rwStatus"><option ${reportWizard.status === "Brouillon" ? "selected" : ""}>Brouillon</option><option ${reportWizard.status === "Validé" ? "selected" : ""}>Validé</option></select>
+    </div>
+    ${sections}
+    <div class="row-actions" style="margin:16px 0 4px;padding:10px;border:1px solid #e2e8f0;border-radius:12px;background:#fff">
+      <button class="secondary" onclick="addReportSection()">+ Section</button>
+      <button class="secondary" onclick="copyReportText()">Copier</button>
+      <button class="secondary" onclick="printReportText()">Imprimer</button>
+      <button class="action" onclick="setReportStep(5)">Continuer</button>
+    </div>
+    <div class="card report-transform" style="margin-top:14px">
+      <h2>Transformer un constat en action / décision</h2>
+      <textarea id="rwLine" placeholder="Coller ou saisir une ligne du compte rendu"></textarea>
+      <div class="form-grid"><input id="rwLineOwner" placeholder="Responsable proposé"><input id="rwLineDue" type="date"><select id="rwLinePriority"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div>
+      <button class="secondary" onclick="createReportAction()">Créer une action ${esc(identity.appName)}</button>
+      <button class="secondary" onclick="createReportDecision()">Créer une décision ${esc(identity.appName)}</button>
+    </div>
+    <div class="row-actions"><button class="secondary" onclick="setReportStep(3)">Retour aux liens</button></div>
+  </div>`;
+}
 function reportValidationStep() {
   return `<div class="card"><h2>Validation</h2><pre class="report-preview">${esc(reportPreviewText())}</pre><div class="row-actions"><button class="secondary" onclick="setReportStep(4)">Retour</button><button class="secondary" onclick="saveGeneratedReport('Brouillon')">Enregistrer comme brouillon</button><button class="action" onclick="saveGeneratedReport('Validé')">Valider le compte rendu</button><button class="secondary" onclick="copyReportText()">Copier le compte rendu</button><button class="secondary" onclick="printReportText()">Imprimer</button></div></div>`;
 }
@@ -26298,3 +27541,181 @@ function renderPerformanceSourcesSummary() {
   }
 
 })();
+
+
+/* ==========================================================================
+   DEOS — Identification automatique TEST / PROD
+   Patch autonome : peut rester dans le même app.js en TEST puis en PROD.
+   L'environnement est déduit de l'URL.
+   ========================================================================== */
+(() => {
+  "use strict";
+
+  const pathname = String(window.location.pathname || "").toLowerCase();
+  const hostname = String(window.location.hostname || "").toLowerCase();
+
+  const isLocal =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname.endsWith(".local");
+
+  const isTest =
+    pathname.includes("/deos-test") ||
+    pathname.includes("deos-test-") ||
+    isLocal;
+
+  const ENV = isTest ? "TEST" : "PROD";
+  const COLOR = isTest ? "#f59e0b" : "#2563eb";
+  const BG = isTest ? "#fff7ed" : "#eff6ff";
+  const TEXT = isTest ? "#9a3412" : "#1e3a8a";
+
+  window.DEOS_ENVIRONMENT = ENV;
+  document.documentElement.dataset.deosEnvironment = ENV;
+
+  function setOrCreateMeta(name, content) {
+    let el = document.querySelector(`meta[name="${name}"]`);
+    if (!el) {
+      el = document.createElement("meta");
+      el.setAttribute("name", name);
+      document.head.appendChild(el);
+    }
+    el.setAttribute("content", content);
+  }
+
+  function setIdentity() {
+    // Onglet navigateur + nom proposé lors de l'ajout à l'écran d'accueil.
+    document.title = ENV === "TEST" ? "DEOS PROD" : "DEOS";
+    setOrCreateMeta(
+      "apple-mobile-web-app-title",
+      ENV === "TEST" ? "DEOS PROD" : "DEOS"
+    );
+    setOrCreateMeta(
+      "application-name",
+      ENV === "TEST" ? "DEOS PROD" : "DEOS"
+    );
+
+    // Favicon autonome, distinct selon l'environnement.
+    const label = ENV === "TEST" ? "T" : "D";
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">` +
+      `<rect width="64" height="64" rx="14" fill="${COLOR}"/>` +
+      `<text x="32" y="43" text-anchor="middle" font-family="Arial,sans-serif" ` +
+      `font-size="36" font-weight="700" fill="white">${label}</text></svg>`;
+
+    let favicon = document.querySelector('link[rel~="icon"]');
+    if (!favicon) {
+      favicon = document.createElement("link");
+      favicon.rel = "icon";
+      document.head.appendChild(favicon);
+    }
+    favicon.href = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  }
+
+  function injectStyle() {
+    if (document.getElementById("deos-environment-style")) return;
+
+    const style = document.createElement("style");
+    style.id = "deos-environment-style";
+    style.textContent = `
+      #deos-environment-marker {
+        position: fixed;
+        z-index: 2147483646;
+        top: max(6px, env(safe-area-inset-top));
+        right: 8px;
+        border: 1px solid ${COLOR};
+        background: ${BG};
+        color: ${TEXT};
+        border-radius: 999px;
+        padding: 5px 10px;
+        font: 800 11px/1.15 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        letter-spacing: .05em;
+        box-shadow: 0 2px 8px rgba(0,0,0,.12);
+        pointer-events: none;
+        user-select: none;
+      }
+
+      html[data-deos-environment="TEST"]::before {
+        content: "";
+        position: fixed;
+        z-index: 2147483645;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 4px;
+        background: ${COLOR};
+        pointer-events: none;
+      }
+
+      @media (max-width: 640px) {
+        #deos-environment-marker {
+          top: max(5px, env(safe-area-inset-top));
+          right: 5px;
+          padding: 4px 8px;
+          font-size: 10px;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function injectMarker() {
+    let marker = document.getElementById("deos-environment-marker");
+    if (!marker) {
+      marker = document.createElement("div");
+      marker.id = "deos-environment-marker";
+      marker.setAttribute("aria-hidden", "true");
+      document.body.appendChild(marker);
+    }
+    marker.textContent = ENV === "TEST" ? "DEOS PROD" : "DEOS PROD";
+    marker.title =
+      ENV === "TEST"
+        ? "Environnement de test"
+        : "Environnement de production";
+  }
+
+  // Corrige aussi un ancien libellé MODE TEST / MODE PROD éventuellement
+  // conservé par le code ou un état local.
+  function normalizeVisibleModeLabels() {
+    const wanted = ENV === "TEST" ? "MODE TEST" : "MODE PROD";
+    const unwanted = ENV === "TEST" ? "MODE PROD" : "MODE TEST";
+
+    document.querySelectorAll("body *").forEach((el) => {
+      if (el.children.length !== 0) return;
+      const txt = el.textContent;
+      if (!txt || !txt.includes(unwanted)) return;
+      el.textContent = txt.replaceAll(unwanted, wanted);
+    });
+  }
+
+  let scheduled = false;
+  function scheduleNormalize() {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      normalizeVisibleModeLabels();
+      injectMarker();
+    });
+  }
+
+  function init() {
+    setIdentity();
+    injectStyle();
+    injectMarker();
+    normalizeVisibleModeLabels();
+
+    const observer = new MutationObserver(scheduleNormalize);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+})();
+
