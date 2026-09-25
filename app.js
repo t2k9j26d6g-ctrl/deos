@@ -1,4 +1,5 @@
-const DEOS_VERSION = "V5.30RDP";
+const DEOS_VERSION = "V5.30N1";
+// Notes N1 — accès + Note global, position fixe et identique sur toutes les vues.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -14,6 +15,14 @@ function ensureDeosAsyncFeedbackUi() {
       .deos-toast.show{opacity:1;transform:translateY(0)}
       .deos-toast.success{background:#166534}.deos-toast.error{background:#991b1b}.deos-toast.info{background:#1f2937}
       #linksHybridSyncSettingsCard,#actionsHybridSyncSettingsCard,#projectsHybridSyncSettingsCard,#foldersHybridSyncSettingsCard,#managersHybridSyncSettingsCard,#decisionsHybridSyncSettingsCard,#documentsHybridSyncSettingsCard{scroll-margin-top:14px}
+      #deosQuickNoteFab{position:fixed;right:0;top:96px;bottom:0;width:48px;z-index:9300;border:0;border-radius:0;background:#0f172a;color:#fff;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-weight:800;box-shadow:-3px 0 12px rgba(15,23,42,.16);cursor:pointer}
+      #deosQuickNoteFab .deos-note-plus{font-size:20px;line-height:1}#deosQuickNoteFab .deos-note-label{font-size:13px;line-height:1.05}
+      #deosQuickNoteFab:hover{background:#172554}
+      @media (max-width:800px){#deosQuickNoteFab{top:auto;right:14px;bottom:14px;width:auto;height:auto;border-radius:999px;padding:11px 15px;flex-direction:row;gap:5px;box-shadow:0 12px 30px rgba(15,23,42,.25)}#deosQuickNoteFab .deos-note-plus{font-size:16px}#deosQuickNoteFab .deos-note-label{font-size:13px}}
+      .deos-note-filters{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.deos-note-filter.active{font-weight:700;box-shadow:inset 0 0 0 2px currentColor}
+      .deos-note-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.deos-note-card-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.deos-note-card-actions button{padding:6px 9px;font-size:12px}
+      .deos-note-status{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}.deos-note-chip{display:inline-block;font-size:12px;border:1px solid rgba(148,163,184,.45);border-radius:999px;padding:2px 7px;line-height:1.35}
+      .deos-quick-note-panel{width:min(720px,calc(100vw - 28px))}.deos-quick-note-panel textarea{min-height:220px}.deos-note-context{padding:9px 11px;border-radius:10px;background:rgba(148,163,184,.12);margin:8px 0 12px}.deos-quick-note-detail{display:flex;flex-direction:column;gap:18px}.deos-quick-note-detail>.secondary{align-self:flex-start}.deos-quick-note-content{font-size:1.05rem;line-height:1.65;padding:18px 0;white-space:normal}.deos-quick-note-detail .row-actions{margin-top:4px}
     `;
     document.head.appendChild(style);
   }
@@ -719,6 +728,11 @@ let backupPreviewOpen = false;
 let backupSafetySnapshot = null;
 let agendaFormError = "";
 let currentView = "cockpit";
+let journalNoteFilter = "active";
+let journalSearch = "";
+let journalComposerOpen = false;
+let noteCaptureContext = null;
+let quickNoteDialog = { open: false, context: null };
 let managerAddFormExpanded = false;
 let meetingOriginContext = null;
 let meetingCreateState = null;
@@ -1024,6 +1038,81 @@ function schedulePrioritySyncWrite() {
   }, 1200);
 }
 
+// -----------------------------------------------------------------------------
+// V5.30N1 — Pont multi-appareils Notes / Journal via Documents
+// -----------------------------------------------------------------------------
+const DEOS_JOURNAL_SYNC_DOC_ID = "deos-system-journal-sync-v1";
+const DEOS_JOURNAL_SYNC_SOURCE = "DEOS_JOURNAL_SYNC";
+let deosJournalSyncApplyingRemote = false;
+let deosJournalSyncTimer = null;
+
+function isJournalSyncTransportDocument(item) {
+  const doc = item && typeof item === "object" ? item : {};
+  return String(doc.id || "") === DEOS_JOURNAL_SYNC_DOC_ID
+    || String(doc.sourceType || "") === DEOS_JOURNAL_SYNC_SOURCE
+    || String(doc.documentType || "") === "system_journal_sync";
+}
+
+function journalSyncPayloadFromDocument(doc) {
+  if (!isJournalSyncTransportDocument(doc)) return null;
+  const content = doc?.content;
+  if (!content || typeof content !== "object" || Array.isArray(content) || !Array.isArray(content.journal)) return null;
+  return { schema: Number(content.schema || 1), updatedAt: String(content.updatedAt || doc.updatedAt || ""), journal: content.journal };
+}
+
+function stageJournalSyncTransport() {
+  if (deosInitialEntityLoad || deosJournalSyncApplyingRemote) return false;
+  if (!Array.isArray(state.documents) || !Array.isArray(state.journal)) return false;
+  const nowIso = new Date().toISOString();
+  const payload = state.journal.map(item => normalizeEntity("journal", item));
+  const index = state.documents.findIndex(isJournalSyncTransportDocument);
+  const existing = index >= 0 ? state.documents[index] : null;
+  const existingPayload = journalSyncPayloadFromDocument(existing);
+  if (existingPayload && JSON.stringify(existingPayload.journal) === JSON.stringify(payload)) return false;
+  const next = normalizeEntity("documents", {
+    ...(existing || {}), id: DEOS_JOURNAL_SYNC_DOC_ID, title: "DEOS système — Notes / Journal", type: "Système", category: "Système", status: "Actif",
+    owner: identityName(), author: identityName(), version: "SYS1", date: localIsoDate(), updatedAt: nowIso, createdAt: existing?.createdAt || nowIso,
+    summary: "Transport interne multi-appareils des Notes / Journal.", tags: ["DEOS_SYSTEM", "JOURNAL_SYNC"], documentType: "system_journal_sync",
+    sourceType: DEOS_JOURNAL_SYNC_SOURCE, sourceId: DEOS_JOURNAL_SYNC_DOC_ID, hiddenSystem: true,
+    content: { schema: 1, updatedAt: nowIso, device: typeof detectLinksSyncDeviceLabel === "function" ? detectLinksSyncDeviceLabel() : "Navigateur", journal: payload }
+  });
+  if (index >= 0) state.documents[index] = next; else state.documents.unshift(next);
+  saveDocumentsLocalOnly();
+  return true;
+}
+
+function applyJournalSyncTransportFromDocuments(options = {}) {
+  if (!Array.isArray(state.documents)) return false;
+  const doc = state.documents.find(isJournalSyncTransportDocument);
+  const payload = journalSyncPayloadFromDocument(doc);
+  if (!payload) return false;
+  const incoming = normalizeCollection("journal", payload.journal);
+  const current = normalizeCollection("journal", state.journal || []);
+  if (JSON.stringify(current) === JSON.stringify(incoming)) return false;
+  deosJournalSyncApplyingRemote = true;
+  try {
+    state.journal = incoming;
+    const repository = getEntityRepository("journal");
+    if (repository) repository.save(state.journal); else deosDataService.save("journal", state.journal);
+  } finally { deosJournalSyncApplyingRemote = false; }
+  if (!options.silent) showDeosToast?.("Notes / Journal synchronisés sur cet appareil.", "success");
+  if (currentView === "journal" && !options.silent) renderJournal();
+  return true;
+}
+
+function scheduleJournalSyncWrite() {
+  if (typeof window === "undefined") return;
+  if (deosJournalSyncTimer) window.clearTimeout(deosJournalSyncTimer);
+  deosJournalSyncTimer = window.setTimeout(async () => {
+    deosJournalSyncTimer = null;
+    if (!multiDeviceConnected?.() || !deosDocumentsSyncController?.syncNow) return;
+    try {
+      await deosDocumentsSyncController.syncNow({ silent: true, source: "journal-bridge" });
+      applyJournalSyncTransportFromDocuments({ silent: true, source: "journal-bridge" });
+    } catch (error) { console.warn("[DEOS Journal Sync] Synchronisation différée", error); }
+  }, 1200);
+}
+
 function persist(name) {
   const repository = getEntityRepository(name);
   if (repository) {
@@ -1036,6 +1125,10 @@ function persist(name) {
   if (name === "priorities" && !deosInitialEntityLoad && !deosPrioritySyncApplyingRemote) {
     const changed = stagePrioritySyncTransport();
     if (changed) schedulePrioritySyncWrite();
+  }
+  if (name === "journal" && !deosInitialEntityLoad && !deosJournalSyncApplyingRemote) {
+    const changed = stageJournalSyncTransport();
+    if (changed) scheduleJournalSyncWrite();
   }
 
   // V5.30L — toute écriture sur un objet multi-appareils déclenche
@@ -1132,6 +1225,7 @@ function appHtml(html) {
   renderRemoteAuthOverlay();
   renderRemoteUserContext();
   renderRemoteStartupOverlay();
+  renderQuickNoteUi();
   // V5.30Q — réinjection légère du résumé Performance après chaque rendu de vue.
   if (currentView === "performance") requestAnimationFrame(() => { try { renderPerformanceSourcesSummary(); } catch (error) { console.warn("[DEOS][Performance] Résumé Sources indisponible", error); } });
   // V5.21F — les dialogues Liens doivent pouvoir apparaître sur toutes les vues,
@@ -1813,8 +1907,9 @@ function normalizeEntity(name, item) {
   }
   if (name === "priorities") return { owner: "", impact: "", done: false, linkedFolders: [], ...base, linkedFolders: ensureArray(base.linkedFolders) };
   if (name === "journal") {
-    const merged = { date: today(), entryType: "Note rapide", summary: base.content || "", facts: "", analysis: "", decisionsText: "", actionsText: "", linkedManagers: [], linkedProjects: [], linkedDecisions: [], linkedActions: [], linkedDocuments: [], linkedFolders: [], watchPoints: "", nextSteps: "", notes: "", events: [], tags: [], mood: "", links: "", ...base };
-    return { ...merged, tags: ensureArray(merged.tags), linkedManagers: ensureArray(merged.linkedManagers), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedActions: ensureArray(merged.linkedActions), linkedDocuments: ensureArray(merged.linkedDocuments), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events) };
+    const hadWorkflowState = Object.prototype.hasOwnProperty.call(base, "processed");
+    const merged = { date: today(), entryType: "Note rapide", summary: base.content || "", facts: "", analysis: "", decisionsText: "", actionsText: "", linkedManagers: [], linkedProjects: [], linkedDecisions: [], linkedActions: [], linkedDocuments: [], linkedFolders: [], watchPoints: "", nextSteps: "", notes: "", events: [], tags: [], mood: "", links: "", pinned: false, archived: false, processed: hadWorkflowState ? Boolean(base.processed) : true, captureMode: "structured", sourceContext: null, createdAt: base.createdAt || new Date().toISOString(), updatedAt: base.updatedAt || new Date().toISOString(), ...base };
+    return { ...merged, pinned: Boolean(merged.pinned), archived: Boolean(merged.archived), processed: Boolean(merged.processed), tags: ensureArray(merged.tags), linkedManagers: ensureArray(merged.linkedManagers), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedActions: ensureArray(merged.linkedActions), linkedDocuments: ensureArray(merged.linkedDocuments), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events) };
   }
   if (name === "documents") {
     const merged = {
@@ -1988,6 +2083,7 @@ async function init() {
   // une synchro précédente), les Priorités locales sont restaurées avant le
   // démarrage des pilotes distants.
   applyPrioritySyncTransportFromDocuments({ silent: true, source: "startup-local" });
+  applyJournalSyncTransportFromDocuments({ silent: true, source: "startup-local" });
   actionTitleMigrationMode = false;
   if (actionTitleMigrationStats.corrected > 0) {
     console.info("[DEOS Actions] Migration des titres appliquée", {
@@ -6836,6 +6932,7 @@ function editFolder(id) {
   if (!folderDeletionDialog.open || !sameId(folderDeletionDialog.folderId, id)) resetFolderDeletionDialog();
   const folder = byId("folders", id);
   if (!folder) return renderFolders();
+  setNoteCaptureContext("folders", folder.id, folder.name);
   document.getElementById("viewTitle").textContent = "Modifier " + folder.name;
   appHtml(folderForm(folder, "edit"));
 }
@@ -7611,6 +7708,7 @@ function deleteAction(id) {
 function openAction(id) {
   const a = byId("actions", id);
   if (!a) return renderActions();
+  setNoteCaptureContext("actions", a.id, a.title);
   actionDetailId = String(id);
   const linkedProjects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
   const linkedDecisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
@@ -8180,6 +8278,7 @@ function managerQuickForm(m, mode = "") {
 function openManager(id, mode = "") {
   const m = byId("managers", id);
   if (!m) return renderManagers();
+  setNoteCaptureContext("managers", m.id, m.name);
   const responsibleCount = managerResponsibleProjects(m).length;
   document.getElementById("viewTitle").textContent = m.name;
   appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderManagers()">Retour Managers</button><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)} ? ${responsibleCount} projet(s) sous responsabilité</span><div class="row-actions"><button class="action" onclick="editManager('${m.id}')">Modifier</button><button class="secondary" onclick="startReport('managers','${m.id}')">Générer un compte rendu</button><button class="secondary" onclick="openManager('${m.id}','note')">Ajouter une note</button><button class="secondary" onclick="openManager('${m.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openManager('${m.id}','request')">Tracer un échange</button><button class="action" onclick="openManager('${m.id}','pilot')">+ Note de pilotage</button><button class="danger" onclick="deleteManager('${m.id}')">Supprimer</button></div></div><div class="grid two">${managerQuickForm(m, mode)}<div class="card"><h2>Priorité managériale</h2><p>${esc(m.priority || "À compléter")}</p></div><div class="card"><h2>Entretiens</h2><p><strong>Dernier :</strong> ${esc(m.lastInterview || "À compléter")}</p><p><strong>Prochaine rencontre :</strong> ${esc(m.nextMeeting || "À planifier")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${managerAgendaList(m)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${managerMeetingPreparationsList(m)}</div><div class="card full-span"><h2>Projets sous ma responsabilité</h2>${managerResponsibleProjectsList(m)}</div><div class="card full-span"><h2>Autres projets associés</h2>${managerAssociatedProjectsList(m)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(m)}</div><div class="card full-span"><div class="row"><div><h2>Notes de pilotage / 1:1 Performance</h2><p class="muted">Notes libres, suivi du précédent entretien et conversion des éléments à suivre.</p></div><button class="action" onclick="openManager('${m.id}','pilot')">+ Nouvelle note</button></div>${managerPilotNotesList(m)}</div><div class="card full-span"><h2>Demandes & objectifs managériaux</h2>${managerManagementRequestsSummary(m)}<div style="margin-top:12px">${managerManagementRequestsList(m)}</div><div class="row-actions" style="margin-top:12px"><button class="action" onclick="openManager('${m.id}','request')">+ Tracer un échange</button></div></div><div class="card"><h2>Objectifs en cours</h2>${listItems(m.objectives)}</div><div class="card"><h2>Points forts</h2>${listItems(m.strengths)}</div><div class="card"><h2>Points de vigilance</h2>${listItems(m.watchPoints)}</div><div class="card"><h2>Actions internes</h2>${listItems(m.actions, "? ")}</div><div class="card"><h2>Actions liées</h2>${linkedActionsList(m)}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisionsList(m)}</div><div class="card"><h2>Journal lié</h2>${managerJournalList(m)}</div><div class="card"><h2>Documents liés</h2>${managerDocumentsList(m)}</div><div class="card"><h2>Notes du directeur</h2>${directorNotesList(m)}</div><div class="card full-span"><h2>Historique chronologique</h2>${managerTimeline(m)}</div></div>`);
@@ -8632,6 +8731,7 @@ function openProject(id, mode = "") {
   restoreProjectsFromSyncShadowIfNeeded();
   const p = byId("projects", id);
   if (!p) return renderProjects();
+  setNoteCaptureContext("projects", p.id, p.name);
   document.getElementById("viewTitle").textContent = p.name;
   appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderProjects()">Retour Projets</button><h2>${esc(p.name)}</h2>${badge(p.status)}<p>${esc(p.objective || p.next || "")}</p><span class="meta">ID ${esc(p.id)}</span><div class="row-actions"><button class="action" onclick="editProject('${p.id}')">Modifier</button><button class="secondary" onclick="startReport('projects','${p.id}')">Générer un compte rendu</button><button class="secondary" onclick="openProject('${p.id}','milestone')">Ajouter un jalon</button><button class="secondary" onclick="openProject('${p.id}','note')">Ajouter une note</button><button class="secondary" onclick="openProject('${p.id}','event')">Ajouter un événement</button><button class="danger" onclick="deleteProject('${p.id}')">Supprimer</button></div></div><div class="grid two">${projectQuickForm(p, mode)}<div class="card"><h2>Avancement</h2><div class="progress"><span style="width:${Number(p.progress || 0)}%"></span></div><p>${Number(p.progress || 0)}%</p><div class="row"><input id="quickProgress" type="number" min="0" max="100" value="${Number(p.progress || 0)}"><button class="secondary" onclick="updateProjectProgress('${p.id}')">Mettre à jour</button></div></div><div class="card"><h2>Pilotage</h2><p><strong>Responsable :</strong> ${esc(projectOwnerName(p) || "À compléter")}</p><p><strong>Lancement :</strong> ${esc(p.launchDate || "À compléter")}</p><p><strong>Échéance :</strong> ${esc(p.deadline || "À préciser")}</p><p><strong>Priorité :</strong> ${icons[p.priorityLevel] || ""} ${esc(labels[p.priorityLevel] || p.priorityLevel || "À suivre")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${projectAgendaList(p)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${projectMeetingPreparationsList(p)}</div><div class="card"><h2>Objectif</h2><p>${esc(p.objective || "À compléter")}</p></div><div class="card"><h2>Contexte</h2><p>${esc(p.context || "À compléter")}</p></div><div class="card"><h2>Prochaine étape</h2><p>${esc(p.next || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(p.risks || "À compléter")}</p></div><div class="card"><h2>Managers associés</h2>${projectManagersList(p)}</div><div class="card"><h2>Jalons</h2>${projectMilestonesList(p)}</div><div class="card"><h2>Actions liées</h2>${projectActionsList(p)}${p.actions ? `<p class="muted">${esc(p.actions)}</p>` : ""}</div><div class="card"><h2>Décisions liées</h2>${projectDecisionsList(p)}${p.decisions ? `<p class="muted">${esc(p.decisions)}</p>` : ""}</div><div class="card"><h2>Journal lié</h2>${projectJournalList(p)}</div><div class="card"><h2>Documents liés</h2>${projectDocumentsList(p)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(p)}</div><div class="card"><h2>Notes du directeur</h2>${projectNotesList(p)}</div><div class="card full-span"><h2>Historique chronologique</h2>${projectTimeline(p)}</div></div>`);
 }
@@ -9119,6 +9219,7 @@ function addDecision() {
 function openDecision(id, mode = "") {
   const d = byId("decisions", id);
   if (!d) return renderDecisions();
+  setNoteCaptureContext("decisions", d.id, d.title);
   document.getElementById("viewTitle").textContent = d.title;
   appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderDecisions()">Retour Décisions</button><h2>${esc(d.title)}</h2><p>${esc(d.context || "")}</p><span class="muted">${esc(d.date || "")} · ${esc(decisionStatusLabel(d.status))}</span><span class="meta">ID ${esc(d.id)}</span><div class="row-actions"><button class="action" onclick="editDecision('${d.id}')">Modifier</button><button class="secondary" onclick="openDecision('${d.id}','note')">Ajouter une note</button><button class="secondary" onclick="openDecision('${d.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openDecision('${d.id}','action')">Créer une action liée</button><button class="danger" onclick="deleteDecision('${d.id}')">Supprimer</button></div></div><div class="grid two">${decisionQuickForm(d, mode)}<div class="card"><h2>Statut et importance</h2><p><strong>Statut :</strong> ${esc(decisionStatusLabel(d.status))}</p><p><strong>Importance :</strong> ${icons[d.importance] || ""} ${esc(labels[d.importance] || d.importance || "Important")}</p><p><strong>Réexamen :</strong> ${esc(d.reviewDate || "À préciser")}</p></div><div class="card"><h2>Responsable du suivi</h2><p>${esc(d.owner || "À compléter")}</p></div><div class="card"><h2>Problème ou besoin initial</h2><p>${esc(d.problem || "À compléter")}</p></div><div class="card"><h2>Décision prise</h2><p>${esc(d.decision || d.nextStep || "À compléter")}</p></div><div class="card"><h2>Raisons et critères</h2><p>${esc(d.rationale || "À compléter")}</p></div><div class="card"><h2>Alternatives étudiées</h2><p>${esc(d.alternatives || "À compléter")}</p></div><div class="card"><h2>Impacts attendus</h2><p>${esc(d.impacts || d.impact || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(d.risks || "À compléter")}</p></div><div class="card"><h2>Managers concernés</h2>${decisionManagersList(d)}</div><div class="card"><h2>Projets concernés</h2>${decisionProjectsList(d)}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${decisionAgendaList(d)}</div><div class="card"><h2>Actions générées</h2>${decisionActionsList(d)}</div><div class="card"><h2>Journal lié</h2>${decisionJournalList(d)}</div><div class="card"><h2>Documents liés</h2>${decisionDocumentsList(d)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(d)}</div><div class="card"><h2>Notes du directeur</h2>${decisionNotesList(d)}</div><div class="card"><h2>Mots-clés</h2>${listItems(d.tags)}</div><div class="card full-span"><h2>Historique chronologique</h2>${decisionTimeline(d)}</div></div>`);
 }
@@ -9430,19 +9531,122 @@ function deleteDecision(id) {
 
 const journalTypes = ["CODIR", "Gemba", "Entretien manager", "CSE", "Incident", "Note rapide", "Projet", "Autre"];
 
+function setNoteCaptureContext(type = "", id = "", label = "") {
+  noteCaptureContext = type && id ? { type: String(type), id: String(id), label: String(label || "") } : null;
+}
+
+function activeNoteCaptureContext() {
+  if (!noteCaptureContext) return null;
+  const viewForType = { managers: "managers", projects: "projects", folders: "folders", decisions: "decisions", actions: "actions" };
+  return viewForType[noteCaptureContext.type] === currentView ? noteCaptureContext : null;
+}
+
+function noteContextLabel(ctx) {
+  if (!ctx) return "Aucun contexte automatique";
+  const names = { managers: "Manager", projects: "Projet", folders: "Dossier", decisions: "Décision", actions: "Action" };
+  return `${names[ctx.type] || "Contexte"} : ${ctx.label || ctx.id}`;
+}
+
+function openQuickNoteDialog() {
+  quickNoteDialog = { open: true, context: activeNoteCaptureContext() };
+  renderQuickNoteUi();
+  requestAnimationFrame(() => document.getElementById("quickNoteText")?.focus());
+}
+
+function closeQuickNoteDialog() {
+  quickNoteDialog = { open: false, context: null };
+  document.getElementById("deosQuickNoteOverlay")?.remove();
+}
+
+function quickNoteLinksFromContext(ctx) {
+  const links = { linkedManagers: [], linkedProjects: [], linkedFolders: [], linkedDecisions: [], linkedActions: [] };
+  if (!ctx?.id) return links;
+  if (ctx.type === "managers") links.linkedManagers = [ctx.id];
+  if (ctx.type === "projects") links.linkedProjects = [ctx.id];
+  if (ctx.type === "folders") links.linkedFolders = [ctx.id];
+  if (ctx.type === "decisions") links.linkedDecisions = [ctx.id];
+  if (ctx.type === "actions") links.linkedActions = [ctx.id];
+  return links;
+}
+
+function createQuickNoteFromDialog(openAfter = false) {
+  const text = document.getElementById("quickNoteText")?.value.trim() || "";
+  if (!text) { showDeosToast("Écris d’abord ta note.", "error"); return; }
+  const titleInput = document.getElementById("quickNoteTitle")?.value.trim() || "";
+  const type = document.getElementById("quickNoteType")?.value || "Note rapide";
+  const title = titleInput || text.split(/\n+/).map(v => v.trim()).find(Boolean)?.slice(0, 90) || "Note rapide";
+  const ctx = quickNoteDialog.context;
+  const links = quickNoteLinksFromContext(ctx);
+  const now = new Date().toISOString();
+  const j = normalizeEntity("journal", { id: newId("journal"), title, date: today(), entryType: type, summary: text, content: text, facts: "", analysis: "", decisionsText: "", actionsText: "", linkedManagers: links.linkedManagers, linkedProjects: links.linkedProjects, linkedDecisions: links.linkedDecisions, linkedActions: links.linkedActions, linkedDocuments: [], linkedFolders: links.linkedFolders, watchPoints: "", nextSteps: "", notes: "", events: [], tags: [], mood: "", links: "", pinned: false, archived: false, processed: false, captureMode: "quick", sourceContext: ctx ? { ...ctx } : null, createdAt: now, updatedAt: now });
+  state.journal.unshift(j);
+  persist("journal");
+  addActivity("📝 Note capturée", j.title, noteContextLabel(ctx), j.id);
+  closeQuickNoteDialog();
+  showDeosToast("Note enregistrée dans DEOS.", "success");
+  if (openAfter) openJournal(j.id); else if (currentView === "journal") renderJournal();
+}
+
+function renderQuickNoteUi() {
+  document.getElementById("deosQuickNoteFab")?.remove();
+  document.getElementById("deosQuickNoteOverlay")?.remove();
+  const fab = document.createElement("button");
+  fab.id = "deosQuickNoteFab"; fab.type = "button"; fab.setAttribute("aria-label", "Nouvelle note"); fab.title = "Nouvelle note";
+  fab.innerHTML = '<span class="deos-note-plus">+</span><span class="deos-note-label">Note</span>';
+  fab.onclick = openQuickNoteDialog;
+  document.body.appendChild(fab);
+  if (!quickNoteDialog.open) return;
+  const ctx = quickNoteDialog.context;
+  document.body.insertAdjacentHTML("beforeend", `<div id="deosQuickNoteOverlay" class="modal-backdrop" onclick="closeQuickNoteDialog()"><div class="modal-panel deos-quick-note-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>Nouvelle note</h2><button class="icon-close" type="button" onclick="closeQuickNoteDialog()" aria-label="Fermer">×</button></div><p class="deos-note-context">${esc(noteContextLabel(ctx))}</p><input id="quickNoteTitle" placeholder="Titre facultatif"><select id="quickNoteType">${journalTypes.map(t => `<option value="${esc(t)}" ${t === "Note rapide" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select><textarea id="quickNoteText" placeholder="Écris simplement ce que tu veux retenir…"></textarea><div class="row-actions"><button class="action" type="button" onclick="createQuickNoteFromDialog(false)">Enregistrer</button><button class="secondary" type="button" onclick="createQuickNoteFromDialog(true)">Enregistrer et traiter</button><button class="secondary" type="button" onclick="closeQuickNoteDialog()">Annuler</button></div></div></div>`);
+}
+
+function setJournalFilter(filter) { journalNoteFilter = filter || "active"; renderJournal(); }
+function setJournalSearch(value) { journalSearch = String(value || ""); renderJournal(); }
+function toggleJournalComposer() { journalComposerOpen = !journalComposerOpen; renderJournal(); }
+function journalWorkflowValue(j, key) { return Boolean(j && j[key]); }
+
+function toggleJournalPinned(id) { const j = byId("journal", id); if (!j) return; j.pinned = !journalWorkflowValue(j, "pinned"); j.updatedAt = new Date().toISOString(); persist("journal"); if (currentView === "journal") renderJournal(); else openJournal(id); }
+function toggleJournalProcessed(id) { const j = byId("journal", id); if (!j) return; j.processed = !journalWorkflowValue(j, "processed"); j.updatedAt = new Date().toISOString(); persist("journal"); if (currentView === "journal") renderJournal(); else openJournal(id); }
+function toggleJournalArchived(id) { const j = byId("journal", id); if (!j) return; j.archived = !journalWorkflowValue(j, "archived"); j.updatedAt = new Date().toISOString(); persist("journal"); if (currentView === "journal") renderJournal(); else openJournal(id); }
+
+function journalVisibleEntries() {
+  const q = journalSearch.trim().toLowerCase();
+  let items = ensureArray(state.journal).filter(j => {
+    if (journalNoteFilter === "pinned" && !j.pinned) return false;
+    if (journalNoteFilter === "todo" && (j.processed || j.archived)) return false;
+    if (journalNoteFilter === "archived" && !j.archived) return false;
+    if (journalNoteFilter === "active" && j.archived) return false;
+    if (q && !`${j.title || ""} ${j.summary || j.content || ""} ${(j.tags || []).join(" ")} ${j.entryType || ""}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  return items.sort((a,b) => Number(Boolean(b.pinned))-Number(Boolean(a.pinned)) || String(b.updatedAt || b.createdAt || b.date || "").localeCompare(String(a.updatedAt || a.createdAt || a.date || "")));
+}
+
+function suggestedJournalDerivedTitle(j) {
+  const text = String(j?.summary || j?.content || j?.title || "").trim();
+  return (text.split(/\n+/).map(v => v.trim()).find(Boolean) || j?.title || "").slice(0, 120);
+}
+
+
 function renderJournal() {
-  document.getElementById("viewTitle").textContent = "Journal";
+  document.getElementById("viewTitle").textContent = "Notes / Journal";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "journal"));
-  appHtml(`<div class="card hero"><h2>Journal opérationnel</h2><p class="muted">Le journal mémorise : conservez ici la mémoire chronologique des événements importants.</p></div><div class="card"><h2>Ajouter une entrée</h2><input id="jTitle" placeholder="Titre"><div class="form-grid"><input id="jDate" value="${esc(today())}" placeholder="Date"><select id="jType">${journalTypes.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select><input id="jTags" placeholder="Mots-clés" class="full"></div><textarea id="jSummary" placeholder="Résumé"></textarea><div class="grid two manager-links"><div><label>Dossiers liés</label>${folderSelect("jFolders")}</div><div><label>Projets concernés</label>${checkboxList("jProjects", state.projects, [], p => p.name)}</div></div><button class="action" onclick="addJournal()">Ajouter</button></div>${state.journal.map(journalCard).join("") || `<div class="card empty">Aucune entrée.</div>`}`);
+  setNoteCaptureContext();
+  const items = journalVisibleEntries();
+  const counts = { active: state.journal.filter(j => !j.archived).length, pinned: state.journal.filter(j => j.pinned && !j.archived).length, todo: state.journal.filter(j => !j.processed && !j.archived).length, archived: state.journal.filter(j => j.archived).length };
+  const structuredComposer = journalComposerOpen ? `<div class="card"><div class="row"><h2>Entrée structurée</h2><button class="secondary" onclick="toggleJournalComposer()">Fermer</button></div><input id="jTitle" placeholder="Titre"><div class="form-grid"><input id="jDate" value="${esc(today())}" placeholder="Date"><select id="jType">${journalTypes.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select><input id="jTags" placeholder="Mots-clés" class="full"></div><textarea id="jSummary" placeholder="Résumé"></textarea><div class="grid two manager-links"><div><label>Dossiers liés</label>${folderSelect("jFolders")}</div><div><label>Projets concernés</label>${checkboxList("jProjects", state.projects, [], p => p.name)}</div></div><button class="action" onclick="addJournal()">Ajouter</button></div>` : "";
+  appHtml(`<div class="card hero"><div class="row"><div><h2>Notes / Journal</h2><p class="muted">Capture d'abord. Structure ensuite seulement ce qui mérite de devenir une action, une décision ou un élément de pilotage.</p></div><div class="row-actions"><button class="secondary" onclick="toggleJournalComposer()">+ Entrée structurée</button></div></div></div><div class="card"><input value="${esc(journalSearch)}" oninput="setJournalSearch(this.value)" placeholder="Rechercher dans les notes…"><div class="deos-note-filters"><button class="secondary deos-note-filter ${journalNoteFilter === "active" ? "active" : ""}" onclick="setJournalFilter('active')">Récentes (${counts.active})</button><button class="secondary deos-note-filter ${journalNoteFilter === "pinned" ? "active" : ""}" onclick="setJournalFilter('pinned')">Épinglées (${counts.pinned})</button><button class="secondary deos-note-filter ${journalNoteFilter === "todo" ? "active" : ""}" onclick="setJournalFilter('todo')">À traiter (${counts.todo})</button><button class="secondary deos-note-filter ${journalNoteFilter === "archived" ? "active" : ""}" onclick="setJournalFilter('archived')">Archivées (${counts.archived})</button><button class="secondary deos-note-filter ${journalNoteFilter === "all" ? "active" : ""}" onclick="setJournalFilter('all')">Toutes (${state.journal.length})</button></div></div>${structuredComposer}${items.map(journalCard).join("") || `<div class="card empty">Aucune note dans cette vue.</div>`}`);
 }
 
 function journalCard(j) {
-  return `<div class="card clickable" onclick="openJournal('${j.id}')"><h2>${esc(j.title)}</h2><p>${esc(j.summary || j.content || "")}</p><span class="muted">${esc(j.date || "")} · ${esc(j.entryType || "Note rapide")} ? ${(j.tags || []).map(esc).join(", ")}</span><span class="meta">ID ${esc(j.id)}</span></div>`;
+  const ctx = j.sourceContext?.label ? `<span class="deos-note-chip">${esc(j.sourceContext.label)}</span>` : "";
+  return `<div class="card clickable" onclick="openJournal('${j.id}')"><div class="deos-note-card-head"><div><h2>${j.pinned ? "📌 " : ""}${esc(j.title || "Note")}</h2><div class="deos-note-status"><span class="deos-note-chip">${esc(j.entryType || "Note rapide")}</span>${!j.processed ? `<span class="deos-note-chip">À traiter</span>` : `<span class="deos-note-chip">Traité</span>`}${j.archived ? `<span class="deos-note-chip">Archivée</span>` : ""}${ctx}</div></div><span class="muted">${esc(j.date || "")}</span></div><p>${esc(j.summary || j.content || "")}</p><div class="deos-note-card-actions"><button class="secondary" onclick="event.stopPropagation();toggleJournalPinned('${j.id}')">${j.pinned ? "Désépingler" : "Épingler"}</button><button class="secondary" onclick="event.stopPropagation();openJournal('${j.id}','action')">→ Action</button><button class="secondary" onclick="event.stopPropagation();openJournal('${j.id}','decision')">→ Décision</button><button class="secondary" onclick="event.stopPropagation();editJournal('${j.id}')">Lier / modifier</button><button class="secondary" onclick="event.stopPropagation();toggleJournalProcessed('${j.id}')">${j.processed ? "À retraiter" : "Marquer traité"}</button><button class="secondary" onclick="event.stopPropagation();toggleJournalArchived('${j.id}')">${j.archived ? "Restaurer" : "Archiver"}</button></div></div>`;
 }
 
 function addJournal() {
   const title = document.getElementById("jTitle").value.trim() || "Entrée journal";
-  const j = { id: newId("journal"), title, date: document.getElementById("jDate").value.trim() || today(), entryType: document.getElementById("jType").value, summary: document.getElementById("jSummary").value.trim(), content: document.getElementById("jSummary").value.trim(), facts: "", analysis: "", decisionsText: "", actionsText: "", linkedManagers: [], linkedProjects: checkedValues("jProjects"), linkedDecisions: [], linkedActions: [], linkedDocuments: [], watchPoints: "", nextSteps: "", notes: "", events: [], tags: splitTags(document.getElementById("jTags").value), linkedFolders: checkedValues("jFolders"), mood: "", links: "" };
+  const now = new Date().toISOString();
+  const j = normalizeEntity("journal", { id: newId("journal"), title, date: document.getElementById("jDate").value.trim() || today(), entryType: document.getElementById("jType").value, summary: document.getElementById("jSummary").value.trim(), content: document.getElementById("jSummary").value.trim(), facts: "", analysis: "", decisionsText: "", actionsText: "", linkedManagers: [], linkedProjects: checkedValues("jProjects"), linkedDecisions: [], linkedActions: [], linkedDocuments: [], watchPoints: "", nextSteps: "", notes: "", events: [], tags: splitTags(document.getElementById("jTags").value), linkedFolders: checkedValues("jFolders"), mood: "", links: "", pinned: false, archived: false, processed: false, captureMode: "structured", createdAt: now, updatedAt: now });
   state.journal.unshift(j);
   persist("journal");
   addActivity("📰 Journal", j.title, j.summary, j.id);
@@ -9481,30 +9685,66 @@ function journalTimeline(j) {
 }
 
 function journalQuickForm(j, mode = "") {
-  if (mode === "action") return `<div class="card full-span"><h2>Ajouter une action liée</h2><input id="jaTitle" placeholder="Action ? créer"><div class="grid three manager-links"><div><label>Managers concernés</label>${checkboxList("jaManagers", state.managers, j.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("jaProjects", state.projects, j.linkedProjects, p => p.name)}</div><div><label>Décisions concernées</label>${checkboxList("jaDecisions", state.decisions, j.linkedDecisions, d => d.title)}</div></div><button class="action" onclick="saveJournalAction('${j.id}')">Enregistrer</button><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div>`;
-  if (mode === "decision") return `<div class="card full-span"><h2>Ajouter une décision liée</h2><input id="jdTitle" placeholder="Titre de la décision"><textarea id="jdContext" placeholder="Contexte"></textarea><div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("jdManagers", state.managers, j.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("jdProjects", state.projects, j.linkedProjects, p => p.name)}</div></div><button class="action" onclick="saveJournalDecision('${j.id}')">Enregistrer</button><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div>`;
+  if (mode === "action") return `<div class="card full-span"><h2>Ajouter une action liée</h2><input id="jaTitle" value="${esc(suggestedJournalDerivedTitle(j))}" placeholder="Action à créer"><div class="grid three manager-links"><div><label>Managers concernés</label>${checkboxList("jaManagers", state.managers, j.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("jaProjects", state.projects, j.linkedProjects, p => p.name)}</div><div><label>Décisions concernées</label>${checkboxList("jaDecisions", state.decisions, j.linkedDecisions, d => d.title)}</div></div><button class="action" onclick="saveJournalAction('${j.id}')">Enregistrer</button><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div>`;
+  if (mode === "decision") return `<div class="card full-span"><h2>Ajouter une décision liée</h2><input id="jdTitle" value="${esc(j.title || suggestedJournalDerivedTitle(j))}" placeholder="Titre de la décision"><textarea id="jdContext" placeholder="Contexte"></textarea><div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("jdManagers", state.managers, j.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("jdProjects", state.projects, j.linkedProjects, p => p.name)}</div></div><button class="action" onclick="saveJournalDecision('${j.id}')">Enregistrer</button><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div>`;
   if (mode === "event") return `<div class="card full-span"><h2>Ajouter un événement</h2><div class="form-grid"><input id="jeTitle" placeholder="Titre de l'événement"><input id="jeDate" value="${esc(new Date().toLocaleString("fr-FR"))}" placeholder="Date"></div><textarea id="jeDetail" placeholder="Détail de l'événement"></textarea><button class="action" onclick="saveJournalEvent('${j.id}')">Enregistrer</button><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div>`;
   return "";
+}
+
+function journalQuickLinksSummary(j) {
+  const blocks = [];
+  if (ensureArray(j.linkedManagers).length) blocks.push(`<div><strong>Managers</strong>${journalManagersList(j)}</div>`);
+  if (ensureArray(j.linkedProjects).length) blocks.push(`<div><strong>Projets</strong>${journalProjectsList(j)}</div>`);
+  if (ensureArray(j.linkedActions).length) blocks.push(`<div><strong>Actions</strong>${journalActionsList(j)}</div>`);
+  if (ensureArray(j.linkedDecisions).length) blocks.push(`<div><strong>Décisions</strong>${journalDecisionsList(j)}</div>`);
+  if (ensureArray(j.linkedFolders).length) blocks.push(`<div><strong>Dossiers</strong>${linkedFoldersList(j)}</div>`);
+  if (ensureArray(j.linkedDocuments).length) blocks.push(`<div><strong>Documents</strong>${journalDocumentsList(j)}</div>`);
+  return blocks.length ? `<div class="card"><h2>Liens</h2><div class="grid two">${blocks.join("")}</div></div>` : "";
 }
 
 function openJournal(id, mode = "") {
   const j = byId("journal", id);
   if (!j) return renderJournal();
   document.getElementById("viewTitle").textContent = j.title;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderJournal()">Retour Journal</button><h2>${esc(j.title)}</h2><p>${esc(j.summary || j.content || "")}</p><span class="muted">${esc(j.date || "")} · ${esc(j.entryType || "Note rapide")}</span><span class="meta">ID ${esc(j.id)}</span><div class="row-actions"><button class="action" onclick="editJournal('${j.id}')">Modifier</button><button class="secondary" onclick="startReport('journal','${j.id}')">Générer un compte rendu</button><button class="secondary" onclick="openJournal('${j.id}','action')">Ajouter une action liée</button><button class="secondary" onclick="openJournal('${j.id}','decision')">Ajouter une décision liée</button><button class="secondary" onclick="openJournal('${j.id}','event')">Ajouter un événement</button><button class="danger" onclick="deleteJournal('${j.id}')">Supprimer</button></div></div><div class="grid two">${journalQuickForm(j, mode)}<div class="card"><h2>Résumé</h2><p>${esc(j.summary || "À compléter")}</p></div><div class="card"><h2>Faits observés</h2><p>${esc(j.facts || "À compléter")}</p></div><div class="card"><h2>Analyse du directeur</h2><p>${esc(j.analysis || "À compléter")}</p></div><div class="card"><h2>Décisions prises</h2><p>${esc(j.decisionsText || "À compléter")}</p></div><div class="card"><h2>Actions générées</h2>${journalActionsList(j)}${j.actionsText ? `<p class="muted">${esc(j.actionsText)}</p>` : ""}</div><div class="card"><h2>Managers concernés</h2>${journalManagersList(j)}</div><div class="card"><h2>Projets concernés</h2>${journalProjectsList(j)}</div><div class="card"><h2>Décisions liées</h2>${journalDecisionsList(j)}</div><div class="card"><h2>Documents liés</h2>${journalDocumentsList(j)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(j)}</div><div class="card"><h2>Points de vigilance</h2><p>${esc(j.watchPoints || "À compléter")}</p></div><div class="card"><h2>Suites à donner</h2><p>${esc(j.nextSteps || "À compléter")}</p></div><div class="card"><h2>Notes complémentaires</h2><p>${esc(j.notes || "À compléter")}</p></div><div class="card"><h2>Mots-clés</h2>${listItems(j.tags)}</div><div class="card full-span"><h2>Historique chronologique</h2>${journalTimeline(j)}</div></div>`);
+
+  // V5.30N1 — une note capturée rapidement reste volontairement légère.
+  // Les entrées structurées conservent l'ancien écran Journal complet.
+  if (j.captureMode === "quick") {
+    const contextLabel = j.sourceContext ? noteContextLabel(j.sourceContext) : "";
+    const workflow = `${j.processed ? "Traité" : "À traiter"}${j.archived ? " · Archivée" : ""}`;
+    appHtml(`<div class="card hero deos-quick-note-detail"><button class="secondary" onclick="renderJournal()">← Retour aux notes</button><div class="deos-note-card-head"><div><h2>${j.pinned ? "📌 " : ""}${esc(j.title || "Note")}</h2><div class="deos-note-status"><span class="deos-note-chip">${esc(j.entryType || "Note rapide")}</span><span class="deos-note-chip">${esc(workflow)}</span>${contextLabel ? `<span class="deos-note-chip">${esc(contextLabel)}</span>` : ""}</div></div><span class="muted">${esc(j.date || "")}</span></div><div class="deos-quick-note-content">${esc(j.summary || j.content || "").replace(/\n/g, "<br>")}</div><div class="row-actions"><button class="secondary" onclick="toggleJournalPinned('${j.id}')">${j.pinned ? "Désépingler" : "Épingler"}</button><button class="secondary" onclick="toggleJournalProcessed('${j.id}')">${j.processed ? "À retraiter" : "Marquer traité"}</button><button class="action" onclick="editJournal('${j.id}')">Modifier / Lier</button><button class="secondary" onclick="openJournal('${j.id}','action')">→ Action</button><button class="secondary" onclick="openJournal('${j.id}','decision')">→ Décision</button><button class="secondary" onclick="toggleJournalArchived('${j.id}')">${j.archived ? "Restaurer" : "Archiver"}</button><button class="danger" onclick="deleteJournal('${j.id}')">Supprimer</button></div></div>${journalQuickForm(j, mode)}${journalQuickLinksSummary(j)}`);
+    return;
+  }
+
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderJournal()">Retour Journal</button><h2>${esc(j.title)}</h2><p>${esc(j.summary || j.content || "")}</p><span class="muted">${esc(j.date || "")} · ${esc(j.entryType || "Note rapide")}</span><span class="meta">ID ${esc(j.id)}</span><div class="row-actions"><button class="secondary" onclick="toggleJournalPinned('${j.id}')">${j.pinned ? "Désépingler" : "Épingler"}</button><button class="secondary" onclick="toggleJournalProcessed('${j.id}')">${j.processed ? "À retraiter" : "Marquer traité"}</button><button class="secondary" onclick="toggleJournalArchived('${j.id}')">${j.archived ? "Restaurer" : "Archiver"}</button><button class="action" onclick="editJournal('${j.id}')">Modifier / Lier</button><button class="secondary" onclick="startReport('journal','${j.id}')">Générer un compte rendu</button><button class="secondary" onclick="openJournal('${j.id}','action')">Ajouter une action liée</button><button class="secondary" onclick="openJournal('${j.id}','decision')">Ajouter une décision liée</button><button class="secondary" onclick="openJournal('${j.id}','event')">Ajouter un événement</button><button class="danger" onclick="deleteJournal('${j.id}')">Supprimer</button></div></div><div class="grid two">${journalQuickForm(j, mode)}<div class="card"><h2>Résumé</h2><p>${esc(j.summary || "À compléter")}</p></div><div class="card"><h2>Faits observés</h2><p>${esc(j.facts || "À compléter")}</p></div><div class="card"><h2>Analyse du directeur</h2><p>${esc(j.analysis || "À compléter")}</p></div><div class="card"><h2>Décisions prises</h2><p>${esc(j.decisionsText || "À compléter")}</p></div><div class="card"><h2>Actions générées</h2>${journalActionsList(j)}${j.actionsText ? `<p class="muted">${esc(j.actionsText)}</p>` : ""}</div><div class="card"><h2>Managers concernés</h2>${journalManagersList(j)}</div><div class="card"><h2>Projets concernés</h2>${journalProjectsList(j)}</div><div class="card"><h2>Décisions liées</h2>${journalDecisionsList(j)}</div><div class="card"><h2>Documents liés</h2>${journalDocumentsList(j)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(j)}</div><div class="card"><h2>Points de vigilance</h2><p>${esc(j.watchPoints || "À compléter")}</p></div><div class="card"><h2>Suites à donner</h2><p>${esc(j.nextSteps || "À compléter")}</p></div><div class="card"><h2>Notes complémentaires</h2><p>${esc(j.notes || "À compléter")}</p></div><div class="card"><h2>Mots-clés</h2>${listItems(j.tags)}</div><div class="card full-span"><h2>Historique chronologique</h2>${journalTimeline(j)}</div></div>`);
 }
 
 function editJournal(id) {
   const j = byId("journal", id);
   if (!j) return;
   document.getElementById("viewTitle").textContent = "Modifier " + j.title;
+  if (j.captureMode === "quick") {
+    appHtml(`<div class="card"><div class="row"><div><h2>Modifier / Lier la note</h2><p class="muted">La note reste simple. Ajoute seulement les liens utiles au pilotage.</p></div><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div><input id="ejTitle" value="${esc(j.title)}" placeholder="Titre"><div class="form-grid"><input id="ejDate" value="${esc(j.date || "")}" placeholder="Date"><select id="ejType">${journalTypes.map(t => `<option value="${esc(t)}" ${j.entryType === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select><input id="ejTags" value="${esc((j.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><textarea id="ejSummary" placeholder="Note">${esc(j.summary || j.content || "")}</textarea><div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("ejManagers", state.managers, j.linkedManagers, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("ejProjects", state.projects, j.linkedProjects, p => p.name)}</div><div><label>Décisions liées</label>${checkboxList("ejDecisions", state.decisions, j.linkedDecisions, d => d.title)}</div><div><label>Actions liées</label>${checkboxList("ejActions", state.actions, j.linkedActions, a => a.title)}</div><div><label>Documents liés</label>${checkboxList("ejDocuments", state.documents, j.linkedDocuments, d => d.title)}</div><div><label>Dossiers liés</label>${folderSelect("ejFolders", j.linkedFolders || [])}</div></div><div class="row-actions"><button class="action" onclick="saveQuickJournal('${j.id}')">Enregistrer</button><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div></div>`);
+    return;
+  }
   appHtml(`<div class="card"><h2>Modifier entrée Journal</h2><input id="ejTitle" value="${esc(j.title)}" placeholder="Titre"><div class="form-grid"><input id="ejDate" value="${esc(j.date || "")}" placeholder="Date"><select id="ejType">${journalTypes.map(t => `<option value="${esc(t)}" ${j.entryType === t ? "selected" : ""}>${esc(t)}</option>`).join("")}</select><input id="ejTags" value="${esc((j.tags || []).join(", "))}" placeholder="Mots-clés" class="full"></div><textarea id="ejSummary" placeholder="Résumé">${esc(j.summary || j.content || "")}</textarea><textarea id="ejFacts" placeholder="Faits observés">${esc(j.facts || "")}</textarea><textarea id="ejAnalysis" placeholder="Analyse du directeur">${esc(j.analysis || "")}</textarea><textarea id="ejDecisionsText" placeholder="Décisions prises">${esc(j.decisionsText || "")}</textarea><textarea id="ejActionsText" placeholder="Actions générées">${esc(j.actionsText || "")}</textarea><textarea id="ejWatch" placeholder="Points de vigilance">${esc(j.watchPoints || "")}</textarea><textarea id="ejNext" placeholder="Suites à donner">${esc(j.nextSteps || "")}</textarea><textarea id="ejNotes" placeholder="Notes complémentaires">${esc(j.notes || "")}</textarea><div class="grid two manager-links"><div><label>Managers concernés</label>${checkboxList("ejManagers", state.managers, j.linkedManagers, m => `${m.name} ? ${m.role || ""}`)}</div><div><label>Projets concernés</label>${checkboxList("ejProjects", state.projects, j.linkedProjects, p => p.name)}</div><div><label>Décisions liées</label>${checkboxList("ejDecisions", state.decisions, j.linkedDecisions, d => d.title)}</div><div><label>Actions liées</label>${checkboxList("ejActions", state.actions, j.linkedActions, a => a.title)}</div><div><label>Documents liés</label>${checkboxList("ejDocuments", state.documents, j.linkedDocuments, d => d.title)}</div><div><label>Dossiers liés</label>${folderSelect("ejFolders", j.linkedFolders || [])}</div></div><button class="action" onclick="saveJournal('${j.id}')">Enregistrer</button><button class="secondary" onclick="openJournal('${j.id}')">Annuler</button></div>`);
+}
+
+function saveQuickJournal(id) {
+  const i = indexById("journal", id);
+  if (i < 0) return;
+  const current = state.journal[i];
+  const text = document.getElementById("ejSummary").value.trim();
+  state.journal[i] = { ...current, title: document.getElementById("ejTitle").value.trim() || "Note rapide", date: document.getElementById("ejDate").value.trim(), entryType: document.getElementById("ejType").value, summary: text, content: text, tags: splitTags(document.getElementById("ejTags").value), linkedManagers: checkedValues("ejManagers"), linkedProjects: checkedValues("ejProjects"), linkedDecisions: checkedValues("ejDecisions"), linkedActions: checkedValues("ejActions"), linkedDocuments: checkedValues("ejDocuments"), linkedFolders: checkedValues("ejFolders"), captureMode: "quick", updatedAt: new Date().toISOString() };
+  persist("journal");
+  addActivity("📝 Note modifiée", state.journal[i].title, text, id);
+  openJournal(id);
 }
 
 function saveJournal(id) {
   const i = indexById("journal", id);
   if (i < 0) return;
-  state.journal[i] = { ...state.journal[i], title: document.getElementById("ejTitle").value.trim(), date: document.getElementById("ejDate").value.trim(), entryType: document.getElementById("ejType").value, summary: document.getElementById("ejSummary").value.trim(), content: document.getElementById("ejSummary").value.trim(), facts: document.getElementById("ejFacts").value.trim(), analysis: document.getElementById("ejAnalysis").value.trim(), decisionsText: document.getElementById("ejDecisionsText").value.trim(), actionsText: document.getElementById("ejActionsText").value.trim(), watchPoints: document.getElementById("ejWatch").value.trim(), nextSteps: document.getElementById("ejNext").value.trim(), notes: document.getElementById("ejNotes").value.trim(), tags: splitTags(document.getElementById("ejTags").value), linkedManagers: checkedValues("ejManagers"), linkedProjects: checkedValues("ejProjects"), linkedDecisions: checkedValues("ejDecisions"), linkedActions: checkedValues("ejActions"), linkedDocuments: checkedValues("ejDocuments"), linkedFolders: checkedValues("ejFolders") };
+  state.journal[i] = { ...state.journal[i], title: document.getElementById("ejTitle").value.trim(), date: document.getElementById("ejDate").value.trim(), entryType: document.getElementById("ejType").value, summary: document.getElementById("ejSummary").value.trim(), content: document.getElementById("ejSummary").value.trim(), facts: document.getElementById("ejFacts").value.trim(), analysis: document.getElementById("ejAnalysis").value.trim(), decisionsText: document.getElementById("ejDecisionsText").value.trim(), actionsText: document.getElementById("ejActionsText").value.trim(), watchPoints: document.getElementById("ejWatch").value.trim(), nextSteps: document.getElementById("ejNext").value.trim(), notes: document.getElementById("ejNotes").value.trim(), tags: splitTags(document.getElementById("ejTags").value), linkedManagers: checkedValues("ejManagers"), linkedProjects: checkedValues("ejProjects"), linkedDecisions: checkedValues("ejDecisions"), linkedActions: checkedValues("ejActions"), linkedDocuments: checkedValues("ejDocuments"), linkedFolders: checkedValues("ejFolders"), updatedAt: new Date().toISOString() };
   persist("journal");
   addActivity("📰 Journal modifié", state.journal[i].title, state.journal[i].summary, id);
   openJournal(id);
@@ -9519,6 +9759,8 @@ function saveJournalAction(id) {
   state.actions.unshift(normalizeEntity("actions", action));
   j.linkedActions = ensureArray(j.linkedActions);
   j.linkedActions.unshift(action.id);
+  j.processed = true;
+  j.updatedAt = new Date().toISOString();
   checkedValues("jaManagers").forEach(managerId => {
     const m = byId("managers", managerId);
     if (m) {
@@ -9554,6 +9796,8 @@ function saveJournalDecision(id) {
   state.decisions.unshift(decision);
   j.linkedDecisions = ensureArray(j.linkedDecisions);
   j.linkedDecisions.unshift(decision.id);
+  j.processed = true;
+  j.updatedAt = new Date().toISOString();
   persist("decisions");
   syncDecisionBacklinks(decision);
   persist("journal");
@@ -23294,7 +23538,10 @@ function createSimpleEntitySyncController(config) {
       }
       // V5.30Q1 — une mise à jour distante du document système Priorités doit
       // immédiatement alimenter state.priorities sur l'appareil courant.
-      if (entity === "documents") applyPrioritySyncTransportFromDocuments({ silent: true, source: "documents-sync" });
+      if (entity === "documents") {
+        applyPrioritySyncTransportFromDocuments({ silent: true, source: "documents-sync" });
+        applyJournalSyncTransportFromDocuments({ silent: true, source: "documents-sync" });
+      }
       const a=await analyze(); refresh({syncing:false,remoteCount:a.remoteCount,lastSyncAt:new Date().toLocaleString("fr-FR"),lastError:"",state:a.conflicts.length?DEOS_LINKS_SYNC_STATUS.CONFLICT:DEOS_LINKS_SYNC_STATUS.SYNCED});
       if (!options.silent && currentView==="settings") renderSettings(`Synchronisation ${plural} terminée.`);
       if (currentView==="documents" && entity==="documents") renderDocuments();
@@ -27584,14 +27831,14 @@ function renderPerformanceSourcesSummary() {
 
   function setIdentity() {
     // Onglet navigateur + nom proposé lors de l'ajout à l'écran d'accueil.
-    document.title = ENV === "TEST" ? "DEOS PROD" : "DEOS";
+    document.title = ENV === "TEST" ? "DEOS TEST" : "DEOS";
     setOrCreateMeta(
       "apple-mobile-web-app-title",
-      ENV === "TEST" ? "DEOS PROD" : "DEOS"
+      ENV === "TEST" ? "DEOS TEST" : "DEOS"
     );
     setOrCreateMeta(
       "application-name",
-      ENV === "TEST" ? "DEOS PROD" : "DEOS"
+      ENV === "TEST" ? "DEOS TEST" : "DEOS"
     );
 
     // Favicon autonome, distinct selon l'environnement.
@@ -27666,7 +27913,7 @@ function renderPerformanceSourcesSummary() {
       marker.setAttribute("aria-hidden", "true");
       document.body.appendChild(marker);
     }
-    marker.textContent = ENV === "TEST" ? "DEOS PROD" : "DEOS PROD";
+    marker.textContent = ENV === "TEST" ? "DEOS TEST" : "DEOS PROD";
     marker.title =
       ENV === "TEST"
         ? "Environnement de test"
