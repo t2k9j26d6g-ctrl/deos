@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30N2C";
+const DEOS_VERSION = "V5.30N3";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -735,6 +735,7 @@ let journalComposerOpen = false;
 let noteCaptureContext = null;
 let quickNoteDialog = { open: false, context: null };
 let managerAddFormExpanded = false;
+let managerArchiveFilter = "active";
 let meetingOriginContext = null;
 let meetingCreateState = null;
 let pendingMeetingCreateReveal = null;
@@ -1892,7 +1893,7 @@ function normalizeEntity(name, item) {
   const base = { ...item, id: item.id || newId(name) };
   if (name === "managers") {
     const template = defaults.managers.find(m => m.id === base.id) || {};
-    const merged = { priority: "", lastInterview: "", nextMeeting: "", objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedProjects: [], linkedDecisions: [], linkedFolders: [], events: [], directorNotes: [], managementRequests: [], pilotNotes: [], ...template, ...base };
+    const merged = { priority: "", lastInterview: "", nextMeeting: "", objectives: [], strengths: [], watchPoints: [], actions: [], linkedActions: [], linkedProjects: [], linkedDecisions: [], linkedFolders: [], events: [], directorNotes: [], managementRequests: [], pilotNotes: [], archived: false, archivedAt: "", archiveType: "", archiveDestination: "", archiveComment: "", reactivatedAt: "", ...template, ...base };
     return { ...merged, objectives: ensureArray(merged.objectives), strengths: ensureArray(merged.strengths), watchPoints: ensureArray(merged.watchPoints), actions: ensureArray(merged.actions), linkedActions: ensureArray(merged.linkedActions), linkedProjects: ensureArray(merged.linkedProjects), linkedDecisions: ensureArray(merged.linkedDecisions), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events), directorNotes: ensureNotes(merged.directorNotes), managementRequests: ensureArray(merged.managementRequests), pilotNotes: normalizeManagerPilotNotes(merged.pilotNotes) };
   }
   if (name === "projects") {
@@ -5287,14 +5288,14 @@ function renderMeetingCreationForm(source, meetingRef, objectType, data) {
     const suggestedProjectIds = singleLinkedId(data.linkedProjectIds) ? [singleLinkedId(data.linkedProjectIds)] : [];
     const suggestedFolderIds = singleLinkedId(data.linkedFolderIds) ? [singleLinkedId(data.linkedFolderIds)] : [];
     const suggestedManagerIds = suggestedOwnerId ? [suggestedOwnerId] : [];
-    return `<div class="card" data-meeting-create-form="action"><h3>Nouvelle action</h3><p class="muted">Créée depuis le rendez-vous : ${esc(data.title)}</p><div class="form-grid"><input id="meetingCreateActionTitle" data-meeting-create-title="action" placeholder="Titre de l'action (obligatoire)"><input id="meetingCreateActionContext" value="Créée depuis le rendez-vous : ${esc(data.title)}" placeholder="Contexte"><input id="meetingCreateActionDue" type="date"><input id="meetingCreateActionOwner" value="${esc(suggestedOwner)}" placeholder="Responsable"><select id="meetingCreateActionLevel"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div><div class="grid three manager-links"><div><label>Managers proposés</label>${checkboxList("meetingCreateActionManagers", state.managers, suggestedManagerIds, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets proposés</label>${checkboxList("meetingCreateActionProjects", state.projects, suggestedProjectIds, p => p.name)}</div><div><label>Dossiers proposés</label>${folderSelect("meetingCreateActionFolders", suggestedFolderIds)}</div></div><div class="modal-actions"><button type="button" class="action" onclick="saveCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','action')">Enregistrer</button><button type="button" class="secondary" onclick="cancelCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}')">Annuler</button></div></div>`;
+    return `<div class="card" data-meeting-create-form="action"><h3>Nouvelle action</h3><p class="muted">Créée depuis le rendez-vous : ${esc(data.title)}</p><div class="form-grid"><input id="meetingCreateActionTitle" data-meeting-create-title="action" placeholder="Titre de l'action (obligatoire)"><input id="meetingCreateActionContext" value="Créée depuis le rendez-vous : ${esc(data.title)}" placeholder="Contexte"><input id="meetingCreateActionDue" type="date"><input id="meetingCreateActionOwner" value="${esc(suggestedOwner)}" placeholder="Responsable"><select id="meetingCreateActionLevel"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div><div class="grid three manager-links"><div><label>Managers proposés</label>${checkboxList("meetingCreateActionManagers", activeManagers(), suggestedManagerIds, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets proposés</label>${checkboxList("meetingCreateActionProjects", state.projects, suggestedProjectIds, p => p.name)}</div><div><label>Dossiers proposés</label>${folderSelect("meetingCreateActionFolders", suggestedFolderIds)}</div></div><div class="modal-actions"><button type="button" class="action" onclick="saveCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','action')">Enregistrer</button><button type="button" class="secondary" onclick="cancelCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}')">Annuler</button></div></div>`;
   }
   const suggestedManagerId = singleLinkedId(data.linkedManagerIds);
   const suggestedOwner = suggestedManagerId ? (byId("managers", suggestedManagerId)?.name || "") : "";
   const suggestedProjectIds = singleLinkedId(data.linkedProjectIds) ? [singleLinkedId(data.linkedProjectIds)] : [];
   const suggestedFolderIds = singleLinkedId(data.linkedFolderIds) ? [singleLinkedId(data.linkedFolderIds)] : [];
   const suggestedManagerIds = suggestedManagerId ? [suggestedManagerId] : [];
-  return `<div class="card" data-meeting-create-form="decision"><h3>Nouvelle décision</h3><p class="muted">Créée depuis le rendez-vous : ${esc(data.title)}</p><div class="form-grid"><input id="meetingCreateDecisionTitle" data-meeting-create-title="decision" placeholder="Titre de la décision (obligatoire)"><input id="meetingCreateDecisionContext" value="Créée depuis le rendez-vous : ${esc(data.title)}" placeholder="Contexte"><input id="meetingCreateDecisionDate" type="date" value="${esc(isoToday())}"><input id="meetingCreateDecisionOwner" value="${esc(suggestedOwner)}" placeholder="Responsable"><select id="meetingCreateDecisionStatus"><option value="decided" selected>Décidée</option><option value="applying">En cours d'application</option><option value="review">À réexaminer</option><option value="applied">Appliquée</option></select><select id="meetingCreateDecisionImportance"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div><div class="grid three manager-links"><div><label>Managers proposés</label>${checkboxList("meetingCreateDecisionManagers", state.managers, suggestedManagerIds, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets proposés</label>${checkboxList("meetingCreateDecisionProjects", state.projects, suggestedProjectIds, p => p.name)}</div><div><label>Dossiers proposés</label>${folderSelect("meetingCreateDecisionFolders", suggestedFolderIds)}</div></div><div class="modal-actions"><button type="button" class="action" onclick="saveCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','decision')">Enregistrer</button><button type="button" class="secondary" onclick="cancelCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}')">Annuler</button></div></div>`;
+  return `<div class="card" data-meeting-create-form="decision"><h3>Nouvelle décision</h3><p class="muted">Créée depuis le rendez-vous : ${esc(data.title)}</p><div class="form-grid"><input id="meetingCreateDecisionTitle" data-meeting-create-title="decision" placeholder="Titre de la décision (obligatoire)"><input id="meetingCreateDecisionContext" value="Créée depuis le rendez-vous : ${esc(data.title)}" placeholder="Contexte"><input id="meetingCreateDecisionDate" type="date" value="${esc(isoToday())}"><input id="meetingCreateDecisionOwner" value="${esc(suggestedOwner)}" placeholder="Responsable"><select id="meetingCreateDecisionStatus"><option value="decided" selected>Décidée</option><option value="applying">En cours d'application</option><option value="review">À réexaminer</option><option value="applied">Appliquée</option></select><select id="meetingCreateDecisionImportance"><option value="green">Normal</option><option value="orange" selected>Important</option><option value="red">Critique</option></select></div><div class="grid three manager-links"><div><label>Managers proposés</label>${checkboxList("meetingCreateDecisionManagers", activeManagers(), suggestedManagerIds, m => `${m.name} · ${m.role || ""}`)}</div><div><label>Projets proposés</label>${checkboxList("meetingCreateDecisionProjects", state.projects, suggestedProjectIds, p => p.name)}</div><div><label>Dossiers proposés</label>${folderSelect("meetingCreateDecisionFolders", suggestedFolderIds)}</div></div><div class="modal-actions"><button type="button" class="action" onclick="saveCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}','decision')">Enregistrer</button><button type="button" class="secondary" onclick="cancelCreateFromMeeting('${esc(source)}','${esc(String(meetingRef))}')">Annuler</button></div></div>`;
 }
 
 function renderCreateFromMeetingSection(source, meetingRef) {
@@ -7993,14 +7994,41 @@ function toggleManagerAddForm(force) {
 }
 window.toggleManagerAddForm = toggleManagerAddForm;
 
+function setManagerArchiveFilter(value) {
+  managerArchiveFilter = ["active","archived","all"].includes(String(value)) ? String(value) : "active";
+  renderManagers();
+}
+window.setManagerArchiveFilter = setManagerArchiveFilter;
+
+function isManagerArchived(manager) {
+  return Boolean(manager && manager.archived);
+}
+
+function activeManagers() {
+  return state.managers.filter(manager => !isManagerArchived(manager));
+}
+
+function managerArchiveCounts(manager) {
+  const actions = state.actions.filter(a => !a.done && normalizeLinkedManagerIds(ensureArray(a.linkedManagers)).some(id => sameId(id, manager.id))).length;
+  const priorities = state.priorities.filter(p => !p.done && (sameId(p.ownerId, manager.id) || String(p.owner || "").trim() === String(manager.name || "").trim())).length;
+  const projects = state.projects.filter(p => sameId(p.ownerId, manager.id) || ensureArray(p.linkedManagers).some(id => sameId(id, manager.id))).length;
+  return { actions, priorities, projects };
+}
+
 function renderManagers() {
   document.getElementById("viewTitle").textContent = "Managers";
+  const activeCount = state.managers.filter(m => !isManagerArchived(m)).length;
+  const archivedCount = state.managers.filter(isManagerArchived).length;
+  const visibleManagers = state.managers.filter(m => managerArchiveFilter === "all" || (managerArchiveFilter === "archived" ? isManagerArchived(m) : !isManagerArchived(m)));
   const addPanel = `<div class="card" id="manager-add-card"><div class="settings-card-heading"><div><h2>Ajouter un manager</h2><p class="muted">Créez une nouvelle fiche uniquement lorsque nécessaire.</p></div><button class="secondary" type="button" onclick="toggleManagerAddForm()" aria-expanded="${managerAddFormExpanded ? "true" : "false"}">${managerAddFormExpanded ? "Replier" : "+ Ajouter un manager"}</button></div>${managerAddFormExpanded ? `<div id="manager-add-form" style="scroll-margin-top:14px"><input id="mName" placeholder="Nom"><input id="mRole" placeholder="Poste"><select id="mStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select><input id="mPriority" placeholder="Priorité manager"><input id="mNext" placeholder="Prochain entretien"><textarea id="mNote" placeholder="Note"></textarea><div class="row-actions"><button class="action" onclick="addManager()">Ajouter</button><button class="secondary" onclick="toggleManagerAddForm(false)">Annuler</button></div></div>` : ""}</div>`;
-  appHtml(`${addPanel}<div class="grid two">${state.managers.map(managerCard).join("")}</div>`);
+  const filters = `<div class="card"><div class="row"><div><h2>Managers</h2><p class="muted">Les managers archivés restent conservés avec tout leur historique et peuvent être réactivés à tout moment.</p></div><div class="row-actions"><button class="${managerArchiveFilter === "active" ? "action" : "secondary"}" onclick="setManagerArchiveFilter('active')">Actifs (${activeCount})</button><button class="${managerArchiveFilter === "archived" ? "action" : "secondary"}" onclick="setManagerArchiveFilter('archived')">Archivés (${archivedCount})</button><button class="${managerArchiveFilter === "all" ? "action" : "secondary"}" onclick="setManagerArchiveFilter('all')">Tous (${state.managers.length})</button></div></div></div>`;
+  const list = visibleManagers.length ? `<div class="grid two">${visibleManagers.map(managerCard).join("")}</div>` : `<div class="card"><div class="empty">Aucun manager dans cette vue.</div></div>`;
+  appHtml(`${addPanel}${filters}${list}`);
 }
 
 function managerCard(m) {
-  return `<div class="card clickable" onclick="openManager('${m.id}')"><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)}</span></div>`;
+  const archiveMeta = isManagerArchived(m) ? `<p class="muted"><strong>Archivé</strong>${m.archivedAt ? ` · ${esc(m.archivedAt)}` : ""}${m.archiveType ? ` · ${esc(m.archiveType)}` : ""}${m.archiveDestination ? ` · ${esc(m.archiveDestination)}` : ""}</p>` : "";
+  return `<div class="card clickable" onclick="openManager('${m.id}')"><div class="row"><div><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p></div>${isManagerArchived(m) ? `<span class="badge">ARCHIVÉ</span>` : badge(m.status)}</div>${archiveMeta}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)}</span></div>`;
 }
 
 
@@ -8308,6 +8336,10 @@ function convertManagerPilotFollowUp(managerId, noteId, followId, type) {
 window.convertManagerPilotFollowUp = convertManagerPilotFollowUp;
 
 function managerQuickForm(m, mode = "") {
+  if (mode === "archive") {
+    const counts = managerArchiveCounts(m);
+    return `<div class="card full-span"><h2>Archiver le manager</h2><p>La fiche, les notes et tout l'historique seront conservés. Le manager disparaîtra de la vue active.</p><div class="grid three"><div class="item"><strong>Actions ouvertes</strong><span>${counts.actions}</span></div><div class="item"><strong>Priorités actives</strong><span>${counts.priorities}</span></div><div class="item"><strong>Projets liés</strong><span>${counts.projects}</span></div></div><div class="form-grid"><input id="maDate" type="date" value="${esc(isoToday())}"><select id="maType"><option value="Mobilité interne">Mobilité interne</option><option value="Départ externe">Départ externe</option><option value="Autre">Autre</option></select><input id="maDestination" placeholder="Destination / nouvelle fonction (facultatif)"></div><textarea id="maComment" placeholder="Commentaire (facultatif)"></textarea><div class="row-actions"><button class="danger" onclick="archiveManager('${m.id}')">Confirmer l'archivage</button><button class="secondary" onclick="openManager('${m.id}')">Annuler</button></div></div>`;
+  }
   if (mode === "note") return `<div class="card full-span"><h2>Ajouter une note du directeur</h2><textarea id="mnContent" placeholder="Note du directeur"></textarea><button class="action" onclick="saveManagerNote('${m.id}')">Enregistrer</button><button class="secondary" onclick="openManager('${m.id}')">Annuler</button></div>`;
   if (mode === "event") return `<div class="card full-span"><h2>Ajouter un événement</h2><div class="form-grid"><input id="meTitle" placeholder="Titre de l'événement"><input id="meDate" value="${esc(new Date().toLocaleString("fr-FR"))}" placeholder="Date"></div><textarea id="meDetail" placeholder="Détail de l'événement"></textarea><button class="action" onclick="saveManagerEvent('${m.id}')">Enregistrer</button><button class="secondary" onclick="openManager('${m.id}')">Annuler</button></div>`;
   if (mode === "request") return managerManagementRequestForm(m);
@@ -8323,7 +8355,8 @@ function openManager(id, mode = "") {
   setNoteCaptureContext("managers", m.id, m.name);
   const responsibleCount = managerResponsibleProjects(m).length;
   document.getElementById("viewTitle").textContent = m.name;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderManagers()">Retour Managers</button><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)} ? ${responsibleCount} projet(s) sous responsabilité</span><div class="row-actions"><button class="action" onclick="editManager('${m.id}')">Modifier</button><button class="secondary" onclick="startReport('managers','${m.id}')">Générer un compte rendu</button><button class="secondary" onclick="openManager('${m.id}','note')">Ajouter une note</button><button class="secondary" onclick="openManager('${m.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openManager('${m.id}','request')">Tracer un échange</button><button class="action" onclick="openManager('${m.id}','pilot')">+ Note de pilotage</button><button class="danger" onclick="deleteManager('${m.id}')">Supprimer</button></div></div><div class="grid two">${managerQuickForm(m, mode)}<div class="card"><h2>Priorité managériale</h2><p>${esc(m.priority || "À compléter")}</p></div><div class="card"><h2>Entretiens</h2><p><strong>Dernier :</strong> ${esc(m.lastInterview || "À compléter")}</p><p><strong>Prochaine rencontre :</strong> ${esc(m.nextMeeting || "À planifier")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${managerAgendaList(m)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${managerMeetingPreparationsList(m)}</div><div class="card full-span"><h2>Projets sous ma responsabilité</h2>${managerResponsibleProjectsList(m)}</div><div class="card full-span"><h2>Autres projets associés</h2>${managerAssociatedProjectsList(m)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(m)}</div><div class="card full-span"><div class="row"><div><h2>Notes de pilotage / 1:1 Performance</h2><p class="muted">Notes libres, suivi du précédent entretien et conversion des éléments à suivre.</p></div><button class="action" onclick="openManager('${m.id}','pilot')">+ Nouvelle note</button></div>${managerPilotNotesList(m)}</div><div class="card full-span"><h2>Demandes & objectifs managériaux</h2>${managerManagementRequestsSummary(m)}<div style="margin-top:12px">${managerManagementRequestsList(m)}</div><div class="row-actions" style="margin-top:12px"><button class="action" onclick="openManager('${m.id}','request')">+ Tracer un échange</button></div></div><div class="card"><h2>Objectifs en cours</h2>${listItems(m.objectives)}</div><div class="card"><h2>Points forts</h2>${listItems(m.strengths)}</div><div class="card"><h2>Points de vigilance</h2>${listItems(m.watchPoints)}</div><div class="card"><h2>Actions internes</h2>${listItems(m.actions, "? ")}</div><div class="card"><h2>Actions liées</h2>${linkedActionsList(m)}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisionsList(m)}</div><div class="card"><h2>Journal lié</h2>${managerJournalList(m)}</div><div class="card"><h2>Documents liés</h2>${managerDocumentsList(m)}</div><div class="card"><h2>Notes du directeur</h2>${directorNotesList(m)}</div><div class="card full-span"><h2>Historique chronologique</h2>${managerTimeline(m)}</div></div>`);
+  const archiveBanner = isManagerArchived(m) ? `<div class="card" style="border:1px solid #d6a300;background:#fff8df"><div class="row"><div><strong>Manager archivé</strong><p class="muted">${esc(m.archivedAt || "Date non renseignée")}${m.archiveType ? ` · ${esc(m.archiveType)}` : ""}${m.archiveDestination ? ` · ${esc(m.archiveDestination)}` : ""}</p>${m.archiveComment ? `<p>${esc(m.archiveComment)}</p>` : ""}</div><button class="action" onclick="reactivateManager('${m.id}')">Réactiver</button></div></div>` : "";
+  appHtml(`${archiveBanner}<div class="card hero manager-hero"><button class="secondary" onclick="renderManagers()">Retour Managers</button><h2>${esc(m.name)}</h2><p>${esc(m.role || "")}</p>${isManagerArchived(m) ? `<span class="badge">ARCHIVÉ</span>` : badge(m.status)}<p class="muted">${esc(m.note || "")}</p><span class="meta">ID ${esc(m.id)} · ${responsibleCount} projet(s) sous responsabilité</span><div class="row-actions"><button class="action" onclick="editManager('${m.id}')">Modifier</button><button class="secondary" onclick="startReport('managers','${m.id}')">Générer un compte rendu</button><button class="secondary" onclick="openManager('${m.id}','note')">Ajouter une note</button><button class="secondary" onclick="openManager('${m.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openManager('${m.id}','request')">Tracer un échange</button><button class="action" onclick="openManager('${m.id}','pilot')">+ Note de pilotage</button>${isManagerArchived(m) ? `<button class="action" onclick="reactivateManager('${m.id}')">Réactiver</button>` : `<button class="secondary" onclick="openManager('${m.id}','archive')">Archiver</button>`}<button class="danger" onclick="deleteManager('${m.id}')">Supprimer</button></div></div><div class="grid two">${managerQuickForm(m, mode)}<div class="card"><h2>Priorité managériale</h2><p>${esc(m.priority || "À compléter")}</p></div><div class="card"><h2>Entretiens</h2><p><strong>Dernier :</strong> ${esc(m.lastInterview || "À compléter")}</p><p><strong>Prochaine rencontre :</strong> ${esc(m.nextMeeting || "À planifier")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${managerAgendaList(m)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${managerMeetingPreparationsList(m)}</div><div class="card full-span"><h2>Projets sous ma responsabilité</h2>${managerResponsibleProjectsList(m)}</div><div class="card full-span"><h2>Autres projets associés</h2>${managerAssociatedProjectsList(m)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(m)}</div><div class="card full-span"><div class="row"><div><h2>Notes de pilotage / 1:1 Performance</h2><p class="muted">Notes libres, suivi du précédent entretien et conversion des éléments à suivre.</p></div><button class="action" onclick="openManager('${m.id}','pilot')">+ Nouvelle note</button></div>${managerPilotNotesList(m)}</div><div class="card full-span"><h2>Demandes & objectifs managériaux</h2>${managerManagementRequestsSummary(m)}<div style="margin-top:12px">${managerManagementRequestsList(m)}</div><div class="row-actions" style="margin-top:12px"><button class="action" onclick="openManager('${m.id}','request')">+ Tracer un échange</button></div></div><div class="card"><h2>Objectifs en cours</h2>${listItems(m.objectives)}</div><div class="card"><h2>Points forts</h2>${listItems(m.strengths)}</div><div class="card"><h2>Points de vigilance</h2>${listItems(m.watchPoints)}</div><div class="card"><h2>Actions internes</h2>${listItems(m.actions, "? ")}</div><div class="card"><h2>Actions liées</h2>${linkedActionsList(m)}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisionsList(m)}</div><div class="card"><h2>Journal lié</h2>${managerJournalList(m)}</div><div class="card"><h2>Documents liés</h2>${managerDocumentsList(m)}</div><div class="card"><h2>Notes du directeur</h2>${directorNotesList(m)}</div><div class="card full-span"><h2>Historique chronologique</h2>${managerTimeline(m)}</div></div>`);
   if (String(mode || "").startsWith("request")) {
     requestAnimationFrame(() => {
       const form = document.getElementById("manager-request-form");
@@ -8339,6 +8372,39 @@ function openManager(id, mode = "") {
     });
   }
 }
+
+
+function archiveManager(id) {
+  const m = byId("managers", id);
+  if (!m) return;
+  const date = document.getElementById("maDate")?.value || isoToday();
+  const type = document.getElementById("maType")?.value || "Autre";
+  const destination = document.getElementById("maDestination")?.value.trim() || "";
+  const comment = document.getElementById("maComment")?.value.trim() || "";
+  m.archived = true;
+  m.archivedAt = date;
+  m.archiveType = type;
+  m.archiveDestination = destination;
+  m.archiveComment = comment;
+  m.reactivatedAt = "";
+  persist("managers");
+  addActivity("📦 Manager archivé", m.name, [type, destination].filter(Boolean).join(" · "), m.id);
+  managerArchiveFilter = "active";
+  renderManagers();
+}
+window.archiveManager = archiveManager;
+
+function reactivateManager(id) {
+  const m = byId("managers", id);
+  if (!m) return;
+  m.archived = false;
+  m.reactivatedAt = isoToday();
+  persist("managers");
+  addActivity("↩️ Manager réactivé", m.name, m.archiveDestination || m.archiveType || "Retour dans l'effectif actif", m.id);
+  managerArchiveFilter = "active";
+  openManager(id);
+}
+window.reactivateManager = reactivateManager;
 
 function editManager(id) {
   const m = byId("managers", id);
