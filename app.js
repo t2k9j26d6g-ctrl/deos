@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30N4";
+const DEOS_VERSION = "V5.30N4A";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -7995,6 +7995,48 @@ function toggleManagerAddForm(force) {
 }
 window.toggleManagerAddForm = toggleManagerAddForm;
 
+function addManager() {
+  try {
+    const name = document.getElementById("mName")?.value.trim() || "";
+    if (!name) {
+      alert("Le nom du manager est obligatoire.");
+      document.getElementById("mName")?.focus();
+      return false;
+    }
+    const levelValue = document.getElementById("mLevel")?.value || "";
+    const manager = normalizeEntity("managers", {
+      id: newId("manager"),
+      name,
+      role: document.getElementById("mRole")?.value.trim() || "",
+      managerLevel: ["N-1","N-2","N-3"].includes(levelValue) ? levelValue : "",
+      status: document.getElementById("mStatus")?.value || "orange",
+      priority: document.getElementById("mPriority")?.value.trim() || "",
+      nextMeeting: document.getElementById("mNext")?.value.trim() || "",
+      note: document.getElementById("mNote")?.value.trim() || "",
+      archived: false,
+      archivedAt: "",
+      archiveType: "",
+      archiveDestination: "",
+      archiveComment: "",
+      reactivatedAt: ""
+    });
+    ensureManagerSyncClientId(manager);
+    state.managers.push(manager);
+    persistManagersState();
+    addActivity("👤 Manager créé", manager.name, manager.role, manager.id);
+    managerAddFormExpanded = false;
+    managerArchiveFilter = "active";
+    managerLevelFilter = "all";
+    openManager(manager.id);
+    return true;
+  } catch (error) {
+    console.error(error);
+    alert("Erreur lors de la création du manager. Réessayez ou vérifiez les champs saisis.");
+    return false;
+  }
+}
+window.addManager = addManager;
+
 function setManagerArchiveFilter(value) {
   managerArchiveFilter = ["active","archived","all"].includes(String(value)) ? String(value) : "active";
   renderManagers();
@@ -8037,7 +8079,7 @@ function renderManagers() {
     const levelOk = managerLevelFilter === "all" || (managerLevelFilter === "unassigned" ? !level : level === managerLevelFilter);
     return archiveOk && levelOk;
   });
-  const addPanel = `<div class="card" id="manager-add-card"><div class="settings-card-heading"><div><h2>Ajouter un manager</h2><p class="muted">Créez une nouvelle fiche uniquement lorsque nécessaire.</p></div><button class="secondary" type="button" onclick="toggleManagerAddForm()" aria-expanded="${managerAddFormExpanded ? "true" : "false"}">${managerAddFormExpanded ? "Replier" : "+ Ajouter un manager"}</button></div>${managerAddFormExpanded ? `<div id="manager-add-form" style="scroll-margin-top:14px"><input id="mName" placeholder="Nom"><input id="mRole" placeholder="Poste"><select id="mStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select><input id="mPriority" placeholder="Priorité manager"><input id="mNext" placeholder="Prochain entretien"><textarea id="mNote" placeholder="Note"></textarea><div class="row-actions"><button class="action" onclick="addManager()">Ajouter</button><button class="secondary" onclick="toggleManagerAddForm(false)">Annuler</button></div></div>` : ""}</div>`;
+  const addPanel = `<div class="card" id="manager-add-card"><div class="settings-card-heading"><div><h2>Ajouter un manager</h2><p class="muted">Créez une nouvelle fiche uniquement lorsque nécessaire.</p></div><button class="secondary" type="button" onclick="toggleManagerAddForm()" aria-expanded="${managerAddFormExpanded ? "true" : "false"}">${managerAddFormExpanded ? "Replier" : "+ Ajouter un manager"}</button></div>${managerAddFormExpanded ? `<div id="manager-add-form" style="scroll-margin-top:14px"><input id="mName" placeholder="Nom"><input id="mRole" placeholder="Poste"><select id="mLevel"><option value="">Niveau à définir</option><option value="N-1">N-1</option><option value="N-2">N-2</option><option value="N-3">N-3</option></select><select id="mStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select><input id="mPriority" placeholder="Priorité manager"><input id="mNext" placeholder="Prochain entretien"><textarea id="mNote" placeholder="Note"></textarea><div class="row-actions"><button class="action" onclick="addManager()">Ajouter</button><button class="secondary" onclick="toggleManagerAddForm(false)">Annuler</button></div></div>` : ""}</div>`;
   const levelCounts = { "N-1": 0, "N-2": 0, "N-3": 0, unassigned: 0 };
   state.managers.forEach(m => { const level = managerLevelValue(m); if (level) levelCounts[level] += 1; else levelCounts.unassigned += 1; });
   const filters = `<div class="card"><div class="row"><div><h2>Managers</h2><p class="muted">Filtrez par présence dans l'effectif et par niveau managérial. Les managers archivés restent conservés avec tout leur historique.</p></div><div class="row-actions"><button class="${managerArchiveFilter === "active" ? "action" : "secondary"}" onclick="setManagerArchiveFilter('active')">Actifs (${activeCount})</button><button class="${managerArchiveFilter === "archived" ? "action" : "secondary"}" onclick="setManagerArchiveFilter('archived')">Archivés (${archivedCount})</button><button class="${managerArchiveFilter === "all" ? "action" : "secondary"}" onclick="setManagerArchiveFilter('all')">Tous (${state.managers.length})</button></div></div><div class="row-actions" style="margin-top:12px"><button class="${managerLevelFilter === "all" ? "action" : "secondary"}" onclick="setManagerLevelFilter('all')">Tous niveaux</button><button class="${managerLevelFilter === "N-1" ? "action" : "secondary"}" onclick="setManagerLevelFilter('N-1')">N-1 (${levelCounts["N-1"]})</button><button class="${managerLevelFilter === "N-2" ? "action" : "secondary"}" onclick="setManagerLevelFilter('N-2')">N-2 (${levelCounts["N-2"]})</button><button class="${managerLevelFilter === "N-3" ? "action" : "secondary"}" onclick="setManagerLevelFilter('N-3')">N-3 (${levelCounts["N-3"]})</button><button class="${managerLevelFilter === "unassigned" ? "action" : "secondary"}" onclick="setManagerLevelFilter('unassigned')">À définir (${levelCounts.unassigned})</button></div></div>`;
