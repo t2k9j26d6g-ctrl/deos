@@ -1,5 +1,5 @@
-const DEOS_VERSION = "V5.30N1";
-// Notes N1 — accès + Note global, position fixe et identique sur toutes les vues.
+const DEOS_VERSION = "V5.30N2C";
+// Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
 function ensureDeosAsyncFeedbackUi() {
@@ -15,13 +15,14 @@ function ensureDeosAsyncFeedbackUi() {
       .deos-toast.show{opacity:1;transform:translateY(0)}
       .deos-toast.success{background:#166534}.deos-toast.error{background:#991b1b}.deos-toast.info{background:#1f2937}
       #linksHybridSyncSettingsCard,#actionsHybridSyncSettingsCard,#projectsHybridSyncSettingsCard,#foldersHybridSyncSettingsCard,#managersHybridSyncSettingsCard,#decisionsHybridSyncSettingsCard,#documentsHybridSyncSettingsCard{scroll-margin-top:14px}
-      #deosQuickNoteFab{position:fixed;right:0;top:96px;bottom:0;width:48px;z-index:9300;border:0;border-radius:0;background:#0f172a;color:#fff;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-weight:800;box-shadow:-3px 0 12px rgba(15,23,42,.16);cursor:pointer}
-      #deosQuickNoteFab .deos-note-plus{font-size:20px;line-height:1}#deosQuickNoteFab .deos-note-label{font-size:13px;line-height:1.05}
+      #deosQuickNoteFab{position:fixed!important;right:0!important;top:96px!important;bottom:0!important;width:48px!important;z-index:2147483000!important;border:0;border-radius:0;background:#0f172a!important;color:#fff!important;padding:0;display:flex!important;visibility:visible!important;opacity:1!important;pointer-events:auto!important;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-weight:800;box-shadow:-3px 0 12px rgba(15,23,42,.16);cursor:pointer}
+      #deosQuickNoteFab .deos-note-plus{font-size:20px;line-height:1;display:block!important;color:#fff!important}#deosQuickNoteFab .deos-note-label{font-size:13px;line-height:1.05;display:block!important;color:#fff!important;visibility:visible!important;opacity:1!important}
       #deosQuickNoteFab:hover{background:#172554}
-      @media (max-width:800px){#deosQuickNoteFab{top:auto;right:14px;bottom:14px;width:auto;height:auto;border-radius:999px;padding:11px 15px;flex-direction:row;gap:5px;box-shadow:0 12px 30px rgba(15,23,42,.25)}#deosQuickNoteFab .deos-note-plus{font-size:16px}#deosQuickNoteFab .deos-note-label{font-size:13px}}
+      @media (max-width:800px){#deosQuickNoteFab{top:88px;right:0;bottom:0;width:42px;border-radius:0;padding:0;flex-direction:column;gap:2px;box-shadow:-3px 0 12px rgba(15,23,42,.16)}#deosQuickNoteFab .deos-note-plus{font-size:18px}#deosQuickNoteFab .deos-note-label{font-size:12px;display:block!important;color:#fff!important;visibility:visible!important;opacity:1!important}}
       .deos-note-filters{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.deos-note-filter.active{font-weight:700;box-shadow:inset 0 0 0 2px currentColor}
       .deos-note-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.deos-note-card-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.deos-note-card-actions button{padding:6px 9px;font-size:12px}
-      .deos-note-status{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}.deos-note-chip{display:inline-block;font-size:12px;border:1px solid rgba(148,163,184,.45);border-radius:999px;padding:2px 7px;line-height:1.35}
+      .deos-note-status{display:flex;column-gap:8px;row-gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}.deos-note-chip{display:inline-block;font-size:12px;border:1px solid rgba(148,163,184,.45);border-radius:999px;padding:2px 7px;line-height:1.35;white-space:nowrap}
+      .cockpit-notes-top{margin-top:14px;margin-bottom:14px}.cockpit-notes-top>.row{align-items:center}.cockpit-notes-top h2{margin:0}.cockpit-note-row{padding:10px 0;border-bottom:1px solid rgba(148,163,184,.18)}.cockpit-note-row:last-child{border-bottom:0}.cockpit-note-main{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.cockpit-note-title{font-weight:700;cursor:pointer}.cockpit-note-title:hover{text-decoration:underline}.cockpit-note-preview{margin:4px 0 7px;line-height:1.4}.cockpit-note-actions{display:flex;gap:6px;flex-wrap:wrap}.cockpit-note-actions button{padding:5px 8px;font-size:12px}
       .deos-quick-note-panel{width:min(720px,calc(100vw - 28px))}.deos-quick-note-panel textarea{min-height:220px}.deos-note-context{padding:9px 11px;border-radius:10px;background:rgba(148,163,184,.12);margin:8px 0 12px}.deos-quick-note-detail{display:flex;flex-direction:column;gap:18px}.deos-quick-note-detail>.secondary{align-self:flex-start}.deos-quick-note-content{font-size:1.05rem;line-height:1.65;padding:18px 0;white-space:normal}.deos-quick-note-detail .row-actions{margin-top:4px}
     `;
     document.head.appendChild(style);
@@ -1226,6 +1227,8 @@ function appHtml(html) {
   renderRemoteUserContext();
   renderRemoteStartupOverlay();
   renderQuickNoteUi();
+  setTimeout(ensureQuickNoteRailVisible, 0);
+  setTimeout(ensureQuickNoteRailVisible, 120);
   // V5.30Q — réinjection légère du résumé Performance après chaque rendu de vue.
   if (currentView === "performance") requestAnimationFrame(() => { try { renderPerformanceSourcesSummary(); } catch (error) { console.warn("[DEOS][Performance] Résumé Sources indisponible", error); } });
   // V5.21F — les dialogues Liens doivent pouvoir apparaître sur toutes les vues,
@@ -4702,6 +4705,38 @@ function cockpitAgendaLine(item) {
   return `<div class="agenda-line cockpit-agenda-line clickable" onclick="${openAction}"><strong>${esc(item.date || "Sans date")} · ${esc(time)}</strong><span>${esc(item.title || "Rendez-vous")}${cockpitAgendaSourceBadge(item)}<small>${summary}${extra}</small>${meetingConfidentialityBadge(confidentiality)}</span><div class="row-actions"><button class="secondary" type="button" onclick="event.stopPropagation();${openAction}">Détails</button></div></div>`;
 }
 
+function getCockpitPendingNotes(limit = 5) {
+  return ensureArray(state.journal)
+    .filter(j => j && j.captureMode === "quick" && !j.processed && !j.archived)
+    .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || String(b.updatedAt || b.createdAt || b.date || "").localeCompare(String(a.updatedAt || a.createdAt || a.date || "")))
+    .slice(0, Math.max(1, Number(limit || 5)));
+}
+
+function cockpitPendingNoteRow(j) {
+  const text = String(j.summary || j.content || "").trim();
+  const preview = text.length > 150 ? `${text.slice(0, 147)}…` : text;
+  return `<div class="cockpit-note-row"><div class="cockpit-note-main"><div><div class="cockpit-note-title" onclick="openJournal('${j.id}')">${j.pinned ? "📌 " : ""}${esc(j.title || "Note rapide")}</div><div class="deos-note-status"><span class="deos-note-chip">${esc(j.entryType || "Note rapide")}</span><span class="deos-note-chip">À traiter</span></div></div><span class="muted">${esc(j.date || "")}</span></div>${preview ? `<div class="cockpit-note-preview">${esc(preview)}</div>` : ""}<div class="cockpit-note-actions"><button class="secondary" type="button" onclick="openJournal('${j.id}')">Ouvrir</button><button class="secondary" type="button" onclick="toggleCockpitNotePinned('${j.id}')">${j.pinned ? "Désépingler" : "Épingler"}</button><button class="secondary" type="button" onclick="completeCockpitNote('${j.id}')">Marquer traité</button></div></div>`;
+}
+
+function toggleCockpitNotePinned(id) {
+  const j = byId("journal", id);
+  if (!j) return;
+  j.pinned = !Boolean(j.pinned);
+  j.updatedAt = new Date().toISOString();
+  persist("journal");
+  renderCockpit();
+}
+
+function completeCockpitNote(id) {
+  const j = byId("journal", id);
+  if (!j) return;
+  j.processed = true;
+  j.updatedAt = new Date().toISOString();
+  persist("journal");
+  addActivity("📝 Note traitée", j.title || "Note rapide", j.summary || j.content || "", j.id);
+  renderCockpit();
+}
+
 function renderCockpit() {
   const now = new Date();
   const week = isoWeekNumber(now);
@@ -4710,6 +4745,8 @@ function renderCockpit() {
   const attentionItems = getAttentionItems();
   const activePriorities = getActivePriorities().slice(0, 5);
   const projectsAtRisk = getProjectsAtRisk().slice(0, 5);
+  const pendingNotesAll = ensureArray(state.journal).filter(j => j && j.captureMode === "quick" && !j.processed && !j.archived);
+  const pendingNotes = getCockpitPendingNotes(5);
   const agenda = getCockpitAgenda(agendaFilter);
   const identityLine = `${identity.siteName || identityDefaults.siteName} · ${identityName()} · ${today()} · S${week}`;
 
@@ -4734,6 +4771,11 @@ function renderCockpit() {
       ${cockpitMetricCard("Decisions a suivre", metrics.decisionsToTrack, "Statuts non appliques", "setView('decisions')")}
       ${cockpitMetricCard("Projets a risque", metrics.riskyProjects, "Risque explicite ou retard", "setView('projects')")}
       ${cockpitMetricCard("Priorites actives", metrics.activePriorities, "Priorites non terminees", "setView('priorities')")}
+    </div>
+
+    <div class="card cockpit-notes cockpit-notes-top">
+      <div class="row"><h2>Notes à traiter (${pendingNotesAll.length})</h2><button class="secondary" type="button" onclick="journalNoteFilter='todo';setView('journal')">Voir toutes les notes</button></div>
+      ${pendingNotes.map(cockpitPendingNoteRow).join("") || `<div class="empty">Aucune note à traiter.</div>`}
     </div>
 
     <div class="cockpit-workspace">
@@ -9587,6 +9629,29 @@ function createQuickNoteFromDialog(openAfter = false) {
   if (openAfter) openJournal(j.id); else if (currentView === "journal") renderJournal();
 }
 
+function ensureQuickNoteRailVisible() {
+  try {
+    // N2C — le style du bandeau est injecté par ensureDeosAsyncFeedbackUi().
+    // Sans cet appel, le bouton peut exister dans le DOM mais rester hors mise en forme / invisible.
+    ensureDeosAsyncFeedbackUi();
+    let fab = document.getElementById("deosQuickNoteFab");
+    if (!fab) {
+      fab = document.createElement("button");
+      fab.id = "deosQuickNoteFab";
+      fab.type = "button";
+      fab.setAttribute("aria-label", "Nouvelle note");
+      fab.title = "Nouvelle note";
+      fab.innerHTML = '<span class="deos-note-plus">+</span><span class="deos-note-label">Note</span>';
+      fab.onclick = openQuickNoteDialog;
+      document.body.appendChild(fab);
+    }
+    fab.style.setProperty("display", "flex", "important");
+    fab.style.setProperty("visibility", "visible", "important");
+    fab.style.setProperty("opacity", "1", "important");
+    fab.style.setProperty("right", "0", "important");
+  } catch (error) { console.warn("[DEOS][Notes] Bandeau + Note indisponible", error); }
+}
+
 function renderQuickNoteUi() {
   document.getElementById("deosQuickNoteFab")?.remove();
   document.getElementById("deosQuickNoteOverlay")?.remove();
@@ -9595,6 +9660,7 @@ function renderQuickNoteUi() {
   fab.innerHTML = '<span class="deos-note-plus">+</span><span class="deos-note-label">Note</span>';
   fab.onclick = openQuickNoteDialog;
   document.body.appendChild(fab);
+  ensureQuickNoteRailVisible();
   if (!quickNoteDialog.open) return;
   const ctx = quickNoteDialog.context;
   document.body.insertAdjacentHTML("beforeend", `<div id="deosQuickNoteOverlay" class="modal-backdrop" onclick="closeQuickNoteDialog()"><div class="modal-panel deos-quick-note-panel" onclick="event.stopPropagation()"><div class="modal-head"><h2>Nouvelle note</h2><button class="icon-close" type="button" onclick="closeQuickNoteDialog()" aria-label="Fermer">×</button></div><p class="deos-note-context">${esc(noteContextLabel(ctx))}</p><input id="quickNoteTitle" placeholder="Titre facultatif"><select id="quickNoteType">${journalTypes.map(t => `<option value="${esc(t)}" ${t === "Note rapide" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select><textarea id="quickNoteText" placeholder="Écris simplement ce que tu veux retenir…"></textarea><div class="row-actions"><button class="action" type="button" onclick="createQuickNoteFromDialog(false)">Enregistrer</button><button class="secondary" type="button" onclick="createQuickNoteFromDialog(true)">Enregistrer et traiter</button><button class="secondary" type="button" onclick="closeQuickNoteDialog()">Annuler</button></div></div></div>`);
@@ -27966,3 +28032,10 @@ function renderPerformanceSourcesSummary() {
   }
 })();
 
+
+
+// V5.30N2A — garde-fou : le bandeau + Note doit rester présent sur toutes les vues.
+window.addEventListener("load", () => {
+  setTimeout(ensureQuickNoteRailVisible, 0);
+  setTimeout(ensureQuickNoteRailVisible, 250);
+});
