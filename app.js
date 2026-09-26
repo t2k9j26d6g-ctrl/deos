@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30N4-TEST";
+const DEOS_VERSION = "V5.30N4";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
