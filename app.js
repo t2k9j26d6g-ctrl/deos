@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30-SYNC-D2";
+const DEOS_VERSION = "V5.30-SYNC-D14-STABLE";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -1052,6 +1052,7 @@ const DEOS_JOURNAL_SYNC_DOC_PREFIX = "deos-system-journal-sync-v3-";
 const DEOS_JOURNAL_SYNC_LEGACY_IDS = new Set(["deos-system-journal-sync", "deos-system-journal-sync-v2"]);
 const DEOS_JOURNAL_SYNC_SOURCE = "DEOS_JOURNAL_SYNC";
 const DEOS_JOURNAL_SYNC_DEVICE_KEY = "deos_journal_sync_device_id";
+const DEOS_JOURNAL_SYNC_DELETED_KEY = "deos_journal_sync_deleted_v1";
 let deosJournalSyncApplyingRemote = false;
 let deosJournalSyncTimer = null;
 
@@ -1073,6 +1074,48 @@ function journalSyncDeviceId() {
 
 function journalSyncOwnDocumentId() {
   return `${DEOS_JOURNAL_SYNC_DOC_PREFIX}${journalSyncDeviceId()}`;
+}
+
+function loadJournalDeletedTombstones() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(DEOS_JOURNAL_SYNC_DELETED_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    const latest = new Map();
+    parsed.forEach(entry => {
+      const id = String(entry?.id || "").trim();
+      const deletedAt = String(entry?.deletedAt || "").trim();
+      const stamp = Date.parse(deletedAt);
+      if (!id || !Number.isFinite(stamp)) return;
+      const previous = latest.get(id);
+      if (!previous || stamp > Date.parse(previous.deletedAt || 0)) latest.set(id, { id, deletedAt });
+    });
+    return [...latest.values()];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveJournalDeletedTombstones(entries) {
+  try {
+    const latest = new Map();
+    ensureArray(entries).forEach(entry => {
+      const id = String(entry?.id || "").trim();
+      const deletedAt = String(entry?.deletedAt || "").trim();
+      const stamp = Date.parse(deletedAt);
+      if (!id || !Number.isFinite(stamp)) return;
+      const previous = latest.get(id);
+      if (!previous || stamp > Date.parse(previous.deletedAt || 0)) latest.set(id, { id, deletedAt });
+    });
+    localStorage.setItem(DEOS_JOURNAL_SYNC_DELETED_KEY, JSON.stringify([...latest.values()]));
+  } catch (_) {}
+}
+
+function recordJournalDeletion(id, deletedAt = new Date().toISOString()) {
+  const key = String(id || "").trim();
+  if (!key) return;
+  const tombstones = loadJournalDeletedTombstones();
+  tombstones.push({ id: key, deletedAt });
+  saveJournalDeletedTombstones(tombstones);
 }
 
 function isJournalSyncTransportDocument(item) {
@@ -1098,7 +1141,8 @@ function journalSyncPayloadFromDocument(doc) {
     updatedAt: String(content.updatedAt || doc.updatedAt || ""),
     deviceId: String(content.deviceId || ""),
     device: String(content.device || ""),
-    journal: content.journal
+    journal: content.journal,
+    deleted: ensureArray(content.deleted).map(entry => ({ id: String(entry?.id || ""), deletedAt: String(entry?.deletedAt || "") })).filter(entry => entry.id && Number.isFinite(Date.parse(entry.deletedAt)))
   };
 }
 
@@ -1107,11 +1151,14 @@ function stageJournalSyncTransport() {
   if (!Array.isArray(state.documents) || !Array.isArray(state.journal)) return false;
   const nowIso = new Date().toISOString();
   const payload = state.journal.map(item => normalizeEntity("journal", item));
+  const deleted = loadJournalDeletedTombstones();
   const ownId = journalSyncOwnDocumentId();
   const index = state.documents.findIndex(doc => String(doc?.id || doc?.clientId || "") === ownId);
   const existing = index >= 0 ? state.documents[index] : null;
   const existingPayload = journalSyncPayloadFromDocument(existing);
-  if (existingPayload && JSON.stringify(existingPayload.journal) === JSON.stringify(payload)) return false;
+  if (existingPayload
+      && JSON.stringify(existingPayload.journal) === JSON.stringify(payload)
+      && JSON.stringify(existingPayload.deleted || []) === JSON.stringify(deleted)) return false;
   const next = normalizeEntity("documents", {
     ...(existing || {}),
     id: ownId,
@@ -1133,11 +1180,12 @@ function stageJournalSyncTransport() {
     sourceId: ownId,
     hiddenSystem: true,
     content: JSON.stringify({
-      schema: 3,
+      schema: 4,
       updatedAt: nowIso,
       deviceId: journalSyncDeviceId(),
       device: typeof detectLinksSyncDeviceLabel === "function" ? detectLinksSyncDeviceLabel() : "Navigateur",
-      journal: payload
+      journal: payload,
+      deleted
     })
   });
   if (index >= 0) state.documents[index] = next; else state.documents.unshift(next);
@@ -1158,9 +1206,33 @@ function applyJournalSyncTransportFromDocuments(options = {}) {
 
   const current = normalizeCollection("journal", state.journal || []);
   const byKey = new Map();
+  const deletedByKey = new Map();
+
+  const absorbDeleted = entries => ensureArray(entries).forEach(entry => {
+    const id = String(entry?.id || "").trim();
+    const deletedAt = String(entry?.deletedAt || "").trim();
+    const stamp = Date.parse(deletedAt);
+    if (!id || !Number.isFinite(stamp)) return;
+    const previous = deletedByKey.get(id);
+    if (!previous || stamp > Date.parse(previous.deletedAt || 0)) deletedByKey.set(id, { id, deletedAt });
+  });
+
+  absorbDeleted(loadJournalDeletedTombstones());
+  transportDocs
+    .map(doc => ({ doc, payload: journalSyncPayloadFromDocument(doc) }))
+    .filter(x => x.payload)
+    .forEach(({ payload }) => absorbDeleted(payload.deleted));
+
+  const canKeep = item => {
+    const id = String(item?.id || "").trim();
+    if (!id) return false;
+    const tombstone = deletedByKey.get(id);
+    return !tombstone || journalItemStamp(item) > Date.parse(tombstone.deletedAt || 0);
+  };
+
   current.forEach(item => {
     const id = String(item?.id || "").trim();
-    if (id) byKey.set(id, item);
+    if (id && canKeep(item)) byKey.set(id, item);
   });
 
   transportDocs
@@ -1170,12 +1242,13 @@ function applyJournalSyncTransportFromDocuments(options = {}) {
     .forEach(({ payload }) => {
       normalizeCollection("journal", payload.journal).forEach(item => {
         const id = String(item?.id || "").trim();
-        if (!id) return;
+        if (!id || !canKeep(item)) return;
         const local = byKey.get(id);
         if (!local || journalItemStamp(item) >= journalItemStamp(local)) byKey.set(id, item);
       });
     });
 
+  saveJournalDeletedTombstones([...deletedByKey.values()]);
   const merged = [...byKey.values()].map(item => normalizeEntity("journal", item));
   merged.sort((a, b) => journalItemStamp(b) - journalItemStamp(a));
   if (JSON.stringify(current) === JSON.stringify(merged)) return false;
@@ -10121,6 +10194,7 @@ function deleteJournal(id) {
   const i = indexById("journal", id);
   if (i < 0 || !confirm("Supprimer cette entrée ?")) return;
   const t = state.journal[i].title;
+  recordJournalDeletion(id);
   state.journal.splice(i, 1);
   persist("journal");
   addActivity("🗑️ Journal supprimé", t);
@@ -10241,6 +10315,15 @@ const performanceImportTargetCatalog = [
   { id: "hours.sundays", label: "Dimanches / fériés du mois", path: "hours", destinationField: "sundays", type: "existing", unit: "h", aliases: ["dimanches feries", "dimanches / fériés", "dimanches fériés cumul", "hrs dim"] },
   { id: "gpo.hours_gap_budget", label: "Écart heures vs Budget", path: "complementary.gpo.hours.total.budget_gap", type: "complementary", unit: "heures", aliases: ["ecart heures vs budget", "écart heures vs budget"] },
   { id: "gpo.hours_gap_historical", label: "Écart heures vs Historique", path: "complementary.gpo.hours.total.historical_gap", type: "complementary", unit: "heures", aliases: ["ecart heures vs historique", "écart heures vs historique"] },
+  { id: "gpo.impact_direct_preparation", label: "Impact heures directes Préparation vs budget", path: "complementary.gpo.impact_direct_preparation", type: "complementary", unit: "h", aliases: ["impact heures directes préparation"] },
+  { id: "gpo.impact_direct_reception", label: "Impact heures directes Réception vs budget", path: "complementary.gpo.impact_direct_reception", type: "complementary", unit: "h", aliases: ["impact heures directes réception"] },
+  { id: "gpo.impact_direct_manutention", label: "Impact heures directes Manutention vs budget", path: "complementary.gpo.impact_direct_manutention", type: "complementary", unit: "h", aliases: ["impact heures directes manutention"] },
+  { id: "gpo.impact_direct_chargement", label: "Impact heures directes Chargement vs budget", path: "complementary.gpo.impact_direct_chargement", type: "complementary", unit: "h", aliases: ["impact heures directes chargement"] },
+  { id: "gpo.impact_indirect_preparation", label: "Passage heures indirectes Préparation vs budget", path: "complementary.gpo.impact_indirect_preparation", type: "complementary", unit: "h", aliases: ["passage indirectes préparation"] },
+  { id: "gpo.impact_indirect_reception", label: "Passage heures indirectes Réception vs budget", path: "complementary.gpo.impact_indirect_reception", type: "complementary", unit: "h", aliases: ["passage indirectes réception"] },
+  { id: "gpo.impact_indirect_manutention", label: "Passage heures indirectes Manutention vs budget", path: "complementary.gpo.impact_indirect_manutention", type: "complementary", unit: "h", aliases: ["passage indirectes manutention"] },
+  { id: "gpo.impact_indirect_chargement", label: "Passage heures indirectes Chargement vs budget", path: "complementary.gpo.impact_indirect_chargement", type: "complementary", unit: "h", aliases: ["passage indirectes chargement"] },
+  { id: "gpo.impact_indirect_structure", label: "Passage heures indirectes Structure vs budget", path: "complementary.gpo.impact_indirect_structure", type: "complementary", unit: "h", aliases: ["passage indirectes structure"] },
   { id: "absenteeism.total", label: "Absentéisme total", path: "absenteeism.total.actual", type: "existing", unit: "pourcentage", aliases: ["absenteisme total", "absentéisme total", "taux d absence"] },
   { id: "absenteeism.maladie", label: "Absentéisme maladie", path: "absenteeism.details.Maladie.actual", type: "existing", unit: "pourcentage", aliases: ["maladie", "absence maladie"] },
   { id: "absenteeism.accident_travail", label: "Absentéisme accidents du travail", path: "absenteeism.details.Accidents du travail.actual", type: "existing", unit: "pourcentage", aliases: ["accidents du travail", "accident du travail", "at"] },
@@ -10293,6 +10376,8 @@ const performanceSummaryMetricDefinitions = [
   { metricKey: "absenteeism.total", label: "Absentéisme", family: "pilotage_direction", unit: "%", targetPath: "absenteeism.total.actual", metricPath: "absenteeism.total", aliases: ["absentéisme total"] },
   { metricKey: "economy.cout_total_par_colis", label: "Coût colis total", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy.cout_total_par_colis", metricPath: "", aliases: ["cout total par colis", "coût total par colis", "cout colis total", "coût colis total"] },
   { metricKey: "economy.cout_exploitation_par_colis", label: "Coût colis exploitation (Exploit)", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy.cout_exploitation_par_colis", metricPath: "", aliases: ["cout exploitation par colis", "coût exploitation par colis", "cout colis exploitation", "coût colis exploitation"] },
+  { metricKey: "economy.cout_fixe_par_colis", label: "Coût fixe par colis", family: "pilotage_direction", unit: "€/colis", targetPath: "complementary.zgemed.economy.cout_fixe_par_colis", metricPath: "", aliases: ["cout fixe par colis", "coût fixe par colis", "cout colis total fixes"] },
+  { metricKey: "quality.demarque_marchandises_direction", label: "Démarque marchandises", family: "pilotage_direction", unit: "k€", targetPath: "complementary.zgemed.quality_demarque_marchandises", metricPath: "", aliases: ["démarque marchandises", "demarque marchandises"] },
   { metricKey: "ipo.variable", label: "IPO variable", family: "activite", unit: IPO_UNIT, targetPath: "ipo.variable.actual", metricPath: "ipo.variable", aliases: ["ipo variable"] },
   { metricKey: "activity.colis_total", label: "Colis", family: "activite", unit: "colis", targetPath: "activity.actual", metricPath: "activity", aliases: ["colis"] },
   { metricKey: "activity.uo_reception", label: "Palettes réceptionnées", family: "activite", unit: "UO", targetPath: "complementary.ga.activity_uo_reception", metricPath: "", aliases: ["uo reception", "palettes réceptionnées"] },
@@ -10694,8 +10779,16 @@ function enforcePerformanceSourceAuthority(row = {}) {
 }
 function performanceMetricFamilyPriorityKey(metricDef = {}) {
   const key = String(metricDef.metricKey || "").toLowerCase();
+  // D14 — la famille visuelle « pilotage_direction » ne doit jamais masquer
+  // la famille métier du KPI. La source officielle se déduit d'abord du metricKey.
   if (key.startsWith("ipo.")) return "ipo";
   if (key.startsWith("productivity.")) return "productivites_officielles";
+  if (key.startsWith("activity.")) return "activite";
+  if (key.startsWith("hours.")) return "heures";
+  if (key.startsWith("absenteeism.")) return "absenteisme";
+  if (key.startsWith("economy.") || key.startsWith("quality.demarque_marchandises")) return "economie_qualite";
+  if (key.startsWith("tbag.")) return "preparation_detaillee";
+  if (key.startsWith("ga_detail.")) return "affectations_dispersion";
   if (metricDef.family === "activite") return "activite";
   if (metricDef.family === "heures") return "heures";
   if (metricDef.family === "absenteisme") return "absenteisme";
@@ -10723,6 +10816,25 @@ function performanceMatchesMetricDef(row = {}, metricDef = {}) {
   const aliases = [metricDef.label, ...(metricDef.aliases || [])].map(normalizePerformanceLabel).filter(Boolean);
   if (metricDef.targetPath && rowPath && (rowPath === metricDef.targetPath || `${rowPath}.actual` === metricDef.targetPath)) return true;
   if (metricDef.metricKey && rowMetricKey && rowMetricKey === String(metricDef.metricKey).toLowerCase()) return true;
+
+  // D14 — dès qu'une ligne possède une destination ou un metricKey explicite,
+  // on interdit le fallback flou par libellé vers un autre KPI. C'est ce qui
+  // faisait prendre « Impact heures directes Réception » (-111 h) pour la
+  // productivité Réception, ou un cumul Z GEMED pour l'activité mensuelle.
+  const defKeyExact = String(metricDef.metricKey || "").toLowerCase();
+  if (rowMetricKey) {
+    const equivalent = (defKeyExact === "activity.colis_total" && rowMetricKey === "activity.colis_totaux_prepares")
+      || (defKeyExact === "quality.demarque_marchandises_direction" && rowMetricKey === "quality.demarque_marchandises");
+    if (!equivalent) return false;
+  }
+  if (rowPath && metricDef.targetPath && !(rowPath === metricDef.targetPath || `${rowPath}.actual` === metricDef.targetPath)) return false;
+
+  // V5.30 D7 — cloisonnement strict des impacts d’heures GPO (page « Performance mensuelle »).
+  // Les KPI complémentaires gpo.impact_* sont des écarts sectoriels, jamais des niveaux
+  // d'heures. Ils ne doivent donc pas matcher par libellé « heures directes/indirectes ».
+  const defKeyStrict = String(metricDef.metricKey || "").toLowerCase();
+  if ((defKeyStrict === "hours.direct" || defKeyStrict === "hours.indirect")
+      && rowMetricKey.startsWith("gpo.impact_")) return false;
   // V5.30Q5F : "Activité principale / Colis" doit correspondre uniquement
   // à COLIS TOTAUX PREPARES, jamais à colis hétérogènes/homogènes/contrôlés.
   if (String(metricDef.metricKey || "").toLowerCase() === "activity.colis_total"
@@ -10766,16 +10878,23 @@ function performancePrimaryValueForMetric(periodRecord, metricDef) {
   const valueField = metricDef.valueField || "actual";
   const value = metric[valueField];
   if (!perfHas(value)) return null;
+  // D14 — les champs canoniques de Performance sont déjà protégés à l'import
+  // par l'autorité de source. Après compaction du journal d'import, ils restent
+  // donc la référence durable. On leur restitue la source officielle attendue
+  // au lieu de les dégrader artificiellement en « Saisie DEOS ».
+  const priorityKey = performanceMetricFamilyPriorityKey(metricDef);
+  const officialSource = (performanceSourcePriorityByFamily[priorityKey] || [])[0] || "DEOS";
   return {
     value,
     budget: perfHas(metric.budget) ? metric.budget : "",
     historical: perfHas(metric.historical) ? metric.historical : "",
     unit: metricDef.unit || "",
-    source: "DEOS",
-    sourceLabel: "Saisie DEOS",
-    confidence: "moyenne",
+    source: officialSource,
+    sourceLabel: performanceSourceLabel(officialSource),
+    confidence: officialSource === "DEOS" ? "moyenne" : "élevée",
     sourceRef: metric.comment || "",
-    periodType: "monthly"
+    periodType: officialSource === "GPO" ? "cumulative" : "monthly",
+    persistedCanonical: true
   };
 }
 
@@ -10800,20 +10919,50 @@ function performanceMetricCandidates(metricDef, period, periodRecord, importRows
   const candidates = [];
   importRows.filter(row => performanceMatchesMetricDef(row, metricDef)).forEach(row => {
     const value = row.actual ?? row.value;
+    const sourceKey = performanceSourceKey(row.source || row.sourceType || "Import");
     candidates.push({
       value,
       budget: row.budget ?? "",
       historical: row.historical ?? "",
       unit: row.unit || metricDef.unit || "",
-      source: performanceSourceKey(row.source || row.sourceType || "Import"),
-      sourceLabel: performanceSourceLabel(performanceSourceKey(row.source || row.sourceType || "Import")),
+      source: sourceKey,
+      sourceLabel: performanceSourceLabel(sourceKey),
       confidence: row.confidence || "moyenne",
       sourceRef: row.sourceRef || row.sourceCell || "",
-      periodType: performanceSourceKey(row.source || row.sourceType || "Import") === "GPO"
-        ? "cumulative"
-        : (row.periodType || "monthly")
+      periodType: sourceKey === "GPO" ? "cumulative" : (row.periodType || "monthly")
     });
   });
+
+  // D13 — l'historique des imports est un journal d'audit et peut être compacté.
+  // Les KPI importés durablement dans complementaryKpis doivent donc être une source
+  // de vérité autonome pour le tableau de bord Direction. Sans cela, compacter
+  // performance_imports faisait disparaître IPO, productivités et coûts de la synthèse
+  // alors que les valeurs métier étaient toujours présentes dans state.performance.
+  ensureArray(periodRecord?.complementaryKpis).forEach(item => {
+    const syntheticRow = {
+      ...item,
+      destinationPath: item.destinationPath || item.targetId || "",
+      destinationLabel: item.destinationLabel || item.label || item.indicator || "",
+      sourceType: item.source || "Import"
+    };
+    if (!performanceMatchesMetricDef(syntheticRow, metricDef)) return;
+    const value = item.actual ?? item.value;
+    if (!perfHas(value)) return;
+    const sourceKey = performanceSourceKey(item.source || "Import");
+    candidates.push({
+      value,
+      budget: item.budget ?? "",
+      historical: item.historical ?? "",
+      unit: item.unit || metricDef.unit || "",
+      source: sourceKey,
+      sourceLabel: performanceSourceLabel(sourceKey),
+      confidence: item.confidence || "élevée",
+      sourceRef: item.sourceRef || item.sourceCell || "",
+      periodType: sourceKey === "GPO" ? "cumulative" : (item.periodType || "monthly"),
+      persistedCanonical: true
+    });
+  });
+
   const primary = performancePrimaryValueForMetric(periodRecord, metricDef);
   if (primary) candidates.push(primary);
   const unique = [];
@@ -10825,6 +10974,38 @@ function performanceMetricCandidates(metricDef, period, periodRecord, importRows
     unique.push(candidate);
   });
   return unique;
+}
+
+function performanceResolveGpoIndirectHours(period, periodRecord, importRows) {
+  const indirectDef = performanceSummaryMetricDefinitions.find(def => def.metricKey === "hours.indirect");
+  const totalDef = performanceSummaryMetricDefinitions.find(def => def.metricKey === "hours.total");
+  const directDef = performanceSummaryMetricDefinitions.find(def => def.metricKey === "hours.direct");
+  if (!indirectDef || !totalDef || !directDef) return null;
+
+  const indirectCandidates = performanceMetricCandidates(indirectDef, period, periodRecord, importRows);
+  const gpoIndirect = indirectCandidates.find(c => c.source === "GPO") || null;
+  if (gpoIndirect && perfHas(gpoIndirect.value)) return gpoIndirect;
+
+  const totalGpo = performanceMetricCandidates(totalDef, period, periodRecord, importRows)
+    .find(c => c.source === "GPO" && perfHas(c.value));
+  const directGpo = performanceMetricCandidates(directDef, period, periodRecord, importRows)
+    .find(c => c.source === "GPO" && perfHas(c.value));
+  const total = totalGpo ? Number(totalGpo.value) : NaN;
+  const direct = directGpo ? Number(directGpo.value) : NaN;
+  if (!Number.isFinite(total) || !Number.isFinite(direct)) return gpoIndirect;
+
+  return {
+    value: total - direct,
+    budget: gpoIndirect?.budget ?? "",
+    historical: gpoIndirect?.historical ?? "",
+    unit: gpoIndirect?.unit || "h",
+    source: "GPO",
+    sourceLabel: "GPO",
+    confidence: "élevée",
+    sourceRef: gpoIndirect?.sourceRef || "Calcul GPO : heures totales - heures directes",
+    periodType: "cumulative",
+    derived: true
+  };
 }
 
 function getPreferredPerformanceValue(metricKey, period) {
@@ -10848,8 +11029,9 @@ function getPreferredPerformanceValue(metricKey, period) {
   const candidates = performanceMetricCandidates(metricDef, period, periodRecord, importRows);
   const priorityKey = performanceMetricFamilyPriorityKey(metricDef);
   const priority = performanceSourcePriorityByFamily[priorityKey] || [];
-  let selected = null;
+  let selected = metricKey === "hours.indirect" ? performanceResolveGpoIndirectHours(period, periodRecord, importRows) : null;
   for (const sourceKey of priority) {
+    if (selected) break;
     selected = candidates.find(candidate => candidate.source === sourceKey && perfHas(candidate.value));
     if (selected) break;
   }
@@ -10925,7 +11107,7 @@ function performanceSummaryFormatValue(value, unit, metricKey = "") {
     const ratioValue = numeric >= 0 && numeric <= 1 ? numeric * 100 : numeric;
     return `${ratioValue.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} %`;
   }
-  const isUnitCost = metricKey === "economy.cout_total_par_colis" || metricKey === "economy.cout_exploitation_par_colis";
+  const isUnitCost = metricKey === "economy.cout_total_par_colis" || metricKey === "economy.cout_exploitation_par_colis" || metricKey === "economy.cout_fixe_par_colis";
   const digits = isUnitCost ? 3 : (/hours|heures|\bh\b/.test(normalizedUnit) ? 2 : (metricKey.startsWith("ipo.") ? 2 : 1));
   const formatted = numeric.toLocaleString("fr-FR", {
     minimumFractionDigits: isUnitCost ? 3 : 0,
@@ -10951,16 +11133,17 @@ function performanceSummaryBuildRows(period) {
   return performanceSummaryMetricDefinitions.map(def => {
     const preferred = getPreferredPerformanceValue(def.metricKey, period);
     const status = performanceSummaryMetricStatus(def.metricKey, period, preferred);
-    const unitCostMetric = def.metricKey === "economy.cout_total_par_colis" || def.metricKey === "economy.cout_exploitation_par_colis";
+    const unitCostMetric = def.metricKey === "economy.cout_total_par_colis" || def.metricKey === "economy.cout_exploitation_par_colis" || def.metricKey === "economy.cout_fixe_par_colis";
+    const managerialAbsMetric = unitCostMetric || def.metricKey === "quality.demarque_marchandises_direction";
     const rawValue = perfHas(preferred.value) ? Number(preferred.value) : "";
     const rawBudget = perfHas(preferred.budget) ? Number(preferred.budget) : "";
     const rawHistorical = perfHas(preferred.historical) ? Number(preferred.historical) : "";
     // V5.30Q5F : Z GEMED stocke les charges avec un signe comptable négatif.
     // Pour le pilotage, les coûts unitaires sont affichés en valeur positive,
     // sans modifier la donnée source enregistrée.
-    const value = Number.isFinite(rawValue) ? (unitCostMetric ? Math.abs(rawValue) : rawValue) : "";
-    const budget = Number.isFinite(rawBudget) ? (unitCostMetric ? Math.abs(rawBudget) : rawBudget) : "";
-    const historical = Number.isFinite(rawHistorical) ? (unitCostMetric ? Math.abs(rawHistorical) : rawHistorical) : "";
+    const value = Number.isFinite(rawValue) ? (managerialAbsMetric ? Math.abs(rawValue) : rawValue) : "";
+    const budget = Number.isFinite(rawBudget) ? (managerialAbsMetric ? Math.abs(rawBudget) : rawBudget) : "";
+    const historical = Number.isFinite(rawHistorical) ? (managerialAbsMetric ? Math.abs(rawHistorical) : rawHistorical) : "";
     const gap = (Number.isFinite(value) && Number.isFinite(budget)) ? value - budget : "";
     const trend = (Number.isFinite(value) && Number.isFinite(historical)) ? value - historical : "";
 
@@ -10973,7 +11156,9 @@ function performanceSummaryBuildRows(period) {
       "hours.indirect": "lower",
       "absenteeism.total": "lower",
       "economy.cout_total_par_colis": "lower",
-      "economy.cout_exploitation_par_colis": "lower"
+      "economy.cout_exploitation_par_colis": "lower",
+      "economy.cout_fixe_par_colis": "lower",
+      "quality.demarque_marchandises_direction": "lower"
     };
     let directionStatusLabel = status.label;
     let directionStatusTone = status.tone;
@@ -11400,12 +11585,12 @@ function performanceWarningsBadgesV519(row) {
 }
 
 function performanceDirectionCards(period) {
-  const cardOrder = ["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis", "economy.cout_exploitation_par_colis"];
+  const cardOrder = ["ipo.total", "activity.colis_total", "productivity.preparation", "hours.indirect", "absenteeism.total", "economy.cout_total_par_colis", "economy.cout_exploitation_par_colis", "economy.cout_fixe_par_colis", "quality.demarque_marchandises_direction"];
   const rows = performanceSummaryRowsFiltered(period).filter(row => cardOrder.includes(row.metricKey));
-  const ordered = cardOrder.map(key => rows.find(row => row.metricKey === key)).filter(Boolean).slice(0, 7);
+  const ordered = cardOrder.map(key => rows.find(row => row.metricKey === key)).filter(Boolean).slice(0, 9);
   if (!ordered.length) return `<div class="empty">Aucune carte Direction disponible avec les filtres en cours.</div>`;
   const cards = ordered.map(row => {
-    const isUnitCostCard = row.metricKey === "economy.cout_total_par_colis" || row.metricKey === "economy.cout_exploitation_par_colis";
+    const isUnitCostCard = row.metricKey === "economy.cout_total_par_colis" || row.metricKey === "economy.cout_exploitation_par_colis" || row.metricKey === "economy.cout_fixe_par_colis";
     const spanStyle = isUnitCostCard ? "grid-column: span 3;" : "grid-column: span 2;";
     return `
     <article class="performance-summary-direction-card" style="${spanStyle}">
@@ -12846,16 +13031,63 @@ function compactPerformanceImportPayload(item = {}) {
   });
 }
 
-function compactPerformanceImportHistoryForStorage() {
-  state.performance_imports = ensureArray(state.performance_imports).map(compactPerformanceImportPayload);
+function compactPerformanceImportHistoryForStorage(options = {}) {
+  const keepFullRecent = Math.max(0, Number(options.keepFullRecent ?? 2));
+  const maxHistory = Math.max(5, Number(options.maxHistory ?? 30));
+  const source = ensureArray(state.performance_imports)
+    .slice()
+    .sort((a, b) => String(b.importDate || "").localeCompare(String(a.importDate || "")))
+    .slice(0, maxHistory);
+  state.performance_imports = source.map((item, index) => {
+    const compact = compactPerformanceImportPayload(item);
+    if (index >= keepFullRecent) compact.indicators = [];
+    return compact;
+  });
   persist("performance_imports");
+}
+
+function persistPerformanceImportHistoryResilient(newPayload = null) {
+  // Historique d'import = journal d'audit. Les données métier sont déjà dans state.performance.
+  // On conserve le détail des imports récents, puis uniquement les métadonnées des anciens imports.
+  if (newPayload) state.performance_imports.unshift(newPayload);
+  const attempts = [
+    { keepFullRecent: 2, maxHistory: 30 },
+    { keepFullRecent: 1, maxHistory: 20 },
+    { keepFullRecent: 0, maxHistory: 12 }
+  ];
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      compactPerformanceImportHistoryForStorage(attempt);
+      return true;
+    } catch (error) {
+      lastError = error;
+      const code = String(error?.code || "").toUpperCase();
+      const name = String(error?.name || error?.originalError?.name || "").toUpperCase();
+      if (!(code === "STORAGE_QUOTA_EXCEEDED" || name.includes("QUOTA"))) throw error;
+    }
+  }
+  // Ultime filet de sécurité : conserver uniquement le nouvel import en métadonnées.
+  if (newPayload) {
+    const minimal = compactPerformanceImportPayload(newPayload);
+    minimal.indicators = [];
+    state.performance_imports = [minimal];
+    try {
+      persist("performance_imports");
+      return true;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (lastError) throw lastError;
+  return false;
 }
 
 function performanceImportQuotaMessage(error) {
   const code = String(error?.code || "").toUpperCase();
   const name = String(error?.name || error?.originalError?.name || "").toUpperCase();
   if (code === "STORAGE_QUOTA_EXCEEDED" || name.includes("QUOTA")) {
-    return "Le stockage local du navigateur est saturé. DEOS a compacté l'historique des imports Performance, mais l'import reste trop volumineux. Exportez une sauvegarde puis contactez l'administrateur DEOS avant de supprimer des données.";
+    return "Le stockage local du navigateur est saturé malgré le nettoyage automatique de l’historique des imports. Fermez puis rouvrez DEOS et relancez l’import ; aucune suppression manuelle n’est normalement nécessaire.";
   }
   return error?.message || "La validation de l'import Performance a échoué.";
 }
@@ -12873,7 +13105,7 @@ function validatePerformanceImport() {
   try {
     // V5.21H : libère d'abord l'espace occupé par les anciennes copies redondantes
     // (files / preview / conflicts) avant d'écrire le nouvel état Performance.
-    compactPerformanceImportHistoryForStorage();
+    try { compactPerformanceImportHistoryForStorage({ keepFullRecent: 1, maxHistory: 20 }); } catch (_) {}
 
     const imported = applyPerformanceImportRows(selectedRows, first, importDate);
     persist("performance");
@@ -12899,8 +13131,7 @@ function validatePerformanceImport() {
     });
     const containsCgtab = performanceImportWizard.preview.some(row => /CGTAB/i.test(String(row.source || row.sourceType || "")));
     if (containsCgtab) payload.privacyAudit = performancePrivacyAuditForSensitiveData();
-    state.performance_imports.unshift(payload);
-    persist("performance_imports");
+    persistPerformanceImportHistoryResilient(payload);
     addActivity("Performance", "Import de données", `${payload.status} · ${payload.sourceFile}`, payload.id);
     performanceImportWizard = null;
     renderPerformance();
@@ -13269,6 +13500,71 @@ function gpoMetricConfidence(metricKey, values, layoutBased = false) {
   return { label: performanceImportConfidenceMeta(score).label, score, selected: true, action: "" };
 }
 
+
+function gpoTextSignedNumberAt(line, startIndex, endIndex) {
+  const segment = String(line || "").slice(Math.max(0, startIndex), Math.max(startIndex + 1, endIndex));
+  const matches = [...segment.matchAll(/([+-])\s*(\d{1,4})(?!\s*%)/g)];
+  if (!matches.length) return "";
+  const m = matches[0];
+  const n = Number(m[2]);
+  if (!Number.isFinite(n)) return "";
+  return m[1] === "-" ? -n : n;
+}
+
+function gpoTextPerformanceImpacts(page) {
+  const text = String(page?.layoutText || page?.text || "");
+  if (!/Performance mensuelle/i.test(text)) return {};
+  const lines = text.split(/\r?\n/);
+  const labelsLineIndex = lines.findIndex(line => /PRÉPARATION|PREPARATION/.test(line) && /RÉCEPTION|RECEPTION/.test(line) && /MANUTENTION/.test(line) && /CHARGEMENT/.test(line));
+  if (labelsLineIndex < 0) return {};
+  const labelsLine = lines[labelsLineIndex];
+  const cols = {
+    preparation: Math.max(labelsLine.indexOf("PRÉPARATION"), labelsLine.indexOf("PREPARATION")),
+    reception: Math.max(labelsLine.indexOf("RÉCEPTION"), labelsLine.indexOf("RECEPTION")),
+    manutention: labelsLine.indexOf("MANUTENTION"),
+    chargement: labelsLine.indexOf("CHARGEMENT"),
+    structure: labelsLine.indexOf("STRUCTURE")
+  };
+  const validCols = Object.values(cols).filter(v => v >= 0).sort((a,b)=>a-b);
+  if (validCols.length < 4) return {};
+  const boundsFor = key => {
+    const x = cols[key];
+    if (x < 0) return [0,0];
+    const sorted = validCols;
+    const idx = sorted.indexOf(x);
+    const left = idx <= 0 ? Math.max(0, x - 12) : Math.floor((sorted[idx-1] + x) / 2);
+    const right = idx < 0 || idx >= sorted.length - 1 ? x + 26 : Math.floor((x + sorted[idx+1]) / 2);
+    return [left, right];
+  };
+  const directStart = lines.findIndex(line => /Écart|Ecart/.test(line) && /DIRECTES/.test(line));
+  const indirectStart = lines.findIndex(line => /Passage/.test(line));
+  const hindEnd = lines.findIndex((line, i) => i > indirectStart && /H IND B/.test(line));
+  const scan = (start, end, key) => {
+    const [left,right] = boundsFor(key);
+    if (right <= left) return "";
+    for (let i = Math.max(0,start); i < Math.min(lines.length,end); i++) {
+      const value = gpoTextSignedNumberAt(lines[i], left, right);
+      if (value !== "") return value;
+    }
+    return "";
+  };
+  const out = {};
+  if (directStart >= 0 && indirectStart > directStart) {
+    ["preparation","reception","manutention","chargement"].forEach(key => {
+      const v = scan(directStart, indirectStart, key);
+      if (v !== "") out[`impact_direct_${key}`] = { actual: v };
+    });
+  }
+  if (indirectStart >= 0) {
+    const end = hindEnd > indirectStart ? hindEnd + 4 : Math.min(lines.length, indirectStart + 14);
+    ["preparation","reception","manutention","chargement","structure"].forEach(key => {
+      const v = scan(indirectStart, end, key);
+      if (v !== "") out[`impact_indirect_${key}`] = { actual: v };
+    });
+  }
+  return out;
+}
+
 function extractGpoSaintGillesLayout(page) {
   const text = String(page?.layoutText || page?.text || "");
   if (!ensureArray(page?.layoutItems).length) return null;
@@ -13278,6 +13574,16 @@ function extractGpoSaintGillesLayout(page) {
     out.productivity_reception = gpoLayoutTriple(page, [[270, 217], [293, 236], [316, 204]], { xTolerance: 24, yTolerance: 15, min: 5, max: 50 });
     out.productivity_manutention = gpoLayoutTriple(page, [[359, 224], [382, 219], [405, 209]], { xTolerance: 24, yTolerance: 15, min: 5, max: 50 });
     out.productivity_chargement = gpoLayoutTriple(page, [[449, 224], [472, 239], [495, 209]], { xTolerance: 24, yTolerance: 15, min: 5, max: 60 });
+    // Écarts d'heures de la page "Performance mensuelle" du GPO (page imprimée 154 sur le modèle 2026).
+    out.impact_direct_preparation = { actual: gpoLayoutNearestNumber(page, 272, 302, { xTolerance: 28, yTolerance: 24, min: -10000, max: 10000 }) };
+    out.impact_direct_reception = { actual: gpoLayoutNearestNumber(page, 358, 356, { xTolerance: 28, yTolerance: 24, min: -10000, max: 10000 }) };
+    out.impact_direct_manutention = { actual: gpoLayoutNearestNumber(page, 445, 372, { xTolerance: 30, yTolerance: 26, min: -10000, max: 10000 }) };
+    out.impact_direct_chargement = { actual: gpoLayoutNearestNumber(page, 532, 359, { xTolerance: 30, yTolerance: 26, min: -10000, max: 10000 }) };
+    out.impact_indirect_preparation = { actual: gpoLayoutNearestNumber(page, 272, 456, { xTolerance: 30, yTolerance: 28, min: -10000, max: 10000 }) };
+    out.impact_indirect_reception = { actual: gpoLayoutNearestNumber(page, 359, 439, { xTolerance: 30, yTolerance: 28, min: -10000, max: 10000 }) };
+    out.impact_indirect_manutention = { actual: gpoLayoutNearestNumber(page, 449, 434, { xTolerance: 30, yTolerance: 28, min: -10000, max: 10000 }) };
+    out.impact_indirect_chargement = { actual: gpoLayoutNearestNumber(page, 533, 426, { xTolerance: 30, yTolerance: 28, min: -10000, max: 10000 }) };
+    out.impact_indirect_structure = { actual: gpoLayoutNearestNumber(page, 620, 416, { xTolerance: 30, yTolerance: 28, min: -10000, max: 10000 }) };
   }
   if (/Evolution HEURES/i.test(text)) {
     out.hours_total = gpoLayoutTriple(page, [[660, 166], [676, 181], [692, 147]], { xTolerance: 28, yTolerance: 16, min: 10000, max: 1000000 });
@@ -13334,7 +13640,16 @@ function extractGpoIndicators(pages, period) {
     absenteeism_conges: { metricKey: "absenteeism.conges", label: "Absentéisme congés", targetId: "absenteeism.conges", category: "Absentéisme", unit: "pourcentage" },
     absenteeism_autres: { metricKey: "absenteeism.autres", label: "Absentéisme autres", targetId: "absenteeism.autres", category: "Absentéisme", unit: "pourcentage" },
     hours_gap_budget: { metricKey: "hours.total.budget_gap", label: "Écart heures vs Budget", targetId: "gpo.hours_gap_budget", category: "Heures", unit: "heures" },
-    hours_gap_historical: { metricKey: "hours.total.historical_gap", label: "Écart heures vs Historique", targetId: "gpo.hours_gap_historical", category: "Heures", unit: "heures" }
+    hours_gap_historical: { metricKey: "hours.total.historical_gap", label: "Écart heures vs Historique", targetId: "gpo.hours_gap_historical", category: "Heures", unit: "heures" },
+    impact_direct_preparation: { metricKey: "gpo.impact_direct_preparation", label: "Impact heures directes Préparation vs budget", targetId: "gpo.impact_direct_preparation", category: "Heures", unit: "h" },
+    impact_direct_reception: { metricKey: "gpo.impact_direct_reception", label: "Impact heures directes Réception vs budget", targetId: "gpo.impact_direct_reception", category: "Heures", unit: "h" },
+    impact_direct_manutention: { metricKey: "gpo.impact_direct_manutention", label: "Impact heures directes Manutention vs budget", targetId: "gpo.impact_direct_manutention", category: "Heures", unit: "h" },
+    impact_direct_chargement: { metricKey: "gpo.impact_direct_chargement", label: "Impact heures directes Chargement vs budget", targetId: "gpo.impact_direct_chargement", category: "Heures", unit: "h" },
+    impact_indirect_preparation: { metricKey: "gpo.impact_indirect_preparation", label: "Passage heures indirectes Préparation vs budget", targetId: "gpo.impact_indirect_preparation", category: "Heures", unit: "h" },
+    impact_indirect_reception: { metricKey: "gpo.impact_indirect_reception", label: "Passage heures indirectes Réception vs budget", targetId: "gpo.impact_indirect_reception", category: "Heures", unit: "h" },
+    impact_indirect_manutention: { metricKey: "gpo.impact_indirect_manutention", label: "Passage heures indirectes Manutention vs budget", targetId: "gpo.impact_indirect_manutention", category: "Heures", unit: "h" },
+    impact_indirect_chargement: { metricKey: "gpo.impact_indirect_chargement", label: "Passage heures indirectes Chargement vs budget", targetId: "gpo.impact_indirect_chargement", category: "Heures", unit: "h" },
+    impact_indirect_structure: { metricKey: "gpo.impact_indirect_structure", label: "Passage heures indirectes Structure vs budget", targetId: "gpo.impact_indirect_structure", category: "Heures", unit: "h" }
   };
   const pushMetric = (page, metricId, values, confidence = "moyenne", layoutBased = false) => {
     const metric = gpoMetrics[metricId];
@@ -13351,6 +13666,10 @@ function extractGpoIndicators(pages, period) {
   pages.forEach(page => {
     const text = page.text;
     const layout = extractGpoSaintGillesLayout(page) || {};
+    const textImpacts = gpoTextPerformanceImpacts(page);
+    Object.entries(textImpacts).forEach(([key, values]) => {
+      if (!layout[key] || layout[key].actual === "" || layout[key].actual === null || layout[key].actual === undefined) layout[key] = values;
+    });
     if (/Passage IPO total/i.test(text)) pushMetric(page, "ipo_total", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+total", 1800)), "élevée");
     if (/Passage IPO Variable/i.test(text)) pushMetric(page, "ipo_variable", extractGpoIpoValues(extractGpoSection(text, "Passage\\s+IPO\\s+Variable", 1800)), "élevée");
     if (/Performance mensuelle/i.test(text)) {
@@ -13358,6 +13677,10 @@ function extractGpoIndicators(pages, period) {
       pushMetric(page, "productivity_reception", layout.productivity_reception || extractGpoTripleAround(extractGpoSection(text, "RÉCEPTION|RECEPTION", 180), "RÉCEPTION|RECEPTION", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_reception));
       pushMetric(page, "productivity_manutention", layout.productivity_manutention || extractGpoTripleAround(extractGpoSection(text, "MANUTENTION", 180), "MANUTENTION", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_manutention));
       pushMetric(page, "productivity_chargement", layout.productivity_chargement || extractGpoTripleAround(extractGpoSection(text, "CHARGEMENT", 180), "CHARGEMENT", { preferDecimal: true }), "moyenne", Boolean(layout.productivity_chargement));
+      ["impact_direct_preparation","impact_direct_reception","impact_direct_manutention","impact_direct_chargement","impact_indirect_preparation","impact_indirect_reception","impact_indirect_manutention","impact_indirect_chargement","impact_indirect_structure"].forEach(metricId => {
+        const values = layout[metricId];
+        if (values && values.actual !== "" && values.actual !== null && values.actual !== undefined) pushMetric(page, metricId, values, "moyenne", true);
+      });
       if (/TRANSIT|TRANSPORT/i.test(text)) pushMetric(page, "productivity_transit", extractGpoTripleAround(extractGpoSection(text, "TRANSIT|TRANSPORT", 180), "TRANSIT|TRANSPORT", { preferDecimal: true }), "faible");
     }
     if (/Evolution HEURES/i.test(text)) {
@@ -16173,7 +16496,9 @@ function reportPerformanceDirectionRowsOnly(rows = []) {
     "hours.indirect",
     "absenteeism.total",
     "economy.cout_total_par_colis",
-    "economy.cout_exploitation_par_colis"
+    "economy.cout_exploitation_par_colis",
+    "economy.cout_fixe_par_colis",
+    "quality.demarque_marchandises_direction"
   ]);
   const seen = new Set();
   return rows.filter(r => {
@@ -16551,38 +16876,26 @@ function reportPreparationVolumeReconciliation(source) {
   const zGemedVolume = perfHas(source?.activity?.actual) ? Number(source.activity.actual) : "";
 
   if (!Number.isFinite(tbagVolume) || !Number.isFinite(zGemedVolume) || zGemedVolume <= 0) {
-    return {
-      available: false,
-      comparable: false,
-      tbagVolume,
-      zGemedVolume,
-      difference: "",
-      pct: "",
-      text: "Rapprochement volumes Préparation : données insuffisantes."
-    };
+    return { available: false, comparable: false, tbagVolume, zGemedVolume, difference: "", pct: "", text: "Rapprochement volumes Préparation : données insuffisantes." };
   }
 
   const difference = zGemedVolume - tbagVolume;
   const pct = difference / zGemedVolume * 100;
 
-  // A non-trivial volume gap means the functional perimeters are not reconciled.
-  // 1% is deliberately conservative: DEOS must not manufacture a pseudo-precise hour impact.
-  const comparable = Math.abs(pct) <= 1;
-
   return {
     available: true,
-    comparable,
+    comparable: false,
     tbagVolume,
     zGemedVolume,
     difference,
     pct,
-    text: `RAPPROCHEMENT DES VOLUMES
-- Volume T-Bag : ${tbagVolume.toLocaleString("fr-FR")} colis
-- Volume Z GEMED — colis totaux préparés : ${zGemedVolume.toLocaleString("fr-FR")} colis
-- Écart de périmètre : ${Math.abs(difference).toLocaleString("fr-FR")} colis (${Math.abs(pct).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} % du volume Z GEMED)
-- Périmètre T-Bag : Mensuel.
-- Périmètre productivité officielle GPO : Cumul à date (GPO).
-- Conclusion : ${comparable ? "périmètres fonctionnels suffisamment proches pour une lecture indicative." : "périmètres non réconciliés ; aucun impact heures Préparation ne doit être calculé."}`
+    text: `RAPPROCHEMENT DES VOLUMES — PÉRIMÈTRES DIFFÉRENTS
+- Volume T-Bag : ${tbagVolume.toLocaleString("fr-FR")} colis hétérogènes.
+- Volume Z GEMED — colis totaux préparés : ${zGemedVolume.toLocaleString("fr-FR")} colis, comprenant les colis hétérogènes ET homogènes.
+- Différence Z GEMED - T-Bag : ${Math.abs(difference).toLocaleString("fr-FR")} colis (${Math.abs(pct).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} % du volume Z GEMED).
+- Périmètre T-Bag : analyse mensuelle de la préparation hétérogène et des populations CDI / ETT / CDD.
+- Périmètre Z GEMED : activité totale mensuelle, hétérogène + homogène.
+- Conclusion : cet écart de volume est structurel et attendu ; il ne doit plus être présenté comme une anomalie de réconciliation. Pour l'impact heures officiel, DEOS privilégie l'impact GPO lorsqu'il est disponible.`
   };
 }
 function reportPerformancePeriodSeries(metricKey, currentPeriod, limit = 12) {
@@ -16617,7 +16930,9 @@ function reportTrendDirection(metricKey) {
     "hours.indirect",
     "absenteeism.total",
     "economy.cout_total_par_colis",
-    "economy.cout_exploitation_par_colis"
+    "economy.cout_exploitation_par_colis",
+    "economy.cout_fixe_par_colis",
+    "quality.demarque_marchandises"
   ]).has(metricKey) ? "lower" : "higher";
 }
 
@@ -16734,6 +17049,47 @@ function reportPreparationImpactScopeText(volumeInfo, productivityInfo, reconcil
 }
 
 
+function reportGpoImpactActual(source, metricKey) {
+  const metric = reportComplementaryMetric(source, metricKey);
+  const value = reportMetricActual(metric);
+  return Number.isFinite(value) ? value : "";
+}
+
+function reportSectorMonthlyHours(source, costCenters = []) {
+  const wanted = new Set(ensureArray(costCenters).map(v => String(v || "").replace(/\D/g, "").padStart(5, "0")));
+  const rows = ensureArray(source?.complementaryKpis).filter(item => {
+    const cc = String(item.costCenter || "").replace(/\D/g, "").padStart(5, "0");
+    return wanted.has(cc);
+  });
+  const pick = metricKey => {
+    const values = rows.filter(item => String(item.metricKey || "") === metricKey).map(reportMetricActual).filter(Number.isFinite);
+    return values.length ? values.reduce((a, b) => a + b, 0) : "";
+  };
+  return { direct: pick("ga_detail.cost_center.direct_hours"), indirect: pick("ga_detail.cost_center.indirect_hours") };
+}
+
+function reportPerformanceHighlights(source) {
+  const year = Number(source?.year || 0), month = Number(source?.month || 0);
+  if (!year || !month) return "Aucun fait marquant automatiquement identifié pour cette période.";
+  const rows = ensureArray(state.journal).filter(item => {
+    if (item?.archived) return false;
+    const raw = String(item?.date || item?.createdAt || "");
+    const d = new Date(raw.length === 10 ? raw + "T12:00:00" : raw);
+    return !Number.isNaN(d.getTime()) && d.getFullYear() === year && d.getMonth() + 1 === month;
+  });
+  if (!rows.length) return "Aucun fait marquant automatiquement identifié dans le Journal opérationnel pour cette période.";
+  return rows.map(item => {
+    const text = `${item.title || ""} ${item.summary || item.content || ""} ${(item.tags || []).join(" ")}`.toLowerCase();
+    const score = /incident|gr[eè]ve|panne|canicule|accident|rupture|retard|litige|crise|blocage|renfort|volume|commercial|social/.test(text) ? 2 : (item.pinned ? 1 : 0);
+    return { item, score };
+  }).sort((a,b)=>b.score-a.score || String(a.item.date || "").localeCompare(String(b.item.date || ""))).slice(0,8)
+    .map(({item}) => {
+      const date = item.date ? ` (${item.date})` : "";
+      const detail = String(item.summary || item.content || item.facts || "").trim();
+      return `- ${item.title || "Fait marquant"}${date}${detail ? " : " + detail.slice(0,220) : ""}`;
+    }).join("\n");
+}
+
 function reportPerformanceMonthlySections(source, ctx, actions, decisions, documents) {
   const periodKey = performancePeriodKey(source) || canonicalPerformancePeriod(sourceTypePeriod(source)) || "";
   const directionRows = periodKey ? performanceSummaryBuildRows(periodKey) : [];
@@ -16743,14 +17099,67 @@ function reportPerformanceMonthlySections(source, ctx, actions, decisions, docum
     if (!row) return "Donnée non disponible";
     return `${performanceSummaryFormatValue(row.value, row.unit, row.metricKey)} | Budget ${performanceSummaryFormatValue(row.budget, row.unit, row.metricKey)} | Historique ${performanceSummaryFormatValue(row.historical, row.unit, row.metricKey)} | Écart ${performanceSummaryFormatDelta(row.gap, row.unit, row.metricKey)} | Statut ${row.statusLabel || "À compléter"} | Source ${row.sourceLabel || performanceSourceLabel(row.source)} · ${reportScopeLabel(row.periodType)}`;
   };
-  const metricLine = (label, metric, unit = "") => {
+  const reportMetricSense = metricKey => {
+    if (/^ipo\./.test(metricKey) || /^productivity\./.test(metricKey) || metricKey === "activity.colis_total") return "higher";
+    if (metricKey === "hours.indirect" || metricKey === "absenteeism.total") return "lower";
+    return "";
+  };
+  const reportMetricStatus = (metricKey, actual, budget) => {
+    const sense = reportMetricSense(metricKey);
+    const a = Number(actual), b = Number(budget);
+    if (!sense || !Number.isFinite(a) || !Number.isFinite(b) || b === 0) return "À qualifier";
+    const pct = ((a - b) / Math.abs(b)) * 100;
+    const favorable = sense === "higher" ? pct : -pct;
+    if (favorable >= 0) return "Maîtrisé";
+    if (favorable >= -3) return "À suivre";
+    return "Critique";
+  };
+  const reportCanonicalSourceMeta = metricKey => {
+    if (/^(ipo\.|productivity\.|hours\.|absenteeism\.)/.test(String(metricKey || ""))) {
+      return { sourceLabel: "GPO", periodType: "cumulative" };
+    }
+    if (metricKey === "activity.colis_total" || /^economy\./.test(String(metricKey || "")) || /^quality\./.test(String(metricKey || ""))) {
+      return { sourceLabel: "Z GEMED", periodType: "monthly" };
+    }
+    return { sourceLabel: "Saisie DEOS", periodType: "monthly" };
+  };
+  const fmtPreferred = (metricKey, fallbackMetric = null, fallbackUnit = "") => {
+    const summaryRow = metricKey ? rowByKey(metricKey) : null;
+    if (summaryRow && perfHas(summaryRow.value)) {
+      const canonical = reportCanonicalSourceMeta(metricKey);
+      const sourceLabel = canonical.sourceLabel || summaryRow.sourceLabel || performanceSourceLabel(summaryRow.source);
+      const periodType = canonical.periodType || summaryRow.periodType || "monthly";
+      return `${performanceSummaryFormatValue(summaryRow.value, summaryRow.unit, summaryRow.metricKey)} | Budget ${performanceSummaryFormatValue(summaryRow.budget, summaryRow.unit, summaryRow.metricKey)} | Historique ${performanceSummaryFormatValue(summaryRow.historical, summaryRow.unit, summaryRow.metricKey)} | Écart ${performanceSummaryFormatDelta(summaryRow.gap, summaryRow.unit, summaryRow.metricKey)} | Statut ${summaryRow.statusLabel || reportMetricStatus(metricKey, summaryRow.value, summaryRow.budget) || "À compléter"} | Source ${sourceLabel} · ${reportScopeLabel(periodType)}`;
+    }
+    const preferred = metricKey ? getPreferredPerformanceValue(metricKey, periodKey) : null;
+    const preferredHasValue = Boolean(preferred && perfHas(preferred.value));
+    const value = preferredHasValue ? preferred.value : fallbackMetric?.actual;
+    const budget = preferred && perfHas(preferred.budget) ? preferred.budget : fallbackMetric?.budget;
+    const historical = preferred && perfHas(preferred.historical) ? preferred.historical : fallbackMetric?.historical;
+    if (![value, budget, historical].some(perfHas)) return "Donnée non disponible";
+    const resolvedUnit = (preferredHasValue ? preferred?.unit : "") || fallbackUnit || preferred?.unit || "";
+    const gap = perfHas(value) && perfHas(budget) ? Number(value) - Number(budget) : "";
+    const canonical = reportCanonicalSourceMeta(metricKey);
+    const preferredLabel = String(preferred?.sourceLabel || preferred?.source || "").trim();
+    const preferredUsable = preferredHasValue && preferredLabel && !/donn[ée]e .*non disponible|source inconnue/i.test(preferredLabel);
+    const sourceLabel = canonical.sourceLabel || (preferredUsable ? preferredLabel : "Saisie DEOS");
+    const periodType = canonical.periodType || (preferredHasValue ? preferred?.periodType : "") || "monthly";
+    const periodLabel = reportScopeLabel(periodType);
+    return `${performanceSummaryFormatValue(value, resolvedUnit, metricKey)} | Budget ${performanceSummaryFormatValue(budget, resolvedUnit, metricKey)} | Historique ${performanceSummaryFormatValue(historical, resolvedUnit, metricKey)} | Écart ${performanceSummaryFormatDelta(gap, resolvedUnit, metricKey)} | Statut ${reportMetricStatus(metricKey, value, budget)} | Source ${sourceLabel} · ${periodLabel}`;
+  };
+  const metricLine = (label, metric, unit = "", metricKey = "") => {
+    if (metricKey) {
+      const preferredText = fmtPreferred(metricKey, metric, unit);
+      if (preferredText !== "Donnée non disponible") return `- ${label} : ${preferredText}`;
+    }
     if (!metric) return `- ${label} : Donnée source non disponible`;
     const hasAny = [metric.actual, metric.budget, metric.historical].some(perfHas);
     if (!hasAny) return `- ${label} : Donnée source non disponible`;
     const actual = perfHas(metric.actual) ? `${perfFmt(metric.actual)}${unit ? " " + unit : ""}` : "Donnée source non disponible";
     const budget = perfHas(metric.budget) ? `${perfFmt(metric.budget)}${unit ? " " + unit : ""}` : "Donnée source non disponible";
     const historical = perfHas(metric.historical) ? `${perfFmt(metric.historical)}${unit ? " " + unit : ""}` : "Donnée source non disponible";
-    return `- ${label} : Réel ${actual} | Budget ${budget} | Historique ${historical}`;
+    const gap = perfHas(metric.actual) && perfHas(metric.budget) ? Number(metric.actual) - Number(metric.budget) : "";
+    return `- ${label} : Réel ${actual} | Budget ${budget} | Historique ${historical} | Écart ${perfHas(gap) ? perfFmt(gap) + (unit ? " " + unit : "") : "Donnée non disponible"} | Statut ${reportMetricStatus(metricKey, metric.actual, metric.budget)}`;
   };
   const prep = source.productivity?.["Préparation"] || {};
   const reception = source.productivity?.["Réception"] || {};
@@ -16770,6 +17179,7 @@ function reportPerformanceMonthlySections(source, ctx, actions, decisions, docum
   const resultOpMetric = reportComplementaryMetric(source, "economy.resultat_operationnel");
   const ebitMetric = reportComplementaryMetric(source, "economy.ebit");
   const demarqueMetric = reportComplementaryMetric(source, "quality.demarque_marchandises");
+  const fixedCostMetric = reportComplementaryMetric(source, "economy.cout_fixe_par_colis");
 
   const prepImpactVolume = reportPreparationVolumeForImpact(source);
   const receptionUo = reportSectorUo(source, periodKey, "reception");
@@ -16778,6 +17188,26 @@ function reportPerformanceMonthlySections(source, ctx, actions, decisions, docum
   const uoReception = receptionUo.value;
   const uoManutention = manutentionUo.value;
   const uoChargement = chargementUo.value;
+
+  const sectorMonthlyHours = {
+    preparation: reportSectorMonthlyHours(source, ["04300"]),
+    reception: reportSectorMonthlyHours(source, ["04200"]),
+    manutention: reportSectorMonthlyHours(source, ["04400"]),
+    chargement: reportSectorMonthlyHours(source, ["04500"])
+  };
+  const gpoDirectImpacts = {
+    preparation: reportGpoImpactActual(source, "gpo.impact_direct_preparation"),
+    reception: reportGpoImpactActual(source, "gpo.impact_direct_reception"),
+    manutention: reportGpoImpactActual(source, "gpo.impact_direct_manutention"),
+    chargement: reportGpoImpactActual(source, "gpo.impact_direct_chargement")
+  };
+  const gpoIndirectImpacts = {
+    preparation: reportGpoImpactActual(source, "gpo.impact_indirect_preparation"),
+    reception: reportGpoImpactActual(source, "gpo.impact_indirect_reception"),
+    manutention: reportGpoImpactActual(source, "gpo.impact_indirect_manutention"),
+    chargement: reportGpoImpactActual(source, "gpo.impact_indirect_chargement"),
+    structure: reportGpoImpactActual(source, "gpo.impact_indirect_structure")
+  };
 
   const prepPreferred = getPreferredPerformanceValue("productivity.preparation", periodKey);
   const receptionPreferred = getPreferredPerformanceValue("productivity.reception", periodKey);
@@ -16813,7 +17243,9 @@ function reportPerformanceMonthlySections(source, ctx, actions, decisions, docum
     ["Heures indirectes", "hours.indirect"],
     ["Absentéisme", "absenteeism.total"],
     ["Coût colis total", "economy.cout_total_par_colis"],
-    ["Coût colis exploitation (Exploit)", "economy.cout_exploitation_par_colis"]
+    ["Coût colis exploitation (Exploit)", "economy.cout_exploitation_par_colis"],
+    ["Coût fixe par colis", "economy.cout_fixe_par_colis"],
+    ["Démarque marchandises", "quality.demarque_marchandises_direction"]
   ].map(([label, key]) => `- ${label} : ${fmtRow(rowByKey(key))}`).join("\n");
 
   const strengths = directionRows.filter(r => r.statusLabel === "Maîtrisé").map(r => `- ${r.label} : ${performanceSummaryFormatValue(r.value, r.unit, r.metricKey)}`).join("\n") || "À compléter";
@@ -16826,7 +17258,12 @@ function reportPerformanceMonthlySections(source, ctx, actions, decisions, docum
     },
     {
       title: "2. Synthèse exécutive",
-      body: reportPerformanceExecutiveSynthesis(source, directionRows)
+      body: `${reportPerformanceExecutiveSynthesis(source, directionRows)}
+
+FAITS MARQUANTS DU MOIS — présélection Journal opérationnel
+${reportPerformanceHighlights(source)}
+
+Règle : un fait marquant contextualise la performance ; il n'est considéré comme une cause que si le lien est démontré.`
     },
     {
       title: "3. Tableau de bord Direction",
@@ -16834,26 +17271,63 @@ function reportPerformanceMonthlySections(source, ctx, actions, decisions, docum
     },
     {
       title: "4. Productivités par secteur et IPO",
-      body: `${metricLine("Préparation", prep, "colis/h")}\n${metricLine("Réception", reception, "palettes/h")}\n${metricLine("Manutention", manut, "palettes/h")}\n${metricLine("Chargement", chargement, "palettes/h")}\n${metricLine("Transit", transit, "palettes/h")}\n\nRéférence productivités officielles GPO : ${reportScopeLabel(prepPreferred.periodType)}. Les volumes Z GEMED / T-Bag restent mensuels.\n\nIPO total : ${fmtRow(rowByKey("ipo.total"))}\nIPO variable : Réel ${perfFmt(source.ipo?.variable?.actual)} | Budget ${perfFmt(source.ipo?.variable?.budget)} | Historique ${perfFmt(source.ipo?.variable?.historical)}\n\nImpacts en heures par secteur :
-- Préparation : ${reportPreparationImpactCompatible(prepImpactVolume, prepPreferred, prepVolumeReconciliation) ? reportFmtSignedHours(impactPrepAuto) + " vs budget" : "Non calculable — " + reportPreparationImpactScopeText(prepImpactVolume, prepPreferred, prepVolumeReconciliation)}
-- Réception : ${reportImpactScopeCompatible(receptionUo, receptionPreferred) ? reportFmtSignedHours(impactReceptionAuto) + " vs budget" : "Non calculable — " + reportImpactScopeText(receptionUo, receptionPreferred)}
-- Manutention : ${reportImpactScopeCompatible(manutentionUo, manutentionPreferred) ? reportFmtSignedHours(impactManutAuto) + " vs budget" : "Non calculable — " + reportImpactScopeText(manutentionUo, manutentionPreferred)}
-- Chargement : ${reportImpactScopeCompatible(chargementUo, chargementPreferred) ? reportFmtSignedHours(impactChargementAuto) + " vs budget" : "Non calculable — " + reportImpactScopeText(chargementUo, chargementPreferred)}
+      body: `${metricLine("Préparation", prep, "colis/h", "productivity.preparation")}
+${metricLine("Réception", reception, "palettes/h", "productivity.reception")}
+${metricLine("Manutention", manut, "palettes/h", "productivity.manutention")}
+${metricLine("Chargement", chargement, "palettes/h", "productivity.chargement")}
+${metricLine("Transit", transit, "palettes/h", "productivity.transit")}
+
+Référence productivités officielles GPO : Cumul à date (GPO). Les volumes Z GEMED / T-Bag restent mensuels.
+
+IPO total : ${fmtPreferred("ipo.total", source.ipo?.total, "indice")}
+IPO variable : ${fmtPreferred("ipo.variable", source.ipo?.variable, "indice")}
+
+Impacts en heures DIRECTES par secteur — priorité à la valeur GPO page « Performance mensuelle » lorsqu'elle est importée :
+- Préparation : ${Number.isFinite(gpoDirectImpacts.preparation) ? reportFmtSignedHours(gpoDirectImpacts.preparation) + " vs budget · source GPO" : "Donnée GPO non disponible"}
+- Réception : ${Number.isFinite(gpoDirectImpacts.reception) ? reportFmtSignedHours(gpoDirectImpacts.reception) + " vs budget · source GPO" : (reportImpactScopeCompatible(receptionUo, receptionPreferred) ? reportFmtSignedHours(impactReceptionAuto) + " vs budget · calcul DEOS" : "Donnée GPO non disponible")}
+- Manutention : ${Number.isFinite(gpoDirectImpacts.manutention) ? reportFmtSignedHours(gpoDirectImpacts.manutention) + " vs budget · source GPO" : (reportImpactScopeCompatible(manutentionUo, manutentionPreferred) ? reportFmtSignedHours(impactManutAuto) + " vs budget · calcul DEOS" : "Donnée GPO non disponible")}
+- Chargement : ${Number.isFinite(gpoDirectImpacts.chargement) ? reportFmtSignedHours(gpoDirectImpacts.chargement) + " vs budget · source GPO" : (reportImpactScopeCompatible(chargementUo, chargementPreferred) ? reportFmtSignedHours(impactChargementAuto) + " vs budget · calcul DEOS" : "Donnée GPO non disponible")}
+
+Passage heures INDIRECTES vs budget — source GPO lorsque disponible :
+- Préparation : ${Number.isFinite(gpoIndirectImpacts.preparation) ? reportFmtSignedHours(gpoIndirectImpacts.preparation) : "Donnée GPO non disponible"}
+- Réception : ${Number.isFinite(gpoIndirectImpacts.reception) ? reportFmtSignedHours(gpoIndirectImpacts.reception) : "Donnée GPO non disponible"}
+- Manutention : ${Number.isFinite(gpoIndirectImpacts.manutention) ? reportFmtSignedHours(gpoIndirectImpacts.manutention) : "Donnée GPO non disponible"}
+- Chargement : ${Number.isFinite(gpoIndirectImpacts.chargement) ? reportFmtSignedHours(gpoIndirectImpacts.chargement) : "Donnée GPO non disponible"}
+- Structure : ${Number.isFinite(gpoIndirectImpacts.structure) ? reportFmtSignedHours(gpoIndirectImpacts.structure) : "Donnée GPO non disponible"}
 
 Volumes de calcul disponibles :
-- Préparation : ${Number.isFinite(Number(prepImpactVolume.value)) && Number(prepImpactVolume.value) > 0 ? Number(prepImpactVolume.value).toLocaleString("fr-FR") + " colis · " + reportScopeLabel(prepImpactVolume.periodType) : "Donnée source non disponible"}
+- Préparation : ${perfHas(source?.activity?.actual) ? Number(source.activity.actual).toLocaleString("fr-FR") + " colis totaux Z GEMED (hétérogènes + homogènes)" : "Donnée source non disponible"}
 - Réception : ${Number.isFinite(Number(uoReception)) && Number(uoReception) > 0 ? Number(uoReception).toLocaleString("fr-FR") + " palettes · " + reportScopeLabel(receptionUo.periodType) : "Donnée source non disponible"}
 - Manutention : ${Number.isFinite(Number(uoManutention)) && Number(uoManutention) > 0 ? Number(uoManutention).toLocaleString("fr-FR") + " palettes · " + reportScopeLabel(manutentionUo.periodType) : "Donnée source non disponible"}
 - Chargement : ${Number.isFinite(Number(uoChargement)) && Number(uoChargement) > 0 ? Number(uoChargement).toLocaleString("fr-FR") + " supports · " + reportScopeLabel(chargementUo.periodType) : "Donnée source non disponible"}
 
-Règle : aucun impact horaire n'est calculé lorsque le volume et la productivité ne portent pas sur le même périmètre temporel.`
+Règle : les impacts GPO sont prioritaires. DEOS ne recalcule un impact que lorsque les volumes et productivités sont explicitement comparables.`
     },
     {
       title: "5. Activité, heures et capacité",
-      body: `${metricLine("Activité / colis", source.activity, "colis")}\n${metricLine("Heures totales", source.hours?.total, "h")}\n${metricLine("Heures directes", source.hours?.direct, "h")}\n${metricLine("Heures indirectes", source.hours?.indirect, "h")}\n\nPérimètre heures GPO : ${reportScopeLabel(hoursTotalPreferred.periodType)}. Ces heures ne doivent pas être lues comme les seules heures du mois.\nPoids des heures indirectes : ${reportFmtPercent1(indirectHoursShareAuto)}.\n\nÉcarts heures vs budget — ${reportScopeLabel(hoursTotalPreferred.periodType)} :
+      body: `${metricLine("Activité / colis", source.activity, "colis", "activity.colis_total")}
+${metricLine("Heures totales", source.hours?.total, "h", "hours.total")}
+${metricLine("Heures directes", source.hours?.direct, "h", "hours.direct")}
+${metricLine("Heures indirectes", source.hours?.indirect, "h", "hours.indirect")}
+
+Périmètre heures GPO : Cumul à date (GPO). Les volumes sectoriels et les heures par centre de coûts présentés ci-dessous restent mensuels. Les Budget / Historique des heures indirectes sont repris via le résolveur de source GPO.
+Poids des heures indirectes : ${reportFmtPercent1(indirectHoursShareAuto)}.
+
+DÉTAIL MENSUEL PAR SECTEUR — volume / heures directes / heures indirectes
+- Préparation : ${perfHas(source?.activity?.actual) ? Number(source.activity.actual).toLocaleString("fr-FR") + " colis totaux Z GEMED (hétérogènes + homogènes)" : "volume non disponible"} | Heures directes ${Number.isFinite(sectorMonthlyHours.preparation.direct) ? perfFmt(sectorMonthlyHours.preparation.direct) + " h" : "non disponibles"} | Heures indirectes ${Number.isFinite(sectorMonthlyHours.preparation.indirect) ? perfFmt(sectorMonthlyHours.preparation.indirect) + " h" : "non disponibles"}
+- Réception : ${Number.isFinite(Number(uoReception)) ? Number(uoReception).toLocaleString("fr-FR") + " palettes" : "volume non disponible"} | Heures directes ${Number.isFinite(sectorMonthlyHours.reception.direct) ? perfFmt(sectorMonthlyHours.reception.direct) + " h" : "non disponibles"} | Heures indirectes ${Number.isFinite(sectorMonthlyHours.reception.indirect) ? perfFmt(sectorMonthlyHours.reception.indirect) + " h" : "non disponibles"}
+- Manutention : ${Number.isFinite(Number(uoManutention)) ? Number(uoManutention).toLocaleString("fr-FR") + " palettes" : "volume non disponible"} | Heures directes ${Number.isFinite(sectorMonthlyHours.manutention.direct) ? perfFmt(sectorMonthlyHours.manutention.direct) + " h" : "non disponibles"} | Heures indirectes ${Number.isFinite(sectorMonthlyHours.manutention.indirect) ? perfFmt(sectorMonthlyHours.manutention.indirect) + " h" : "non disponibles"}
+- Chargement : ${Number.isFinite(Number(uoChargement)) ? Number(uoChargement).toLocaleString("fr-FR") + " supports" : "volume non disponible"} | Heures directes ${Number.isFinite(sectorMonthlyHours.chargement.direct) ? perfFmt(sectorMonthlyHours.chargement.direct) + " h" : "non disponibles"} | Heures indirectes ${Number.isFinite(sectorMonthlyHours.chargement.indirect) ? perfFmt(sectorMonthlyHours.chargement.indirect) + " h" : "non disponibles"}
+
+Note : les heures sectorielles mensuelles utilisent les données GA détail agrégées par centre de coûts lorsqu'elles sont disponibles : Préparation 04300, Réception 04200, Manutention/Cariste 04400, Chargement 04500. Aucune donnée nominative n'est utilisée.
+
+Écarts heures vs budget — Cumul à date (GPO) :
 - Heures totales : ${reportFmtSignedHours(totalHoursGap)}
 - Heures directes : ${reportFmtSignedHours(directHoursGap)}
-- Heures indirectes : ${reportFmtSignedHours(indirectHoursGap)}\n\nCapacité / charge M+1 : À préparer (volume attendu, risques de saturation, recours ETT, jours atypiques, opérations commerciales, contraintes transport).\nLecture hebdomadaire / rupture de tendance : voir section 10 et compléter uniquement si un événement opérationnel doit être contextualisé.`
+- Heures indirectes : ${reportFmtSignedHours(indirectHoursGap)}
+
+Capacité / charge M+1 : À préparer (volume attendu, risques de saturation, recours ETT, jours atypiques, opérations commerciales, contraintes transport).
+Lecture hebdomadaire / rupture de tendance : voir section 10 et compléter uniquement si un événement opérationnel doit être contextualisé.`
     },
     {
       title: "6. Préparation — performance main-d'œuvre",
@@ -16869,7 +17343,7 @@ Règle : aucun impact horaire n'est calculé lorsque le volume et la productivit
     },
     {
       title: "9. Économie, qualité et coûts unitaires",
-      body: `Coût colis total : ${fmtRow(rowByKey("economy.cout_total_par_colis"))}\nCoût colis exploitation (Exploit) : ${fmtRow(rowByKey("economy.cout_exploitation_par_colis"))}\nGains & Pertes : Réel ${Number.isFinite(qualityTotalActual) ? perfFmt(qualityTotalActual) : "Donnée source non disponible"} | Budget ${Number.isFinite(qualityTotalBudget) ? perfFmt(qualityTotalBudget) : "Donnée source non disponible"} | Historique ${Number.isFinite(qualityTotalHistorical) ? perfFmt(qualityTotalHistorical) : "Donnée source non disponible"}${(!Number.isFinite(qualityTotalActual) || !Number.isFinite(qualityTotalBudget)) ? " — comparaison non évaluable" : ""}\nRésultat opérationnel (Z GEMED mensuel) : ${reportMetricTriplet(resultOpMetric, "k€")}\nEBIT (Z GEMED mensuel) : ${reportMetricTriplet(ebitMetric, "k€")}\nDémarque marchandises (Z GEMED mensuel) : ${reportMetricTriplet(demarqueMetric, "k€")}\n\nPareto à préparer : litiges, casse, non-livrés, périmés, contrôle stock, dons et autres postes significatifs.\n\nLecture attendue : chiffrer l'écart mensuel et cumul, identifier les 2 ou 3 postes expliquant l'essentiel de la dérive et rattacher chaque poste à un responsable / plan d'action.`
+      body: `Coût colis total : ${fmtRow(rowByKey("economy.cout_total_par_colis"))}\nCoût colis exploitation (Exploit) : ${fmtRow(rowByKey("economy.cout_exploitation_par_colis"))}\nCoût fixe par colis : ${fmtRow(rowByKey("economy.cout_fixe_par_colis"))}\nGains & Pertes : Réel ${Number.isFinite(qualityTotalActual) ? perfFmt(qualityTotalActual) : "Donnée source non disponible"} | Budget ${Number.isFinite(qualityTotalBudget) ? perfFmt(qualityTotalBudget) : "Donnée source non disponible"} | Historique ${Number.isFinite(qualityTotalHistorical) ? perfFmt(qualityTotalHistorical) : "Donnée source non disponible"}${(!Number.isFinite(qualityTotalActual) || !Number.isFinite(qualityTotalBudget)) ? " — comparaison non évaluable" : ""}\nRésultat opérationnel (Z GEMED mensuel) : ${reportMetricTriplet(resultOpMetric, "k€")}\nEBIT (Z GEMED mensuel) : ${reportMetricTriplet(ebitMetric, "k€")}\nDémarque marchandises (Z GEMED mensuel) : ${reportMetricTriplet(demarqueMetric, "k€")}\n\nPareto à préparer : litiges, casse, non-livrés, périmés, contrôle stock, dons et autres postes significatifs.\n\nLecture attendue : chiffrer l'écart mensuel et cumul, identifier les 2 ou 3 postes expliquant l'essentiel de la dérive et rattacher chaque poste à un responsable / plan d'action.`
     },
     {
       title: "10. Historique, profondeur de données et projection",
@@ -16908,7 +17382,7 @@ Ces éléments prospectifs ne sont pas inventés par DEOS : ils doivent être re
     },
     {
       title: "14. Fiabilité des données et points à valider",
-      body: `Sources de référence : GPO / Guide de performance, Z GEMED, T-Bag, CGTAB, GA / Suivi GA, Litiges / GC-GE selon disponibilité.\n\nPoints de contrôle avant présentation :\n- réconcilier les périmètres lorsqu'une même notion diffère entre sources ;\n- distinguer mensuel et cumul ;\n- vérifier les unités ;\n- documenter les valeurs atypiques ;\n- ne pas additionner des impacts financiers calculés sur des périmètres qui se recouvrent ;\n- signaler explicitement toute donnée manquante ou non fiabilisée ;\n- ne jamais calculer un impact en heures avec un volume provenant d'un périmètre différent de la productivité analysée ;\n- réconcilier explicitement le volume Préparation T-Bag avec le volume Z GEMED / GPO avant de considérer l'impact heures Préparation comme définitif ;\n- distinguer "Donnée source non disponible" (absence réelle de donnée) et "À compléter" (contenu managérial à préparer) ;
+      body: `Sources de référence : GPO / Guide de performance, Z GEMED, T-Bag, CGTAB, GA / Suivi GA, Litiges / GC-GE selon disponibilité.\n\nPoints de contrôle avant présentation :\n- réconcilier les périmètres lorsqu'une même notion diffère entre sources ;\n- distinguer mensuel et cumul ;\n- vérifier les unités ;\n- documenter les valeurs atypiques ;\n- ne pas additionner des impacts financiers calculés sur des périmètres qui se recouvrent ;\n- signaler explicitement toute donnée manquante ou non fiabilisée ;\n- ne jamais calculer un impact en heures avec un volume provenant d'un périmètre différent de la productivité analysée ;\n- ne pas traiter comme une anomalie l'écart de volume Préparation T-Bag / Z GEMED : T-Bag couvre les colis hétérogènes, Z GEMED couvre les colis hétérogènes + homogènes ;\n- distinguer "Donnée source non disponible" (absence réelle de donnée) et "À compléter" (contenu managérial à préparer) ;
 - ne jamais comparer ou convertir en impact horaire une donnée mensuelle avec une productivité cumulée à date ;
 - considérer dans DEOS : GPO = cumul à date ; Z GEMED / T-Bag = mensuel, sauf métadonnée explicite contraire ;
 - ne conclure à une tendance qu'avec au moins 3 périodes homogènes chargées ;
@@ -17219,11 +17693,169 @@ function copyReportText() {
   alert("Compte rendu copié.");
 }
 
+function rdpPrintParseMetricLine(line = "") {
+  const raw = String(line || "").replace(/^\s*-\s*/, "").trim();
+  const colon = raw.indexOf(":");
+  if (colon < 0) return null;
+  const label = raw.slice(0, colon).trim();
+  const rest = raw.slice(colon + 1).trim();
+  if (!label || !rest) return null;
+  const cells = { label, actual: "", budget: "", historical: "", gap: "", status: "", source: "", scope: "", other: [] };
+  rest.split("|").map(x => x.trim()).filter(Boolean).forEach((part, index) => {
+    const normalized = part.replace(/\s+/g, " ");
+    if (/^(réel|real)\b/i.test(normalized)) cells.actual = normalized.replace(/^(réel|real)\s*/i, "").trim();
+    else if (/^budget\b/i.test(normalized)) cells.budget = normalized.replace(/^budget\s*/i, "").trim();
+    else if (/^historique\b/i.test(normalized)) cells.historical = normalized.replace(/^historique\s*/i, "").trim();
+    else if (/^écart\b/i.test(normalized)) cells.gap = normalized.replace(/^écart(?:\s+budget|\s+historique)?\s*/i, "").trim();
+    else if (/^statut\b/i.test(normalized)) cells.status = normalized.replace(/^statut\s*/i, "").trim();
+    else if (/^source\b/i.test(normalized)) cells.source = normalized.replace(/^source\s*/i, "").trim();
+    else if (/^(périmètre|perimetre)\b/i.test(normalized)) cells.scope = normalized.replace(/^(périmètre|perimetre)\s*/i, "").trim();
+    else if (index === 0 && !cells.actual) cells.actual = normalized;
+    else cells.other.push(normalized);
+  });
+  return cells;
+}
+
+function rdpPrintStatusClass(status = "") {
+  const value = String(status || "").toLowerCase();
+  if (/critique|défavorable|alerte|sous budget/.test(value)) return "rdp-status-red";
+  if (/maîtrisé|maitrise|favorable|surperformance/.test(value)) return "rdp-status-green";
+  return "rdp-status-amber";
+}
+
+function rdpPrintMetricTable(lines = []) {
+  const rows = lines.map(rdpPrintParseMetricLine).filter(Boolean);
+  if (!rows.length) return "";
+  return `<div class="rdp-table-wrap"><table class="rdp-table"><thead><tr><th>Indicateur</th><th>Réalisé</th><th>Budget</th><th>Historique</th><th>Écart</th><th>Statut</th></tr></thead><tbody>${rows.map(row => `<tr><td class="rdp-row-label">${esc(row.label)}</td><td>${esc(row.actual || "—")}</td><td>${esc(row.budget || "—")}</td><td>${esc(row.historical || "—")}</td><td>${esc(row.gap || "—")}</td><td>${row.status ? `<span class="rdp-status ${rdpPrintStatusClass(row.status)}">${esc(row.status)}</span>` : "—"}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function rdpPrintKeyValueGrid(lines = []) {
+  const entries = [];
+  const remaining = [];
+  lines.forEach(line => {
+    const value = String(line || "").trim();
+    if (!value) return;
+    const colon = value.indexOf(":");
+    if (colon > 0 && !value.startsWith("-") && colon < 42) {
+      entries.push([value.slice(0, colon).trim(), value.slice(colon + 1).trim()]);
+    } else remaining.push(value);
+  });
+  const html = entries.length ? `<div class="rdp-meta-grid">${entries.map(([k,v]) => `<div class="rdp-meta-item"><span>${esc(k)}</span><strong>${esc(v || "—")}</strong></div>`).join("")}</div>` : "";
+  return { html, remaining };
+}
+
+function rdpPrintGenericBody(body = "") {
+  const lines = String(body || "").split(/\r?\n/);
+  let html = "";
+  let bullets = [];
+  const flushBullets = () => {
+    if (!bullets.length) return;
+    html += `<ul class="rdp-list">${bullets.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`;
+    bullets = [];
+  };
+  lines.forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed) { flushBullets(); return; }
+    if (/^-\s+/.test(trimmed)) { bullets.push(trimmed.replace(/^-\s+/, "")); return; }
+    flushBullets();
+    if (/^[A-ZÀ-Ÿ0-9][A-ZÀ-Ÿ0-9 '\/\-–—&()]{4,}$/.test(trimmed) && trimmed.length < 90) {
+      html += `<h3 class="rdp-subtitle">${esc(trimmed)}</h3>`;
+    } else if (/^(Règle|Référence|Lecture|Périmètre|Objectif|Confidentialité|Précaution|Point de contrôle)/i.test(trimmed)) {
+      html += `<div class="rdp-note">${esc(trimmed)}</div>`;
+    } else {
+      html += `<p>${esc(trimmed)}</p>`;
+    }
+  });
+  flushBullets();
+  return html;
+}
+
+function rdpPrintExecutiveBody(body = "") {
+  const lines = String(body || "").split(/\r?\n/);
+  let html = "";
+  let currentTitle = "";
+  let currentLines = [];
+  const flush = () => {
+    if (!currentTitle && !currentLines.length) return;
+    const title = currentTitle || "Synthèse";
+    const tone = /ÉCARTS CRITIQUES|ARBITRAGES|RISQUE/i.test(title) ? "rdp-callout-alert" : /FAITS MAÎTRISÉS|POINTS FORTS/i.test(title) ? "rdp-callout-good" : "rdp-callout-info";
+    html += `<div class="rdp-callout ${tone}"><strong>${esc(title)}</strong>${currentLines.length ? `<div>${rdpPrintGenericBody(currentLines.join("\n"))}</div>` : ""}</div>`;
+    currentTitle = ""; currentLines = [];
+  };
+  lines.forEach(line => {
+    const trimmed = line.trim();
+    if (/^[A-ZÀ-Ÿ0-9][A-ZÀ-Ÿ0-9 '\/\-–—&()]{4,}$/.test(trimmed) && trimmed.length < 90) {
+      flush(); currentTitle = trimmed; return;
+    }
+    if (!trimmed && currentLines.length) { flush(); return; }
+    if (trimmed) currentLines.push(trimmed);
+  });
+  flush();
+  return html || rdpPrintGenericBody(body);
+}
+
+function rdpPrintSectionHtml(section, index) {
+  const title = section?.title || `Section ${index + 1}`;
+  const body = String(section?.body || "");
+  const lines = body.split(/\r?\n/);
+  let bodyHtml = "";
+
+  if (/Cadre de la revue/i.test(title)) {
+    const meta = rdpPrintKeyValueGrid(lines);
+    bodyHtml = meta.html + (meta.remaining.length ? rdpPrintGenericBody(meta.remaining.join("\n")) : "");
+  } else if (/Synthèse exécutive/i.test(title)) {
+    bodyHtml = rdpPrintExecutiveBody(body);
+  } else if (/Tableau de bord Direction/i.test(title)) {
+    bodyHtml = rdpPrintMetricTable(lines.filter(line => /^\s*-/.test(line))) || rdpPrintGenericBody(body);
+  } else if (/Productivités par secteur et IPO/i.test(title)) {
+    const firstBlock = [];
+    const rest = [];
+    let inFirst = true;
+    lines.forEach(line => {
+      if (inFirst && /^\s*-/.test(line)) firstBlock.push(line);
+      else { if (line.trim()) inFirst = false; rest.push(line); }
+    });
+    bodyHtml = rdpPrintMetricTable(firstBlock) + rdpPrintGenericBody(rest.join("\n"));
+  } else {
+    bodyHtml = rdpPrintGenericBody(body);
+  }
+
+  return `<section class="rdp-section"><h2>${esc(title)}</h2>${bodyHtml}</section>`;
+}
+
+function rdpPrintDocumentHtml() {
+  reportReadCurrent();
+  const source = reportWizard?.sourceType === "performance" ? byId("performance", reportWizard.sourceId) : null;
+  const period = source ? perfPeriodLabel(source) : "";
+  const title = reportWizard?.title || `Revue de performance mensuelle${period ? " - " + period : ""} - Saint-Gilles`;
+  const preparedBy = reportWizard?.author || identityName();
+  const sections = ensureArray(reportWizard?.sections);
+  const coverMeta = `<div class="rdp-cover-meta"><div><span>Préparé par</span><strong>${esc(preparedBy)}</strong></div><div><span>Date</span><strong>${esc(new Date().toLocaleDateString("fr-FR"))}</strong></div><div><span>Période analysée</span><strong>${esc(period || "À compléter")}</strong></div></div>`;
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${esc(title)}</title><style>
+    @page{size:A4 portrait;margin:15mm 13mm 16mm 13mm}
+    *{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#101828;font-family:Arial,Helvetica,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{font-size:10.4pt;line-height:1.38}.rdp-document{max-width:184mm;margin:0 auto}.rdp-page-header{display:flex;justify-content:flex-end;font-size:8.5pt;font-weight:700;color:#0b4f84;letter-spacing:.02em;border-bottom:1px solid #d9e2ec;padding:0 0 4mm;margin-bottom:7mm}
+    .rdp-cover{padding:2mm 0 8mm;border-bottom:2px solid #0b4f84;margin-bottom:8mm}.rdp-kicker{font-size:9pt;font-weight:800;color:#0b4f84;letter-spacing:.06em}.rdp-cover h1{margin:5mm 0 2mm;color:#0b4f84;font-size:24pt;line-height:1.08}.rdp-cover-sub{font-size:11pt;color:#475569;margin:0 0 7mm}.rdp-cover-meta{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8mm;border-top:1px solid #dbe3ec;padding-top:5mm}.rdp-cover-meta span{display:block;color:#64748b;font-size:8.5pt;margin-bottom:1mm}.rdp-cover-meta strong{font-size:10pt}
+    .rdp-section{break-inside:auto;margin:0 0 8mm}.rdp-section h2{color:#0b4f84;font-size:17pt;line-height:1.15;margin:0 0 4mm;padding-top:1mm;break-after:avoid}.rdp-section p{margin:2.2mm 0}.rdp-subtitle{color:#0b4f84;font-size:11pt;margin:4mm 0 2mm;break-after:avoid}.rdp-list{margin:2mm 0 3mm;padding-left:5mm}.rdp-list li{margin:1mm 0}
+    .rdp-meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:2.2mm 5mm;margin-bottom:4mm}.rdp-meta-item{border:1px solid #d8e0ea;background:#f8fafc;padding:2.7mm 3mm;break-inside:avoid}.rdp-meta-item span{display:block;color:#64748b;font-size:8pt;margin-bottom:.8mm}.rdp-meta-item strong{display:block;font-size:9.5pt}
+    .rdp-callout{border:1px solid #d6e2ef;padding:3.5mm 4mm;margin:3mm 0;break-inside:avoid}.rdp-callout>strong{display:block;color:#0b4f84;font-size:9.2pt;margin-bottom:1.5mm}.rdp-callout p{margin:1mm 0}.rdp-callout-info{background:#eaf3fb}.rdp-callout-good{background:#eef8f1;border-color:#cae8d1}.rdp-callout-alert{background:#fff1e8;border-color:#f1cfb8}.rdp-note{background:#eaf3fb;border-left:4px solid #0b4f84;padding:2.5mm 3mm;margin:3mm 0;break-inside:avoid}
+    .rdp-table-wrap{overflow:visible;margin:3mm 0 4mm}.rdp-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:8.4pt}.rdp-table th{background:#0b4f84;color:white;padding:2.2mm 1.5mm;border:1px solid #22384d;text-align:center;font-weight:700}.rdp-table td{padding:2.1mm 1.5mm;border:1px solid #6b7280;text-align:center;vertical-align:middle;word-wrap:break-word}.rdp-table tbody tr:nth-child(even){background:#f6f7f9}.rdp-table .rdp-row-label{text-align:left;font-weight:700;width:24%}.rdp-status{display:inline-block;padding:1mm 1.8mm;border-radius:10mm;font-size:7.7pt;font-weight:700}.rdp-status-red{background:#fee2e2;color:#991b1b}.rdp-status-green{background:#dcfce7;color:#166534}.rdp-status-amber{background:#ffedd5;color:#9a3412}
+    .rdp-footer{margin-top:10mm;border-top:1px solid #d9e2ec;padding-top:3mm;display:flex;justify-content:space-between;color:#64748b;font-size:8pt}.rdp-section,.rdp-table tr,.rdp-meta-item,.rdp-callout,.rdp-note{page-break-inside:avoid}
+    @media print{.rdp-document{max-width:none}.rdp-page-header{position:relative}.rdp-footer{position:relative}}
+  </style></head><body><main class="rdp-document"><div class="rdp-page-header">CARREFOUR SUPPLY CHAIN&nbsp;&nbsp;|&nbsp;&nbsp;SAINT-GILLES</div><header class="rdp-cover"><div class="rdp-kicker">CARREFOUR SUPPLY CHAIN | SAINT-GILLES</div><h1>REVUE DE PERFORMANCE MENSUELLE</h1><p class="rdp-cover-sub">Dossier de préparation Direction — ${esc(period || "Saint-Gilles")}</p>${coverMeta}</header>${sections.map(rdpPrintSectionHtml).join("")}<footer class="rdp-footer"><span>Revue de performance mensuelle — dossier de préparation</span><span>Document de travail — modifiable et imprimable</span></footer></main><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250));<\/script></body></html>`;
+}
+
 function printReportText() {
-  const text = reportPreviewText();
+  const isMonthlyRdp = reportWizard?.template === "Revue de performance" && reportWizard?.sourceType === "performance";
   const win = window.open("", "_blank");
   if (!win) return window.print();
-  win.document.write(`<html><head><title>Compte rendu ${esc(identity.appName)}</title><style>body{font-family:Arial,sans-serif;color:#0f172a;line-height:1.5;padding:32px}h1{font-size:24px}pre{white-space:pre-wrap;font-family:inherit}footer{margin-top:32px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:12px}</style></head><body><h1>${esc(reportWizard.title || "Compte rendu " + identity.appName)}</h1><pre>${esc(text)}</pre><footer>${esc(identitySignature())}</footer><script>window.print()</script></body></html>`);
+  if (isMonthlyRdp) {
+    win.document.write(rdpPrintDocumentHtml());
+    win.document.close();
+    return;
+  }
+  const text = reportPreviewText();
+  win.document.write(`<html><head><title>Compte rendu ${esc(identity.appName)}</title><style>body{font-family:Arial,sans-serif;color:#0f172a;line-height:1.5;padding:32px}h1{font-size:24px}pre{white-space:pre-wrap;font-family:inherit}footer{margin-top:32px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:12px}</style></head><body><h1>${esc(reportWizard.title || "Compte rendu " + identity.appName)}</h1><pre>${esc(text)}</pre><footer>${esc(identitySignature())}</footer><script>window.print()<\/script></body></html>`);
   win.document.close();
 }
 
