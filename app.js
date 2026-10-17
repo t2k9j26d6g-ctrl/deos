@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30-SYNC-D14-STABLE";
+const DEOS_VERSION = "V5.30-SYNC-D24-MAIL-PILOT-PROD";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -163,7 +163,7 @@ const identityDefaults = {
 };
 let identity = { ...identityDefaults };
 
-const entities = ["actions", "managers", "projects", "decisions", "priorities", "activity", "journal", "documents", "agenda", "folders", "performance", "meetingPreparations", "links", "performance_imports"];
+const entities = ["actions", "managers", "projects", "decisions", "priorities", "actionPlans", "activity", "journal", "documents", "agenda", "folders", "performance", "meetingPreparations", "links", "performance_imports"];
 const state = Object.fromEntries(entities.map(name => [name, []]));
 state.settings = {};
 state.externalCalendarEvents = []; // Événements Google Calendar importés (V5.5)
@@ -175,6 +175,7 @@ const DEOS_STORAGE_KEYS = Object.freeze({
   projects: "deos_projects",
   decisions: "deos_decisions",
   priorities: "deos_priorities",
+  actionPlans: "deos_action_plans",
   activity: "deos_activity",
   journal: "deos_journal",
   documents: "deos_documents",
@@ -695,7 +696,7 @@ let meetingSubjectModalAgendaId = null;
 let cockpitFocus = "";
 let folderSearch = "";
 let folderCategoryFilter = "all";
-let folderStatusFilter = "all";
+let folderStatusFilter = "active";
 let folderPriorityFilter = "all";
 let folderSort = "activity";
 let folderViewMode = "list";
@@ -1551,6 +1552,7 @@ function validateBackupContent(content) {
     projects: "deos_projects",
     decisions: "deos_decisions",
     priorities: "deos_priorities",
+  actionPlans: "deos_action_plans",
     activity: "deos_activity",
     journal: "deos_journal",
     documents: "deos_documents",
@@ -2078,17 +2080,47 @@ function normalizeEntity(name, item) {
   if (name === "projects") {
     const template = defaults.projects.find(p => p.id === base.id) || {};
     const inferredOwner = state.managers.find(m => m.id === base.ownerId || m.name === base.owner);
-    const merged = { objective: "", owner: "", ownerId: "", linkedManagers: [], linkedFolders: [], launchDate: "", deadline: "", priorityLevel: "orange", context: "", decisions: "", actions: "", risks: "", milestones: [], linkedActions: [], linkedDecisions: [], linkedDocuments: [], events: [], directorNotes: [], ...template, ...base };
+    const merged = { objective: "", owner: "", ownerId: "", linkedManagers: [], linkedFolders: [], launchDate: "", deadline: "", priorityLevel: "orange", context: "", decisions: "", actions: "", risks: "", milestones: [], linkedActions: [], linkedDecisions: [], linkedDocuments: [], events: [], directorNotes: [], archived: false, archivedAt: "", reactivatedAt: "", ...template, ...base };
     if (!merged.ownerId && inferredOwner) merged.ownerId = inferredOwner.id;
     if (merged.ownerId && !merged.owner) merged.owner = projectOwnerName(merged);
     return { ...merged, progress: Number(merged.progress || 0), linkedManagers: ensureArray(merged.linkedManagers), linkedFolders: ensureArray(merged.linkedFolders), milestones: ensureMilestones(merged.milestones), linkedActions: ensureArray(merged.linkedActions), linkedDecisions: ensureArray(merged.linkedDecisions), linkedDocuments: ensureArray(merged.linkedDocuments), events: ensureTimeline(merged.events), directorNotes: ensureNotes(merged.directorNotes) };
   }
   if (name === "decisions") {
     const template = defaults.decisions.find(d => d.id === base.id) || {};
-    const merged = { date: today(), status: "decided", importance: "orange", context: "", problem: "", decision: "", rationale: "", alternatives: "", impacts: base.impact || "", risks: "", owner: "", linkedManagers: [], linkedProjects: [], linkedActions: [], linkedDocuments: [], linkedFolders: [], reviewDate: "", events: [], directorNotes: [], nextStep: "", tags: [], ...template, ...base };
+    const merged = { date: today(), status: "decided", importance: "orange", context: "", problem: "", decision: "", rationale: "", alternatives: "", impacts: base.impact || "", risks: "", owner: "", linkedManagers: [], linkedProjects: [], linkedActions: [], linkedDocuments: [], linkedFolders: [], reviewDate: "", events: [], directorNotes: [], nextStep: "", tags: [], archived: false, archivedAt: "", reactivatedAt: "", ...template, ...base };
     return { ...merged, tags: ensureArray(merged.tags), linkedManagers: ensureArray(merged.linkedManagers), linkedProjects: ensureArray(merged.linkedProjects), linkedActions: ensureArray(merged.linkedActions), linkedDocuments: ensureArray(merged.linkedDocuments), linkedFolders: ensureArray(merged.linkedFolders), events: ensureTimeline(merged.events), directorNotes: ensureNotes(merged.directorNotes) };
   }
   if (name === "priorities") return { owner: "", impact: "", done: false, linkedFolders: [], ...base, linkedFolders: ensureArray(base.linkedFolders) };
+  if (name === "actionPlans") {
+    const merged = {
+      name: "",
+      objective: "",
+      owner: "",
+      status: "active",
+      startDate: "",
+      endDate: "",
+      notes: "",
+      items: [],
+      createdAt: isoToday(),
+      updatedAt: isoToday(),
+      archived: false,
+      archivedAt: "",
+      reactivatedAt: "",
+      ...base
+    };
+    return {
+      ...merged,
+      items: ensureArray(merged.items).map(row => ({
+        entityType: String(row?.entityType || ""),
+        entityId: String(row?.entityId || ""),
+        owner: String(row?.owner || ""),
+        startDate: String(row?.startDate || ""),
+        dueDate: String(row?.dueDate || ""),
+        completedDate: String(row?.completedDate || ""),
+        note: String(row?.note || "")
+      })).filter(row => row.entityType && row.entityId)
+    };
+  }
   if (name === "journal") {
     const hadWorkflowState = Object.prototype.hasOwnProperty.call(base, "processed");
     const merged = { date: today(), entryType: "Note rapide", summary: base.content || "", facts: "", analysis: "", decisionsText: "", actionsText: "", linkedManagers: [], linkedProjects: [], linkedDecisions: [], linkedActions: [], linkedDocuments: [], linkedFolders: [], watchPoints: "", nextSteps: "", notes: "", events: [], tags: [], mood: "", links: "", pinned: false, archived: false, processed: hadWorkflowState ? Boolean(base.processed) : true, captureMode: "structured", sourceContext: null, createdAt: base.createdAt || new Date().toISOString(), updatedAt: base.updatedAt || new Date().toISOString(), ...base };
@@ -2208,7 +2240,7 @@ function normalizeEntity(name, item) {
     };
     return merged;
   }
-  if (name === "actions") return { link: "", owner: "", due: "", level: "orange", done: false, linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, title: normalizeActionTitle(base.title), linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
+  if (name === "actions") return { link: "", owner: "", startDate: "", due: "", completedAt: "", level: "orange", done: false, archived: false, archivedAt: "", reactivatedAt: "", linkedFolders: [], linkedProjects: [], linkedDecisions: [], linkedMeetingPreparations: [], ...base, title: normalizeActionTitle(base.title), linkedFolders: ensureArray(base.linkedFolders), linkedProjects: ensureArray(base.linkedProjects), linkedDecisions: ensureArray(base.linkedDecisions), linkedMeetingPreparations: ensureArray(base.linkedMeetingPreparations) };
   if (name === "performance") return normalizePerformance(base);
   if (name === "performance_imports") {
     const merged = { importDate: new Date().toLocaleString("fr-FR"), sourceFile: "", sourceType: "", period: "", indicators: [], status: "brouillon", validatedBy: "", comments: "", files: [], preview: [], conflicts: [], ...base };
@@ -2331,9 +2363,9 @@ function setView(view) {
   currentView = view;
   if (view !== "graph" && !graphNavigationLock) graphReturnContext = null;
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
-  const titles = { cockpit: "Cockpit décisionnel", graph: "Vue graphique", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
+  const titles = { mailPilot: "Messagerie / Pilotage", cockpit: "Cockpit décisionnel", graph: "Vue graphique", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actionPlans: "Plans d'action", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
   document.getElementById("viewTitle").textContent = titles[view] || identity.appName;
-  const views = { cockpit: renderCockpit, graph: renderGraph, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
+  const views = { mailPilot: renderMailPilot, cockpit: renderCockpit, graph: renderGraph, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actionPlans: renderActionPlans, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
   if (views[view]) views[view]();
 }
 
@@ -4229,7 +4261,9 @@ function actionEditModalBody(action) {
         <option value="orange" ${action.level === "orange" || !action.level ? "selected" : ""}>Important</option>
         <option value="red" ${action.level === "red" ? "selected" : ""}>Critique</option>
       </select>
+      <input id="eaStartDate" type="date" value="${esc(action.startDate || "")}" placeholder="Date de début">
       <input id="eaDue" type="date" value="${esc(action.due || "")}" placeholder="Échéance">
+      <input id="eaCompletedAt" type="date" value="${esc(action.completedAt || "")}" placeholder="Date de réalisation">
       <label class="check-row"><input id="eaDone" type="checkbox" ${action.done ? "checked" : ""}> <span>Action réalisée</span></label>
       ${hasProgressField ? `<input id="eaProgress" type="number" min="0" max="100" value="${Number(progressValue || 0)}" placeholder="Avancement">` : ""}
     </div>
@@ -4331,7 +4365,9 @@ function saveActionEdit(id) {
     owner: document.getElementById("eaOwner")?.value.trim() || "",
     level: document.getElementById("eaLevel")?.value || "orange",
     done: document.getElementById("eaDone")?.checked || false,
+    startDate: document.getElementById("eaStartDate")?.value || "",
     due: document.getElementById("eaDue")?.value || "",
+    completedAt: document.getElementById("eaCompletedAt")?.value || "",
     notes: document.getElementById("eaNotes")?.value.trim() || "",
     note: document.getElementById("eaNotes")?.value.trim() || "",
     risks: document.getElementById("eaRisks")?.value.trim() || "",
@@ -4341,6 +4377,8 @@ function saveActionEdit(id) {
     linkedProjects: normalizeLinkedIdArray(checkedValues("eaProjects")),
     linkedDecisions: normalizeLinkedIdArray(checkedValues("eaDecisions"))
   };
+  if (next.done && !next.completedAt) next.completedAt = localIsoDate();
+  if (!next.done && current.done && next.completedAt === current.completedAt) next.completedAt = "";
   if (hasProgressField) next.progress = Number(document.getElementById("eaProgress")?.value || 0);
   if (hasManagersField) {
     const managerIds = normalizeLinkedManagerIds(checkedValues("eaManagers"));
@@ -4678,6 +4716,7 @@ function getProjectsAtRisk() {
   const blockedPattern = /blocage|bloqu[ée]|retard majeur|critique/i;
   const donePattern = /fait|termin[ée]|clos|ok/i;
   return state.projects.filter(project => {
+    if (project.archived) return false;
     const riskText = String(project.risks || "").trim();
     const explicitRisk = project.status === "red" || project.priorityLevel === "red";
     const blocked = blockedPattern.test(`${project.next || ""} ${project.context || ""} ${riskText}`);
@@ -4917,10 +4956,73 @@ function completeCockpitNote(id) {
   renderCockpit();
 }
 
+// D22 — Classement unique, priorisation des retards et signalement des échéances anciennes.
+// Calcul d'affichage uniquement : aucune réécriture métier ou synchronisation.
+function getCockpitDirectionBuckets() {
+  const buckets = { arbitrate: [], pilot: [], follow: [] };
+  const proposals = [];
+  const todayDelta = value => daysUntil(value);
+  const titleKey = value => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const isArchived = item => Boolean(item?.archived || item?.archivedAt && item?.archiveStatus === "archived");
+  const propose = (bucket, entity, item, reason, due = "", attention = false) => {
+    if (!item?.id || isArchived(item)) return;
+    const title = String(item.title || item.name || "Sans titre");
+    proposals.push({ bucket, entity, id: item.id, title, reason, due, attention });
+  };
+  const overdueReason = (kind, delta) => delta < -60 ? `${kind} · Échéance ancienne à requalifier` : `${kind} · En retard`;
+  // Arbitrage : uniquement un statut de décision qui le demande explicitement.
+  ensureArray(state.decisions).filter(d => !isArchived(d) && d.status === "review")
+    .forEach(d => propose("arbitrate", "decisions", d, "Décision à réexaminer", d.reviewDate));
+  ensureArray(state.actions).filter(a => !a.done && !isArchived(a)).forEach(a => {
+    const delta = todayDelta(a.due);
+    if (delta !== null && delta < 0) propose("pilot", "actions", a, overdueReason("Action", delta), a.due, true);
+    else if (a.status === "red" || a.priorityLevel === "red") propose("pilot", "actions", a, "Action critique", a.due);
+    else if (delta !== null && delta <= 7) propose("pilot", "actions", a, "Échéance proche", a.due);
+  });
+  ensureArray(state.projects).filter(p => !isArchived(p)).forEach(p => {
+    const delta = todayDelta(p.deadline);
+    const risk = String(p.risks || "").trim();
+    const blocked = /blocage|bloqu[ée]|critique/i.test(`${p.next || ""} ${p.context || ""} ${risk}`);
+    if (delta !== null && delta < 0) propose("pilot", "projects", p, overdueReason("Projet", delta), p.deadline, true);
+    else if (risk || blocked || p.status === "red" || p.priorityLevel === "red") propose("pilot", "projects", p, risk ? "Risque déclaré" : "Projet critique", p.deadline);
+    else if (delta !== null && delta <= 7) propose("pilot", "projects", p, "Échéance proche", p.deadline);
+    else propose("follow", "projects", p, "Projet en cours", p.deadline);
+  });
+  ensureArray(state.priorities).filter(p => !p.done && !isArchived(p)).forEach(p => {
+    const delta = todayDelta(p.due);
+    if (delta !== null && delta < 0) propose("pilot", "priorities", p, overdueReason("Priorité", delta), p.due, true);
+    else if (p.level === "red") propose("pilot", "priorities", p, "Priorité critique", p.due);
+    else if (delta !== null && delta <= 7) propose("pilot", "priorities", p, "Échéance proche", p.due);
+    else propose("follow", "priorities", p, "Priorité active", p.due);
+  });
+  // Un seul affichage par intitulé normalisé, même si le sujet existe dans plusieurs modules.
+  // Priorité au niveau le plus critique, puis à l'échéance la plus ancienne.
+  const weight = { arbitrate: 0, pilot: 1, follow: 2 };
+  proposals.sort((a,b) => weight[a.bucket] - weight[b.bucket] || dateRank(a.due) - dateRank(b.due) || a.title.localeCompare(b.title,"fr"));
+  const seenIds = new Set();
+  const seenTitles = new Set();
+  proposals.forEach(entry => {
+    const idKey = `${entry.entity}:${entry.id}`;
+    const nameKey = titleKey(entry.title);
+    if (seenIds.has(idKey) || nameKey && seenTitles.has(nameKey)) return;
+    seenIds.add(idKey);
+    if (nameKey) seenTitles.add(nameKey);
+    buckets[entry.bucket].push(entry);
+  });
+  return buckets;
+}
+function cockpitDirectionBucketHtml(label, type, items) {
+  const visible = items.slice(0, 5);
+  return `<section class="deos-direction-column deos-direction-${type}"><h3>${esc(label)} <span class="deos-direction-count">${items.length}</span></h3>
+    ${visible.map(item => `<button type="button" class="deos-direction-item" onclick="openCockpitEntity('${esc(item.entity)}','${esc(item.id)}')"><strong>${esc(item.title)}</strong><small>${esc(item.reason)}${item.due ? " · " + esc(dueLabel(item.due)) : ""}</small></button>`).join("") || '<div class="empty compact-empty">Aucun sujet identifié.</div>'}
+    ${items.length > 5 ? `<p class="muted deos-direction-overflow">${items.length - 5} autre(s) sujet(s) dans DEOS</p>` : ""}</section>`;
+}
+
 function renderCockpit() {
   const now = new Date();
   const week = isoWeekNumber(now);
   const metrics = getCockpitMetrics();
+  const directionBuckets = getCockpitDirectionBuckets();
   const todayOperational = getTodayOperationalItems();
   const attentionItems = getAttentionItems();
   const activePriorities = getActivePriorities().slice(0, 5);
@@ -4951,6 +5053,15 @@ function renderCockpit() {
       ${cockpitMetricCard("Decisions a suivre", metrics.decisionsToTrack, "Statuts non appliques", "setView('decisions')")}
       ${cockpitMetricCard("Projets a risque", metrics.riskyProjects, "Risque explicite ou retard", "setView('projects')")}
       ${cockpitMetricCard("Priorites actives", metrics.activePriorities, "Priorites non terminees", "setView('priorities')")}
+    </div>
+
+    <div class="card deos-direction-card">
+      <div class="row"><h2>Vue de direction · Synthèse des sujets</h2><span class="muted">Automatique · aucune saisie supplémentaire</span></div>
+      <div class="deos-direction-grid">
+        ${cockpitDirectionBucketHtml("🔴 À arbitrer", "arbitrate", directionBuckets.arbitrate)}
+        ${cockpitDirectionBucketHtml("🟠 À piloter", "pilot", directionBuckets.pilot)}
+        ${cockpitDirectionBucketHtml("🟢 À suivre", "follow", directionBuckets.follow)}
+      </div>
     </div>
 
     <div class="card cockpit-notes cockpit-notes-top">
@@ -7122,13 +7233,13 @@ function renderFolders() {
   const filtered = state.folders.filter(f => {
     const q = folderSearch.toLowerCase().trim();
     const matchesSearch = !q || folderText(f).includes(q) || Object.values(folderRelations(f)).flat().some(item => `${item.title || item.name || ""}`.toLowerCase().includes(q));
-    return matchesSearch && (folderCategoryFilter === "all" || f.category === folderCategoryFilter) && (folderStatusFilter === "all" || f.status === folderStatusFilter) && (folderPriorityFilter === "all" || f.priorityLevel === folderPriorityFilter);
+    return matchesSearch && (folderCategoryFilter === "all" || f.category === folderCategoryFilter) && (folderStatusFilter === "all" || (folderStatusFilter === "active" ? !isEntityArchived(f) : folderStatusFilter === "archived" ? isEntityArchived(f) : (!isEntityArchived(f) && f.status === folderStatusFilter))) && (folderPriorityFilter === "all" || f.priorityLevel === folderPriorityFilter);
   }).sort((a, b) => {
     if (folderSort === "priority") return levelRank(a.priorityLevel) - levelRank(b.priorityLevel);
     if (folderSort === "deadline") return dateRank(folderStats(a).nextDue) - dateRank(folderStats(b).nextDue);
     return String(folderStats(b).lastActivity || "").localeCompare(String(folderStats(a).lastActivity || ""));
   });
-  appHtml(`${hero}<div class="card folder-toolbar"><input id="folderSearch" value="${esc(folderSearch)}" placeholder="Rechercher un dossier ou mot-clé" oninput="setFolderSearch(this.value)"><select onchange="setFolderFilter('category',this.value)">${categories.map(c => `<option value="${esc(c)}" ${folderCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><select onchange="setFolderFilter('status',this.value)"><option value="all">Tous statuts</option><option value="green" ${folderStatusFilter === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folderStatusFilter === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folderStatusFilter === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folderStatusFilter === "archived" ? "selected" : ""}>Archivé</option></select><select onchange="setFolderFilter('priority',this.value)"><option value="all">Toutes priorités</option><option value="green" ${folderPriorityFilter === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folderPriorityFilter === "orange" ? "selected" : ""}>Important</option><option value="red" ${folderPriorityFilter === "red" ? "selected" : ""}>Critique</option></select><select onchange="setFolderFilter('sort',this.value)"><option value="activity" ${folderSort === "activity" ? "selected" : ""}>Dernière activité</option><option value="priority" ${folderSort === "priority" ? "selected" : ""}>Priorité</option><option value="deadline" ${folderSort === "deadline" ? "selected" : ""}>Prochaine échéance</option></select></div><div class="grid two">${filtered.map(folderCard).join("") || `<div class="card empty">Aucun dossier ne correspond aux filtres.</div>`}</div>`);
+  appHtml(`${hero}<div class="card folder-toolbar"><input id="folderSearch" value="${esc(folderSearch)}" placeholder="Rechercher un dossier ou mot-clé" oninput="setFolderSearch(this.value)"><select onchange="setFolderFilter('category',this.value)">${categories.map(c => `<option value="${esc(c)}" ${folderCategoryFilter === c ? "selected" : ""}>${c === "all" ? "Toutes catégories" : esc(c)}</option>`).join("")}</select><select onchange="setFolderFilter('status',this.value)"><option value="active" ${folderStatusFilter === "active" ? "selected" : ""}>Actifs</option><option value="all" ${folderStatusFilter === "all" ? "selected" : ""}>Tous</option><option value="green" ${folderStatusFilter === "green" ? "selected" : ""}>Maîtrisé</option><option value="orange" ${folderStatusFilter === "orange" ? "selected" : ""}>À suivre</option><option value="red" ${folderStatusFilter === "red" ? "selected" : ""}>Critique</option><option value="archived" ${folderStatusFilter === "archived" ? "selected" : ""}>Archivé</option></select><select onchange="setFolderFilter('priority',this.value)"><option value="all">Toutes priorités</option><option value="green" ${folderPriorityFilter === "green" ? "selected" : ""}>Normal</option><option value="orange" ${folderPriorityFilter === "orange" ? "selected" : ""}>Important</option><option value="red" ${folderPriorityFilter === "red" ? "selected" : ""}>Critique</option></select><select onchange="setFolderFilter('sort',this.value)"><option value="activity" ${folderSort === "activity" ? "selected" : ""}>Dernière activité</option><option value="priority" ${folderSort === "priority" ? "selected" : ""}>Priorité</option><option value="deadline" ${folderSort === "deadline" ? "selected" : ""}>Prochaine échéance</option></select></div><div class="grid two">${filtered.map(folderCard).join("") || `<div class="card empty">Aucun dossier ne correspond aux filtres.</div>`}</div>`);
 }
 
 function setFolderSearch(value) {
@@ -7887,16 +7998,61 @@ function linkedFoldersList(item) {
   return linked.map(f => `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.category)} · ${esc(folderPriorityLabel(f.priorityLevel))}</span>${badge(f.status)}</div>`).join("") || `<div class="empty">Aucun dossier lié.</div>`;
 }
 
-function renderActions() {
-  actionDetailId = "";
-  appHtml(`<div class="card hero"><h2>Actions</h2><p class="muted">L'action fait avancer : suivez ici ce qui doit concrètement être fait, par qui et pour quand.</p></div><details class="card deos-create-details"><summary>Ajouter une action</summary><div class="deos-create-details-body"><input id="aTitle" placeholder="Action"><input id="aLink" placeholder="Lien ou contexte"><div class="grid three manager-links"><div><label>Dossiers liés</label>${folderSelect("aFolders")}</div><div><label>Projets liés</label>${checkboxList("aProjects", state.projects, [], p => p.name)}</div><div><label>Décisions liées</label>${checkboxList("aDecisions", state.decisions, [], d => d.title)}</div></div><button class="action" onclick="addAction()">Ajouter</button></div></details>${state.actions.map(actionItem).join("") || `<div class="card empty">Aucune action.</div>`}`);
+
+let actionArchiveFilter = "active";
+let projectArchiveFilter = "active";
+let decisionArchiveFilter = "active";
+let actionPlanArchiveFilter = "active";
+
+function isEntityArchived(item) {
+  return Boolean(item && (item.archived === true || String(item.status || "").toLowerCase() === "archived" || String(item.status || "").toLowerCase() === "archivé"));
 }
 
+function entityArchiveVisible(item, filter = "active") {
+  if (filter === "all") return true;
+  if (filter === "archived") return isEntityArchived(item);
+  return !isEntityArchived(item);
+}
+
+function archiveCounts(list = []) {
+  const archived = ensureArray(list).filter(isEntityArchived).length;
+  return { active: ensureArray(list).length - archived, archived, all: ensureArray(list).length };
+}
+
+function archiveFilterBarHtml(list, current, setter) {
+  const c = archiveCounts(list);
+  return `<div class="row-actions archive-filter-bar"><button class="${current === "active" ? "action" : "secondary"}" onclick="${setter}('active')">Actifs (${c.active})</button><button class="${current === "archived" ? "action" : "secondary"}" onclick="${setter}('archived')">Archivés (${c.archived})</button><button class="${current === "all" ? "action" : "secondary"}" onclick="${setter}('all')">Tous (${c.all})</button></div>`;
+}
+
+function setActionArchiveFilter(value) { actionArchiveFilter = ["active","archived","all"].includes(value) ? value : "active"; renderActions(); }
+function setProjectArchiveFilter(value) { projectArchiveFilter = ["active","archived","all"].includes(value) ? value : "active"; renderProjects(); }
+function setDecisionArchiveFilter(value) { decisionArchiveFilter = ["active","archived","all"].includes(value) ? value : "active"; renderDecisions(); }
+function setActionPlanArchiveFilter(value) { actionPlanArchiveFilter = ["active","archived","all"].includes(value) ? value : "active"; renderActionPlans(); }
+
+function toggleEntityArchive(type, id) {
+  const item = byId(type, id); if (!item) return false;
+  const nextArchived = !isEntityArchived(item);
+  item.archived = nextArchived;
+  item.archivedAt = nextArchived ? new Date().toISOString() : "";
+  if (!nextArchived) item.reactivatedAt = new Date().toISOString();
+  if (type === "projects") persistProjectsState(); else persist(type);
+  addActivity(nextArchived ? "📦 Élément archivé" : "♻️ Élément réactivé", item.name || item.title || "Élément", type, id);
+  if (type === "actions") renderActions();
+  else if (type === "projects") renderProjects();
+  else if (type === "decisions") renderDecisions();
+  return true;
+}
+
+function renderActions() {
+  actionDetailId = "";
+  const visible = state.actions.filter(a => entityArchiveVisible(a, actionArchiveFilter));
+  appHtml(`<div class="card hero"><div class="row"><div><h2>Actions</h2><p class="muted">L'action fait avancer : suivez ici ce qui doit concrètement être fait, par qui et pour quand.</p></div>${archiveFilterBarHtml(state.actions, actionArchiveFilter, "setActionArchiveFilter")}</div></div><details class="card deos-create-details"><summary>Ajouter une action</summary><div class="deos-create-details-body"><input id="aTitle" placeholder="Action"><input id="aLink" placeholder="Lien ou contexte"><div class="grid three manager-links"><div><label>Dossiers liés</label>${folderSelect("aFolders")}</div><div><label>Projets liés</label>${checkboxList("aProjects", state.projects.filter(p => !isEntityArchived(p)), [], p => p.name)}</div><div><label>Décisions liées</label>${checkboxList("aDecisions", state.decisions.filter(d => !isEntityArchived(d)), [], d => d.title)}</div></div><button class="action" onclick="addAction()">Ajouter</button></div></details>${visible.map(actionItem).join("") || `<div class="card empty">Aucune action ${actionArchiveFilter === "archived" ? "archivée" : "active"}.</div>`}`);
+}
 function actionItem(a) {
   const folders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id)).map(f => f.name).join(" · ");
   const projects = state.projects.filter(p => ensureArray(a.linkedProjects).includes(p.id));
   const decisions = state.decisions.filter(d => ensureArray(a.linkedDecisions).includes(d.id));
-  return `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="openAction('${a.id}')">Ouvrir</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
+  return `<div class="item row"><div><strong>${a.done ? "[Terminee]" : "[A faire]"} ${esc(a.title)}</strong><span class="muted">${esc(a.link || "")}${folders ? " · " + esc(folders) : ""}${projects.length ? " · Projet : " + esc(projects.map(p => p.name).join(" · ")) : ""}${decisions.length ? " · Décision : " + esc(decisions.map(d => d.title).join(" · ")) : ""}</span></div><div class="row-actions">${projects.map(p => `<button class="secondary" onclick="openProject('${p.id}')">Projet</button>`).join("")}${decisions.map(d => `<button class="secondary" onclick="openDecision('${d.id}')">Décision</button>`).join("")}<button class="secondary" onclick="openAction('${a.id}')">Ouvrir</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="secondary" onclick="toggleEntityArchive('actions','${a.id}')">${isEntityArchived(a) ? "Réactiver" : "Archiver"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>`;
 }
 
 function addAction() {
@@ -7937,7 +8093,7 @@ function openAction(id) {
   const linkedFolders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id));
   const linkedDocuments = state.documents.filter(d => ensureArray(d.linkedActions).includes(a.id));
   document.getElementById("viewTitle").textContent = a.title;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderActions()">Retour Actions</button><h2>${esc(a.title)}</h2><p>${esc(a.link || "")}</p><span class="muted">${a.done ? "Terminée" : "En cours"}</span><div class="row-actions"><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div><div class="grid two"><div class="card"><h2>Dossiers liés</h2>${linkedFolders.map(f => `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.category || "")}</span></div>`).join("") || `<div class="empty">Aucun dossier lié.</div>`}</div><div class="card"><h2>Projets liés</h2>${linkedProjects.map(p => `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.next || "")}</span></div>`).join("") || `<div class="empty">Aucun projet lié.</div>`}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card"><h2>Documents liés</h2>${linkedDocuments.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${actionAgendaList(a)}</div></div>`);
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderActions()">Retour Actions</button><h2>${esc(a.title)}</h2><p>${esc(a.link || "")}</p><span class="muted">${a.done ? "Terminée" : "En cours"}</span><div class="row-actions"><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="secondary" onclick="toggleEntityArchive('actions','${a.id}')">${isEntityArchived(a) ? "Réactiver" : "Archiver"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div><div class="grid two"><div class="card"><h2>Dossiers liés</h2>${linkedFolders.map(f => `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.category || "")}</span></div>`).join("") || `<div class="empty">Aucun dossier lié.</div>`}</div><div class="card"><h2>Projets liés</h2>${linkedProjects.map(p => `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.next || "")}</span></div>`).join("") || `<div class="empty">Aucun projet lié.</div>`}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card"><h2>Documents liés</h2>${linkedDocuments.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${actionAgendaList(a)}</div></div>`);
 }
 
 function openActionModal(id) {
@@ -8987,17 +9143,41 @@ function projectMini(p) {
   return `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.next || "")}</span>${badge(p.status)}</div>`;
 }
 
+// D23 : tri de présentation uniquement, sans modifier les données stockées.
+function compareProjectsForDisplay(a, b) {
+  return String(a.name || "").localeCompare(String(b.name || ""), "fr", { sensitivity: "base", numeric: true })
+    || String(a.id || "").localeCompare(String(b.id || ""), "en");
+}
 function renderProjects() {
   restoreProjectsFromSyncShadowIfNeeded();
   document.getElementById("viewTitle").textContent = "Projets V5";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "projects"));
-  appHtml(`<div class="card hero"><h2>Projets V5</h2><p class="muted">Le projet transforme : pilotez ici les changements structurés ayant un objectif et un résultat attendu.</p></div><details class="card deos-create-details"><summary>Ajouter un projet</summary><div class="deos-create-details-body"><input id="prName" placeholder="Nom"><input id="prNext" placeholder="Prochaine étape"><div class="form-grid"><div><label>Responsable principal</label>${ownerSelect("prOwnerId")}</div><input id="prDeadline" placeholder="Échéance"><input id="prProgress" type="number" min="0" max="100" value="0"><select id="prStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select></div><div class="manager-links"><label>Dossiers liés</label>${folderSelect("prFolders")}</div><button class="action" onclick="addProject()">Ajouter</button></div></details><div class="grid two">${state.projects.map(projectCard).join("")}</div>`);
+  const visible = state.projects.filter(p => entityArchiveVisible(p, projectArchiveFilter)).sort(compareProjectsForDisplay);
+  appHtml(`<div class="card hero"><div class="row"><div><h2>Projets V5</h2><p class="muted">Le projet transforme : pilotez ici les changements structurés ayant un objectif et un résultat attendu.</p></div>${archiveFilterBarHtml(state.projects, projectArchiveFilter, "setProjectArchiveFilter")}</div></div><details class="card deos-create-details"><summary>Ajouter un projet</summary><div class="deos-create-details-body"><input id="prName" placeholder="Nom"><input id="prNext" placeholder="Prochaine étape"><div class="form-grid"><div><label>Responsable principal</label>${ownerSelect("prOwnerId")}</div><input id="prDeadline" placeholder="Échéance"><input id="prProgress" type="number" min="0" max="100" value="0"><select id="prStatus"><option value="green">Maîtrisé</option><option value="orange">À suivre</option><option value="red">Critique</option></select></div><div class="manager-links"><label>Dossiers liés</label>${folderSelect("prFolders")}</div><button class="action" onclick="addProject()">Ajouter</button></div></details><div class="grid two">${visible.map(projectCard).join("") || `<div class="card full-span empty">Aucun projet ${projectArchiveFilter === "archived" ? "archivé" : "actif"}.</div>`}</div>`);
 }
-
 function projectCard(p) {
   const owner = projectOwnerName(p);
-  return `<div class="card clickable" onclick="openProject('${p.id}')"><h2>${esc(p.name)}</h2>${badge(p.status)}<p>${esc(p.next || "")}</p><div class="progress"><span style="width:${Number(p.progress || 0)}%"></span></div><span class="muted">${Number(p.progress || 0)}%${owner ? " · " + esc(owner) : ""}</span><span class="meta">ID ${esc(p.id)}</span></div>`;
+  const archived = isEntityArchived(p);
+  return `<div class="card clickable" onclick="openProject('${p.id}')"><div class="row"><h2>${esc(p.name)}</h2>${archived ? '<span class="badge">ARCHIVÉ</span>' : badge(p.status)}</div><p>${esc(p.next || "")}</p><div class="progress"><span style="width:${Number(p.progress || 0)}%"></span></div><span class="muted">${Number(p.progress || 0)}%${owner ? " · " + esc(owner) : ""}</span><span class="meta">ID ${esc(p.id)}${archived && p.archivedAt ? ' · Archivé le ' + esc(new Date(p.archivedAt).toLocaleDateString('fr-FR')) : ''}</span><div class="row-actions" style="margin-top:12px"><button class="secondary" type="button" onclick="event.stopPropagation();toggleProjectArchiveD18('${p.id}')">${archived ? "Réactiver" : "Archiver"}</button></div></div>`;
 }
+
+function toggleProjectArchiveD18(id) {
+  restoreProjectsFromSyncShadowIfNeeded();
+  const p = byId("projects", id);
+  if (!p) return false;
+  const archived = !isEntityArchived(p);
+  p.archived = archived;
+  p.archivedAt = archived ? new Date().toISOString() : "";
+  if (!archived) p.reactivatedAt = new Date().toISOString();
+  persistProjectsState();
+  addActivity(archived ? "📦 Projet archivé" : "♻️ Projet réactivé", p.name, archived ? "Retiré des projets actifs" : "Revenu dans les projets actifs", id);
+  // Préserver le filtre : une réactivation depuis « Archivés » ne doit pas
+  // masquer l'onglet dans lequel l'utilisateur travaille.
+  renderProjects();
+  if (typeof showDeosToast === "function") showDeosToast(archived ? "Projet archivé. Disponible dans « Archivés »." : "Projet réactivé.", "success");
+  return true;
+}
+window.toggleProjectArchiveD18 = toggleProjectArchiveD18;
 
 function addProject() {
   restoreProjectsFromSyncShadowIfNeeded();
@@ -9083,7 +9263,7 @@ function openProject(id, mode = "") {
   if (!p) return renderProjects();
   setNoteCaptureContext("projects", p.id, p.name);
   document.getElementById("viewTitle").textContent = p.name;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderProjects()">Retour Projets</button><h2>${esc(p.name)}</h2>${badge(p.status)}<p>${esc(p.objective || p.next || "")}</p><span class="meta">ID ${esc(p.id)}</span><div class="row-actions"><button class="action" onclick="editProject('${p.id}')">Modifier</button><button class="secondary" onclick="startReport('projects','${p.id}')">Générer un compte rendu</button><button class="secondary" onclick="openProject('${p.id}','milestone')">Ajouter un jalon</button><button class="secondary" onclick="openProject('${p.id}','note')">Ajouter une note</button><button class="secondary" onclick="openProject('${p.id}','event')">Ajouter un événement</button><button class="danger" onclick="deleteProject('${p.id}')">Supprimer</button></div></div><div class="grid two">${projectQuickForm(p, mode)}<div class="card"><h2>Avancement</h2><div class="progress"><span style="width:${Number(p.progress || 0)}%"></span></div><p>${Number(p.progress || 0)}%</p><div class="row"><input id="quickProgress" type="number" min="0" max="100" value="${Number(p.progress || 0)}"><button class="secondary" onclick="updateProjectProgress('${p.id}')">Mettre à jour</button></div></div><div class="card"><h2>Pilotage</h2><p><strong>Responsable :</strong> ${esc(projectOwnerName(p) || "À compléter")}</p><p><strong>Lancement :</strong> ${esc(p.launchDate || "À compléter")}</p><p><strong>Échéance :</strong> ${esc(p.deadline || "À préciser")}</p><p><strong>Priorité :</strong> ${icons[p.priorityLevel] || ""} ${esc(labels[p.priorityLevel] || p.priorityLevel || "À suivre")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${projectAgendaList(p)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${projectMeetingPreparationsList(p)}</div><div class="card"><h2>Objectif</h2><p>${esc(p.objective || "À compléter")}</p></div><div class="card"><h2>Contexte</h2><p>${esc(p.context || "À compléter")}</p></div><div class="card"><h2>Prochaine étape</h2><p>${esc(p.next || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(p.risks || "À compléter")}</p></div><div class="card"><h2>Managers associés</h2>${projectManagersList(p)}</div><div class="card"><h2>Jalons</h2>${projectMilestonesList(p)}</div><div class="card"><h2>Actions liées</h2>${projectActionsList(p)}${p.actions ? `<p class="muted">${esc(p.actions)}</p>` : ""}</div><div class="card"><h2>Décisions liées</h2>${projectDecisionsList(p)}${p.decisions ? `<p class="muted">${esc(p.decisions)}</p>` : ""}</div><div class="card"><h2>Journal lié</h2>${projectJournalList(p)}</div><div class="card"><h2>Documents liés</h2>${projectDocumentsList(p)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(p)}</div><div class="card"><h2>Notes du directeur</h2>${projectNotesList(p)}</div><div class="card full-span"><h2>Historique chronologique</h2>${projectTimeline(p)}</div></div>`);
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderProjects()">Retour Projets</button><h2>${esc(p.name)}</h2>${badge(p.status)}<p>${esc(p.objective || p.next || "")}</p><span class="meta">ID ${esc(p.id)}</span><div class="row-actions"><button class="action" onclick="editProject('${p.id}')">Modifier</button><button class="secondary" onclick="startReport('projects','${p.id}')">Générer un compte rendu</button><button class="secondary" onclick="openProject('${p.id}','milestone')">Ajouter un jalon</button><button class="secondary" onclick="openProject('${p.id}','note')">Ajouter une note</button><button class="secondary" onclick="openProject('${p.id}','event')">Ajouter un événement</button><button class="secondary" onclick="toggleProjectArchiveD18('${p.id}')">${isEntityArchived(p) ? "Réactiver" : "Archiver"}</button><button class="danger" onclick="deleteProject('${p.id}')">Supprimer</button></div></div><div class="grid two">${projectQuickForm(p, mode)}<div class="card"><h2>Avancement</h2><div class="progress"><span style="width:${Number(p.progress || 0)}%"></span></div><p>${Number(p.progress || 0)}%</p><div class="row"><input id="quickProgress" type="number" min="0" max="100" value="${Number(p.progress || 0)}"><button class="secondary" onclick="updateProjectProgress('${p.id}')">Mettre à jour</button></div></div><div class="card"><h2>Pilotage</h2><p><strong>Responsable :</strong> ${esc(projectOwnerName(p) || "À compléter")}</p><p><strong>Lancement :</strong> ${esc(p.launchDate || "À compléter")}</p><p><strong>Échéance :</strong> ${esc(p.deadline || "À préciser")}</p><p><strong>Priorité :</strong> ${icons[p.priorityLevel] || ""} ${esc(labels[p.priorityLevel] || p.priorityLevel || "À suivre")}</p></div><div class="card full-span"><h2>Rendez-vous liés</h2>${projectAgendaList(p)}</div><div class="card full-span"><h2>Préparations de réunion liées</h2>${projectMeetingPreparationsList(p)}</div><div class="card"><h2>Objectif</h2><p>${esc(p.objective || "À compléter")}</p></div><div class="card"><h2>Contexte</h2><p>${esc(p.context || "À compléter")}</p></div><div class="card"><h2>Prochaine étape</h2><p>${esc(p.next || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(p.risks || "À compléter")}</p></div><div class="card"><h2>Managers associés</h2>${projectManagersList(p)}</div><div class="card"><h2>Jalons</h2>${projectMilestonesList(p)}</div><div class="card"><h2>Actions liées</h2>${projectActionsList(p)}${p.actions ? `<p class="muted">${esc(p.actions)}</p>` : ""}</div><div class="card"><h2>Décisions liées</h2>${projectDecisionsList(p)}${p.decisions ? `<p class="muted">${esc(p.decisions)}</p>` : ""}</div><div class="card"><h2>Journal lié</h2>${projectJournalList(p)}</div><div class="card"><h2>Documents liés</h2>${projectDocumentsList(p)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(p)}</div><div class="card"><h2>Notes du directeur</h2>${projectNotesList(p)}</div><div class="card full-span"><h2>Historique chronologique</h2>${projectTimeline(p)}</div></div>`);
 }
 
 function editProject(id) {
@@ -9328,11 +9508,31 @@ function saveProjectEdit(id) {
     linkedDecisions: normalizeLinkedIdArray(checkedValues("pepDecisions")),
     linkedManagers: normalizeLinkedManagerIds(checkedValues("pepManagers"))
   };
-  state.projects[i] = normalizeEntity("projects", next);
-  persistProjectsState();
+  const previous = state.projects[i];
+  const expected = normalizeEntity("projects", next);
+  try {
+    state.projects[i] = expected;
+    persistProjectsState();
+    const reread = saved("projects", []).find(p => sameId(p.id, id));
+    if (!reread || projectFingerprint(reread) !== projectFingerprint(expected)) {
+      throw new Error("Les modifications n'ont pas été confirmées dans le stockage local.");
+    }
+  } catch (error) {
+    state.projects[i] = previous;
+    projectEditDialog.error = `Enregistrement impossible : ${error?.message || "erreur de stockage"}`;
+    // Préserver le formulaire saisi pour éviter toute perte du travail utilisateur.
+    const errorTarget = document.querySelector(".project-edit-modal .folder-delete-error");
+    if (errorTarget) errorTarget.textContent = projectEditDialog.error;
+    else {
+      const panel = document.querySelector(".project-edit-modal .modal-head");
+      panel?.insertAdjacentHTML("afterend", `<p class="folder-delete-error">${esc(projectEditDialog.error)}</p>`);
+    }
+    return false;
+  }
   addActivity("📊 Projet modifié", state.projects[i].name, state.projects[i].next || "", id);
   closeProjectEditModal();
   openProject(id);
+  if (typeof showDeosToast === "function") showDeosToast("Projet enregistré sur cet appareil. Synchronisation distante en cours si activée.", "success", 3400);
   return true;
 }
 
@@ -9547,9 +9747,9 @@ function decisionQuickForm(d, mode = "") {
 function renderDecisions() {
   document.getElementById("viewTitle").textContent = "Décisions V5";
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === "decisions"));
-  appHtml(`<div class="card hero"><h2>Décisions V5</h2><p class="muted">La décision arbitre : retrouvez ici les arbitrages pris, attendus ou à formaliser.</p></div><details class="card deos-create-details"><summary>Ajouter une décision</summary><div class="deos-create-details-body"><input id="dTitle" placeholder="Titre"><textarea id="dContext" placeholder="Contexte"></textarea><div class="form-grid"><input id="dOwner" placeholder="Responsable du suivi"><input id="dNext" placeholder="Suite attendue"><input id="dImpact" placeholder="Impacts attendus" class="full"><input id="dTags" placeholder="Mots-clés séparés par virgule" class="full"></div><div class="grid two manager-links"><div><label>Dossiers liés</label>${folderSelect("dFolders")}</div><div><label>Projets concernés</label>${checkboxList("dProjects", state.projects, [], p => p.name)}</div></div><button class="action" onclick="addDecision()">Ajouter</button></div></details>${state.decisions.map(decisionCard).join("") || `<div class="card empty">Aucune décision.</div>`}`);
+  const visible = state.decisions.filter(d => entityArchiveVisible(d, decisionArchiveFilter));
+  appHtml(`<div class="card hero"><div class="row"><div><h2>Décisions V5</h2><p class="muted">La décision arbitre : retrouvez ici les arbitrages pris, attendus ou à formaliser.</p></div>${archiveFilterBarHtml(state.decisions, decisionArchiveFilter, "setDecisionArchiveFilter")}</div></div><details class="card deos-create-details"><summary>Ajouter une décision</summary><div class="deos-create-details-body"><input id="dTitle" placeholder="Titre"><textarea id="dContext" placeholder="Contexte"></textarea><div class="form-grid"><input id="dOwner" placeholder="Responsable du suivi"><input id="dNext" placeholder="Suite attendue"><input id="dImpact" placeholder="Impacts attendus" class="full"><input id="dTags" placeholder="Mots-clés séparés par virgule" class="full"></div><div class="grid two manager-links"><div><label>Dossiers liés</label>${folderSelect("dFolders")}</div><div><label>Projets concernés</label>${checkboxList("dProjects", state.projects.filter(p => !isEntityArchived(p)), [], p => p.name)}</div></div><button class="action" onclick="addDecision()">Ajouter</button></div></details>${visible.map(decisionCard).join("") || `<div class="card empty">Aucune décision ${decisionArchiveFilter === "archived" ? "archivée" : "active"}.</div>`}`);
 }
-
 function decisionCard(d) {
   return `<div class="card clickable" onclick="openDecision('${d.id}')"><h2>${esc(d.title)}</h2><p>${esc(d.context || "")}</p><span class="muted">${esc(d.date || "")} · ${esc(decisionStatusLabel(d.status))} ? ${(d.tags || []).map(esc).join(", ")}</span><span class="meta">ID ${esc(d.id)}</span></div>`;
 }
@@ -9571,7 +9771,7 @@ function openDecision(id, mode = "") {
   if (!d) return renderDecisions();
   setNoteCaptureContext("decisions", d.id, d.title);
   document.getElementById("viewTitle").textContent = d.title;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderDecisions()">Retour Décisions</button><h2>${esc(d.title)}</h2><p>${esc(d.context || "")}</p><span class="muted">${esc(d.date || "")} · ${esc(decisionStatusLabel(d.status))}</span><span class="meta">ID ${esc(d.id)}</span><div class="row-actions"><button class="action" onclick="editDecision('${d.id}')">Modifier</button><button class="secondary" onclick="openDecision('${d.id}','note')">Ajouter une note</button><button class="secondary" onclick="openDecision('${d.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openDecision('${d.id}','action')">Créer une action liée</button><button class="danger" onclick="deleteDecision('${d.id}')">Supprimer</button></div></div><div class="grid two">${decisionQuickForm(d, mode)}<div class="card"><h2>Statut et importance</h2><p><strong>Statut :</strong> ${esc(decisionStatusLabel(d.status))}</p><p><strong>Importance :</strong> ${icons[d.importance] || ""} ${esc(labels[d.importance] || d.importance || "Important")}</p><p><strong>Réexamen :</strong> ${esc(d.reviewDate || "À préciser")}</p></div><div class="card"><h2>Responsable du suivi</h2><p>${esc(d.owner || "À compléter")}</p></div><div class="card"><h2>Problème ou besoin initial</h2><p>${esc(d.problem || "À compléter")}</p></div><div class="card"><h2>Décision prise</h2><p>${esc(d.decision || d.nextStep || "À compléter")}</p></div><div class="card"><h2>Raisons et critères</h2><p>${esc(d.rationale || "À compléter")}</p></div><div class="card"><h2>Alternatives étudiées</h2><p>${esc(d.alternatives || "À compléter")}</p></div><div class="card"><h2>Impacts attendus</h2><p>${esc(d.impacts || d.impact || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(d.risks || "À compléter")}</p></div><div class="card"><h2>Managers concernés</h2>${decisionManagersList(d)}</div><div class="card"><h2>Projets concernés</h2>${decisionProjectsList(d)}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${decisionAgendaList(d)}</div><div class="card"><h2>Actions générées</h2>${decisionActionsList(d)}</div><div class="card"><h2>Journal lié</h2>${decisionJournalList(d)}</div><div class="card"><h2>Documents liés</h2>${decisionDocumentsList(d)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(d)}</div><div class="card"><h2>Notes du directeur</h2>${decisionNotesList(d)}</div><div class="card"><h2>Mots-clés</h2>${listItems(d.tags)}</div><div class="card full-span"><h2>Historique chronologique</h2>${decisionTimeline(d)}</div></div>`);
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderDecisions()">Retour Décisions</button><h2>${esc(d.title)}</h2><p>${esc(d.context || "")}</p><span class="muted">${esc(d.date || "")} · ${esc(decisionStatusLabel(d.status))}</span><span class="meta">ID ${esc(d.id)}</span><div class="row-actions"><button class="action" onclick="editDecision('${d.id}')">Modifier</button><button class="secondary" onclick="openDecision('${d.id}','note')">Ajouter une note</button><button class="secondary" onclick="openDecision('${d.id}','event')">Ajouter un événement</button><button class="secondary" onclick="openDecision('${d.id}','action')">Créer une action liée</button><button class="secondary" onclick="toggleEntityArchive('decisions','${d.id}')">${isEntityArchived(d) ? "Réactiver" : "Archiver"}</button><button class="danger" onclick="deleteDecision('${d.id}')">Supprimer</button></div></div><div class="grid two">${decisionQuickForm(d, mode)}<div class="card"><h2>Statut et importance</h2><p><strong>Statut :</strong> ${esc(decisionStatusLabel(d.status))}</p><p><strong>Importance :</strong> ${icons[d.importance] || ""} ${esc(labels[d.importance] || d.importance || "Important")}</p><p><strong>Réexamen :</strong> ${esc(d.reviewDate || "À préciser")}</p></div><div class="card"><h2>Responsable du suivi</h2><p>${esc(d.owner || "À compléter")}</p></div><div class="card"><h2>Problème ou besoin initial</h2><p>${esc(d.problem || "À compléter")}</p></div><div class="card"><h2>Décision prise</h2><p>${esc(d.decision || d.nextStep || "À compléter")}</p></div><div class="card"><h2>Raisons et critères</h2><p>${esc(d.rationale || "À compléter")}</p></div><div class="card"><h2>Alternatives étudiées</h2><p>${esc(d.alternatives || "À compléter")}</p></div><div class="card"><h2>Impacts attendus</h2><p>${esc(d.impacts || d.impact || "À compléter")}</p></div><div class="card"><h2>Risques et points de vigilance</h2><p>${esc(d.risks || "À compléter")}</p></div><div class="card"><h2>Managers concernés</h2>${decisionManagersList(d)}</div><div class="card"><h2>Projets concernés</h2>${decisionProjectsList(d)}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${decisionAgendaList(d)}</div><div class="card"><h2>Actions générées</h2>${decisionActionsList(d)}</div><div class="card"><h2>Journal lié</h2>${decisionJournalList(d)}</div><div class="card"><h2>Documents liés</h2>${decisionDocumentsList(d)}</div><div class="card"><h2>Dossiers liés</h2>${linkedFoldersList(d)}</div><div class="card"><h2>Notes du directeur</h2>${decisionNotesList(d)}</div><div class="card"><h2>Mots-clés</h2>${listItems(d.tags)}</div><div class="card full-span"><h2>Historique chronologique</h2>${decisionTimeline(d)}</div></div>`);
 }
 
 function editDecision(id) {
@@ -10199,6 +10399,350 @@ function deleteJournal(id) {
   persist("journal");
   addActivity("🗑️ Journal supprimé", t);
   renderJournal();
+}
+
+
+// -----------------------------------------------------------------------------
+// V5.30 D15 — Plans d'action + chronogramme
+// -----------------------------------------------------------------------------
+let actionPlanEditorId = "";
+let actionPlanDetailId = "";
+let actionPlanViewMode = "timeline";
+let actionPlanFilters = { owner: "", type: "", status: "", folder: "" };
+
+function actionPlanEntityConfig(type) {
+  return {
+    folders: { label: "Dossier", plural: "Dossiers", list: state.folders, title: row => row.name || "Dossier" },
+    projects: { label: "Projet", plural: "Projets", list: state.projects, title: row => row.name || "Projet" },
+    actions: { label: "Action", plural: "Actions", list: state.actions, title: row => row.title || "Action" },
+    decisions: { label: "Décision", plural: "Décisions", list: state.decisions, title: row => row.title || "Décision" }
+  }[type] || null;
+}
+
+function actionPlanItemDefaults(type, entity) {
+  const cfg = actionPlanEntityConfig(type);
+  if (!cfg || !entity) return { owner: "", startDate: "", dueDate: "", completedDate: "" };
+  if (type === "folders") return {
+    owner: entity.owner || "",
+    startDate: entity.startDate || entity.createdAt || "",
+    dueDate: entity.deadline || "",
+    completedDate: entity.completedAt || ""
+  };
+  if (type === "projects") return {
+    owner: entity.owner || projectOwnerName?.(entity) || "",
+    startDate: entity.launchDate || "",
+    dueDate: entity.deadline || "",
+    completedDate: entity.completedAt || ""
+  };
+  if (type === "actions") return {
+    owner: entity.owner || "",
+    startDate: entity.startDate || "",
+    dueDate: entity.due || "",
+    completedDate: entity.completedAt || (entity.done ? entity.due || localIsoDate() : "")
+  };
+  return {
+    owner: entity.owner || "",
+    startDate: entity.date || "",
+    dueDate: entity.reviewDate || entity.date || "",
+    completedDate: entity.status === "decided" ? (entity.date || "") : ""
+  };
+}
+
+function actionPlanResolveItem(row) {
+  const cfg = actionPlanEntityConfig(row?.entityType);
+  const entity = cfg?.list?.find(item => sameId(item.id, row.entityId));
+  if (!cfg || !entity) return null;
+  const defaults = actionPlanItemDefaults(row.entityType, entity);
+  return {
+    ...row,
+    entity,
+    typeLabel: cfg.label,
+    label: cfg.title(entity),
+    owner: row.owner || defaults.owner || "",
+    startDate: row.startDate || defaults.startDate || "",
+    dueDate: row.dueDate || defaults.dueDate || "",
+    completedDate: row.completedDate || defaults.completedDate || ""
+  };
+}
+
+function actionPlanStatusLabel(status) {
+  return ({ active: "En cours", paused: "En pause", completed: "Terminé", archived: "Archivé" })[status] || "En cours";
+}
+
+function actionPlanStatusBadge(status) {
+  const cls = status === "completed" ? "green" : status === "paused" ? "orange" : status === "archived" ? "muted" : "orange";
+  return `<span class="badge ${cls}">${esc(actionPlanStatusLabel(status))}</span>`;
+}
+
+function renderActionPlans() {
+  const plans = ensureArray(state.actionPlans).filter(p => entityArchiveVisible(p, actionPlanArchiveFilter)).slice().sort((a,b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+  appHtml(`<div class="card hero"><div class="row"><div><h2>Plans d'action</h2><p class="muted">Assemble les objets DEOS existants dans une feuille de route et visualise leur déroulement dans le temps.</p></div><div>${archiveFilterBarHtml(state.actionPlans, actionPlanArchiveFilter, "setActionPlanArchiveFilter")}<div class="row-actions"><button class="action" onclick="editActionPlan('')">+ Nouveau plan</button></div></div></div></div>
+  <div class="grid two">${plans.map(plan => {
+    const items = ensureArray(plan.items).map(actionPlanResolveItem).filter(Boolean);
+    const done = items.filter(row => Boolean(row.completedDate) || row.entity?.done).length;
+    return `<div class="card clickable" onclick="openActionPlan('${esc(plan.id)}')"><div class="row"><div><h2>${esc(plan.name || "Plan d'action")}</h2><p class="muted">${esc(plan.owner || "Pilote à définir")}</p></div>${actionPlanStatusBadge(plan.status)}</div><p>${esc(plan.objective || "Objectif à préciser")}</p><span class="meta">${items.length} élément(s) · ${done} réalisé(s) · ${esc(plan.startDate || "Début à définir")} → ${esc(plan.endDate || "Fin à définir")}</span></div>`;
+  }).join("") || `<div class="card full-span empty">Aucun plan d'action. Crée le premier à partir de ta feuille de route.</div>`}</div>`);
+}
+
+function actionPlanSelectionKey(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function actionPlanSelectionCandidates(type, selectedIds = []) {
+  const cfg = actionPlanEntityConfig(type); if (!cfg) return { items: [], hiddenDuplicates: 0 };
+  const selected = new Set(ensureArray(selectedIds).map(String));
+  const groups = new Map();
+  ensureArray(cfg.list).forEach(item => {
+    if (!item || item.hiddenSystem === true || isPrioritySyncTransportDocument(item)) return;
+    const key = actionPlanSelectionKey(cfg.title(item)) || String(item.id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  const out = []; let hiddenDuplicates = 0;
+  for (const group of groups.values()) {
+    const selectedRows = group.filter(item => selected.has(String(item.id)));
+    if (selectedRows.length) { out.push(...selectedRows); hiddenDuplicates += Math.max(0, group.length - selectedRows.length); continue; }
+    const activeRows = group.filter(item => !isEntityArchived(item));
+    if (!activeRows.length) { hiddenDuplicates += group.length; continue; }
+    activeRows.sort((a,b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+    out.push(activeRows[0]); hiddenDuplicates += Math.max(0, group.length - 1);
+  }
+  out.sort((a,b) => String(cfg.title(a)).localeCompare(String(cfg.title(b)), "fr", { sensitivity:"base" }));
+  return { items: out, hiddenDuplicates };
+}
+
+function actionPlanSelectionBlock(type, selectedIds) {
+  const cfg = actionPlanEntityConfig(type); if (!cfg) return "";
+  const { items, hiddenDuplicates } = actionPlanSelectionCandidates(type, selectedIds);
+  const note = hiddenDuplicates ? `<span class="meta">${hiddenDuplicates} doublon(s) ou élément(s) archivé(s) masqué(s)</span>` : "";
+  return `<div class="card"><div class="row"><h3>${esc(cfg.plural)}</h3>${note}</div>${checkboxList(`ap_${type}`, items, selectedIds, item => `${cfg.title(item)}${isEntityArchived(item) ? " · Archivé" : ""}`)}</div>`;
+}
+function actionPlanFloatField(id, label, value = "", options = {}) {
+  const full = options.full ? " full" : "";
+  const type = options.type || "text";
+  const extra = options.extra || "";
+  return `<label class="ap-float-field${full}"><span>${esc(label)}</span><input id="${esc(id)}" type="${esc(type)}" value="${esc(value || "")}" ${extra}></label>`;
+}
+
+function actionPlanFloatSelect(id, label, value, options) {
+  return `<label class="ap-float-field"><span>${esc(label)}</span><select id="${esc(id)}">${options.map(opt => `<option value="${esc(opt.value)}" ${String(opt.value) === String(value) ? "selected" : ""}>${esc(opt.label)}</option>`).join("")}</select></label>`;
+}
+
+function actionPlanFloatTextarea(id, label, value = "") {
+  return `<label class="ap-float-textarea"><span>${esc(label)}</span><textarea id="${esc(id)}">${esc(value || "")}</textarea></label>`;
+}
+
+function editActionPlan(id = "") {
+  const existing = id ? byId("actionPlans", id) : null;
+  actionPlanEditorId = existing?.id || "";
+  const plan = existing || normalizeEntity("actionPlans", { id: newId("actionPlan"), name: "", status: "active", items: [] });
+  const selected = type => ensureArray(plan.items).filter(row => row.entityType === type).map(row => row.entityId);
+  appHtml(`<div class="card hero"><div class="row"><div><h2>${existing ? "Modifier" : "Créer"} un plan d'action</h2><p class="muted">Coche les objets déjà présents dans DEOS. Aucun doublon n'est créé.</p></div><button class="secondary" onclick="${existing ? `openActionPlan('${esc(plan.id)}')` : "renderActionPlans()"}">Annuler</button></div></div>
+  <div class="card"><div class="form-grid ap-plan-form">${actionPlanFloatField("apName", "Nom du plan / feuille de route", plan.name || "", { full:true })}${actionPlanFloatField("apOwner", "Pilote du plan", plan.owner || "")}${actionPlanFloatSelect("apStatus", "Statut", plan.status || "active", [{value:"active",label:"En cours"},{value:"paused",label:"En pause"},{value:"completed",label:"Terminé"},{value:"archived",label:"Archivé"}])}${actionPlanFloatField("apStart", "Début du plan", plan.startDate || "", { type:"date" })}${actionPlanFloatField("apEnd", "Fin cible", plan.endDate || "", { type:"date" })}</div>${actionPlanFloatTextarea("apObjective", "Objectif du plan", plan.objective || "")}${actionPlanFloatTextarea("apNotes", "Commentaires / contexte", plan.notes || "")}</div>
+  <div class="grid two">${["folders","projects","actions","decisions"].map(type => actionPlanSelectionBlock(type, selected(type))).join("")}</div>
+  <div class="card"><div class="row-actions"><button class="action" onclick="saveActionPlan('${esc(plan.id)}')">Enregistrer le plan</button><button class="secondary" onclick="${existing ? `openActionPlan('${esc(plan.id)}')` : "renderActionPlans()"}">Annuler</button></div></div>`);
+}
+
+function saveActionPlan(id) {
+  const name = document.getElementById("apName")?.value.trim() || "";
+  if (!name) { showDeosToast("Le nom du plan est obligatoire.", "error"); return false; }
+  const old = byId("actionPlans", id);
+  const oldMap = new Map(ensureArray(old?.items).map(row => [`${row.entityType}:${row.entityId}`, row]));
+  const items = [];
+  ["folders","projects","actions","decisions"].forEach(type => {
+    checkedValues(`ap_${type}`).forEach(entityId => {
+      const key = `${type}:${entityId}`;
+      const cfg = actionPlanEntityConfig(type);
+      const entity = cfg?.list?.find(item => sameId(item.id, entityId));
+      const defaults = actionPlanItemDefaults(type, entity);
+      items.push({ entityType: type, entityId, ...(oldMap.get(key) || defaults) });
+    });
+  });
+  const next = normalizeEntity("actionPlans", {
+    ...(old || {}), id,
+    name,
+    owner: document.getElementById("apOwner")?.value.trim() || "",
+    status: document.getElementById("apStatus")?.value || "active",
+    startDate: document.getElementById("apStart")?.value || "",
+    endDate: document.getElementById("apEnd")?.value || "",
+    objective: document.getElementById("apObjective")?.value.trim() || "",
+    notes: document.getElementById("apNotes")?.value.trim() || "",
+    items,
+    createdAt: old?.createdAt || isoToday(),
+    updatedAt: new Date().toISOString()
+  });
+  const idx = indexById("actionPlans", id);
+  if (idx >= 0) state.actionPlans[idx] = next; else state.actionPlans.unshift(next);
+  persist("actionPlans");
+  addActivity("🗓️ Plan d'action enregistré", next.name, `${items.length} élément(s)`, next.id);
+  openActionPlan(next.id);
+  return true;
+}
+
+function actionPlanDateMs(value) {
+  const t = Date.parse(String(value || ""));
+  return Number.isFinite(t) ? t : null;
+}
+
+function actionPlanRowStatus(row) {
+  const done = Boolean(row.completedDate) || Boolean(row.entity?.done);
+  if (done) return "done";
+  const today = actionPlanDateMs(localIsoDate());
+  const due = actionPlanDateMs(row.dueDate);
+  const start = actionPlanDateMs(row.startDate);
+  if (due != null && today != null && due < today) return "late";
+  if (start != null && today != null && start > today) return "planned";
+  return "active";
+}
+
+function actionPlanRowStatusLabel(status) {
+  return ({ done:"Réalisé", late:"En retard", planned:"Prévu", active:"En cours" })[status] || "En cours";
+}
+
+function actionPlanRowFolderIds(row) {
+  if (!row?.entity) return [];
+  if (row.entityType === "folders") return [String(row.entity.id)];
+  const ids = new Set(normalizeLinkedIdArray(ensureArray(row.entity.linkedFolders)).map(String));
+  normalizeLinkedIdArray(ensureArray(row.entity.linkedProjects)).forEach(projectId => {
+    const project = byId("projects", projectId);
+    normalizeLinkedIdArray(ensureArray(project?.linkedFolders)).forEach(folderId => ids.add(String(folderId)));
+  });
+  return [...ids];
+}
+
+function actionPlanFilteredRows(rows) {
+  return rows.filter(row => {
+    if (actionPlanFilters.owner && String(row.owner || "") !== actionPlanFilters.owner) return false;
+    if (actionPlanFilters.type && row.entityType !== actionPlanFilters.type) return false;
+    if (actionPlanFilters.status && actionPlanRowStatus(row) !== actionPlanFilters.status) return false;
+    if (actionPlanFilters.folder && !actionPlanRowFolderIds(row).some(id => sameId(id, actionPlanFilters.folder))) return false;
+    return true;
+  });
+}
+
+function actionPlanFilterBarHtml(rows) {
+  const owners = [...new Set(rows.map(row => String(row.owner || "").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"fr"));
+  const folderIds = [...new Set(rows.flatMap(actionPlanRowFolderIds))];
+  const folders = folderIds.map(id => byId("folders", id)).filter(Boolean).sort((a,b)=>String(a.name||"").localeCompare(String(b.name||""),"fr"));
+  return `<div class="action-plan-filterbar">
+    <select onchange="setActionPlanFilter('owner',this.value)"><option value="">Tous les responsables</option>${owners.map(owner => `<option value="${esc(owner)}" ${actionPlanFilters.owner===owner?"selected":""}>${esc(owner)}</option>`).join("")}</select>
+    <select onchange="setActionPlanFilter('type',this.value)"><option value="">Tous les types</option>${[["folders","Dossiers"],["projects","Projets"],["actions","Actions"],["decisions","Décisions"]].map(([value,label])=>`<option value="${value}" ${actionPlanFilters.type===value?"selected":""}>${label}</option>`).join("")}</select>
+    <select onchange="setActionPlanFilter('status',this.value)"><option value="">Tous les statuts</option>${[["planned","Prévu"],["active","En cours"],["late","En retard"],["done","Réalisé"]].map(([value,label])=>`<option value="${value}" ${actionPlanFilters.status===value?"selected":""}>${label}</option>`).join("")}</select>
+    <select onchange="setActionPlanFilter('folder',this.value)" ${folders.length?"":"disabled"}><option value="">Tous les dossiers</option>${folders.map(folder=>`<option value="${esc(folder.id)}" ${sameId(actionPlanFilters.folder,folder.id)?"selected":""}>${esc(folder.name||"Dossier")}</option>`).join("")}</select>
+    <button class="secondary" onclick="resetActionPlanFilters()">Réinitialiser</button>
+  </div>`;
+}
+
+function setActionPlanFilter(key, value) {
+  if (!(key in actionPlanFilters)) return;
+  actionPlanFilters[key] = String(value || "");
+  if (actionPlanDetailId) openActionPlan(actionPlanDetailId);
+}
+
+function resetActionPlanFilters() {
+  actionPlanFilters = { owner:"", type:"", status:"", folder:"" };
+  if (actionPlanDetailId) openActionPlan(actionPlanDetailId);
+}
+
+function actionPlanTimelineBounds(plan, rows) {
+  const stamps = [];
+  [plan.startDate, plan.endDate].forEach(v => { const t = actionPlanDateMs(v); if (t != null) stamps.push(t); });
+  rows.forEach(row => [row.startDate, row.dueDate, row.completedDate].forEach(v => { const t = actionPlanDateMs(v); if (t != null) stamps.push(t); }));
+  const now = Date.now();
+  let min = stamps.length ? Math.min(...stamps) : now;
+  let max = stamps.length ? Math.max(...stamps) : now + 90*86400000;
+  if (max <= min) max = min + 30*86400000;
+  min -= 3*86400000; max += 3*86400000;
+  return { min, max, span: max-min };
+}
+
+function actionPlanTimelineHtml(plan, rows) {
+  if (!rows.length) return `<div class="empty">Aucun élément ne correspond aux filtres.</div>`;
+  const bounds = actionPlanTimelineBounds(plan, rows);
+  const pct = value => {
+    const t = actionPlanDateMs(value); if (t == null) return null;
+    return Math.max(0, Math.min(100, ((t-bounds.min)/bounds.span)*100));
+  };
+  const tickCount = 6;
+  const ticks = Array.from({length:tickCount}, (_,i) => {
+    const t = bounds.min + (bounds.span * i/(tickCount-1));
+    const d = new Date(t);
+    return { left: i/(tickCount-1)*100, label: d.toLocaleDateString("fr-FR", { month:"short", year:"2-digit" }) };
+  });
+  const todayPct = pct(localIsoDate());
+  const legend = `<div class="action-plan-legend"><span><i class="planned"></i>Prévu</span><span><i class="active"></i>En cours</span><span><i class="late"></i>En retard</span><span><i class="done"></i>Réalisé</span>${todayPct != null ? `<span class="today-key"><i></i>Aujourd'hui</span>` : ""}</div>`;
+  return `${legend}<div class="action-plan-gantt"><div class="action-plan-gantt-head"><div>Élément</div><div class="action-plan-axis">${ticks.map(t => `<span style="left:${t.left}%">${esc(t.label)}</span>`).join("")}${todayPct != null ? `<b class="action-plan-today" style="left:${todayPct}%"></b>` : ""}</div></div>${rows.map(row => {
+    const start = pct(row.startDate || row.dueDate);
+    const end = pct(row.dueDate || row.startDate);
+    const completed = pct(row.completedDate);
+    const left = start == null ? 0 : start;
+    const right = end == null ? left : Math.max(left, end);
+    const width = Math.max(1.2, right-left);
+    const isMilestone = !row.startDate || !row.dueDate || row.startDate === row.dueDate || row.entityType === "decisions";
+    const status = actionPlanRowStatus(row);
+    return `<div class="action-plan-gantt-row"><div class="action-plan-label"><strong>${esc(row.label)}</strong><small>${esc(row.typeLabel)} · ${esc(row.owner || "Responsable à définir")} · <em class="ap-row-status ${status}">${esc(actionPlanRowStatusLabel(status))}</em></small></div><div class="action-plan-track">${ticks.map(t => `<i class="action-plan-gridline" style="left:${t.left}%"></i>`).join("")}${todayPct != null ? `<b class="action-plan-today" style="left:${todayPct}%"></b>` : ""}${isMilestone ? `<span class="action-plan-milestone ${status}" style="left:${left}%" title="${esc(row.dueDate || row.startDate || "Date à définir")}">◆</span>` : `<span class="action-plan-bar ${status}" style="left:${left}%;width:${width}%" title="${esc(row.startDate || "?")} → ${esc(row.dueDate || "?")}"></span>`}${completed != null ? `<span class="action-plan-completed" style="left:${completed}%" title="Réalisé le ${esc(row.completedDate)}"></span>` : ""}</div></div>`;
+  }).join("")}</div>`;
+}
+
+function actionPlanTableHtml(plan, rows) {
+  if (!rows.length) return `<div class="empty">Aucun élément ne correspond aux filtres.</div>`;
+  return `<div class="action-plan-table"><div class="action-plan-table-head"><span>Type / élément</span><span>Statut</span><span>Responsable</span><span>Début</span><span>Échéance</span><span>Réalisé le</span></div>${rows.map((row, idx) => { const status=actionPlanRowStatus(row); return `<div class="action-plan-table-row"><span><strong>${esc(row.typeLabel)}</strong><small>${esc(row.label)}</small></span><span><em class="ap-row-status ${status}">${esc(actionPlanRowStatusLabel(status))}</em></span><input id="aprow_owner_${idx}" value="${esc(row.owner || "")}" placeholder="Responsable"><input id="aprow_start_${idx}" type="date" value="${esc(row.startDate || "")}"><input id="aprow_due_${idx}" type="date" value="${esc(row.dueDate || "")}"><input id="aprow_done_${idx}" type="date" value="${esc(row.completedDate || "")}"><input type="hidden" id="aprow_type_${idx}" value="${esc(row.entityType)}"><input type="hidden" id="aprow_id_${idx}" value="${esc(row.entityId)}"></div>`; }).join("")}</div><div class="row-actions"><button class="action" onclick="saveActionPlanSchedule('${esc(plan.id)}',${rows.length})">Enregistrer responsables et dates</button></div>`;
+}
+
+function saveActionPlanSchedule(planId, count) {
+  const plan = byId("actionPlans", planId); if (!plan) return false;
+  const updates = new Map();
+  for (let i=0;i<count;i++) {
+    const type = document.getElementById(`aprow_type_${i}`)?.value || "";
+    const id = document.getElementById(`aprow_id_${i}`)?.value || "";
+    if (!type || !id) continue;
+    updates.set(`${type}:${id}`, {
+      owner: document.getElementById(`aprow_owner_${i}`)?.value.trim() || "",
+      startDate: document.getElementById(`aprow_start_${i}`)?.value || "",
+      dueDate: document.getElementById(`aprow_due_${i}`)?.value || "",
+      completedDate: document.getElementById(`aprow_done_${i}`)?.value || ""
+    });
+  }
+  plan.items = ensureArray(plan.items).map(row => ({ ...row, ...(updates.get(`${row.entityType}:${row.entityId}`) || {}) }));
+  plan.updatedAt = new Date().toISOString();
+  persist("actionPlans");
+  showDeosToast("Chronogramme mis à jour.", "success");
+  openActionPlan(planId);
+  return true;
+}
+
+function setActionPlanViewMode(mode) { actionPlanViewMode = mode === "table" ? "table" : "timeline"; if (actionPlanDetailId) openActionPlan(actionPlanDetailId); }
+
+function openActionPlan(id) {
+  const plan = byId("actionPlans", id); if (!plan) return renderActionPlans();
+  actionPlanDetailId = id;
+  const allRows = ensureArray(plan.items).map(actionPlanResolveItem).filter(Boolean);
+  const rows = actionPlanFilteredRows(allRows);
+  appHtml(`<div class="card hero"><div class="row"><div><button class="secondary" onclick="renderActionPlans()">← Plans d'action</button><h2>${esc(plan.name)}</h2><p>${esc(plan.objective || "Objectif à préciser")}</p><span class="meta">Pilote : ${esc(plan.owner || "À définir")} · ${esc(plan.startDate || "Début à définir")} → ${esc(plan.endDate || "Fin à définir")}</span></div><div>${actionPlanStatusBadge(plan.status)}</div></div><div class="row-actions"><button class="secondary" onclick="editActionPlan('${esc(plan.id)}')">Modifier la sélection</button><button class="secondary ${actionPlanViewMode === "timeline" ? "active-filter" : ""}" onclick="setActionPlanViewMode('timeline')">Chronogramme</button><button class="secondary ${actionPlanViewMode === "table" ? "active-filter" : ""}" onclick="setActionPlanViewMode('table')">Responsables & dates</button><button class="secondary" onclick="toggleActionPlanArchive('${esc(plan.id)}')">${isEntityArchived(plan) || plan.status === "archived" ? "Réactiver le plan" : "Archiver le plan"}</button><button class="danger" onclick="deleteActionPlan('${esc(plan.id)}')">Supprimer le plan</button></div></div>
+  <div class="card"><div class="row"><div><h2>${actionPlanViewMode === "timeline" ? "Chronogramme" : "Pilotage des échéances"}</h2><p class="muted">${rows.length} affiché(s) sur ${allRows.length} élément(s)</p></div></div>${actionPlanFilterBarHtml(allRows)}${actionPlanViewMode === "timeline" ? actionPlanTimelineHtml(plan, rows) : actionPlanTableHtml(plan, rows)}</div>`);
+}
+
+
+function toggleActionPlanArchive(id) {
+  const plan = byId("actionPlans", id); if (!plan) return false;
+  const next = !(isEntityArchived(plan) || plan.status === "archived");
+  plan.archived = next;
+  plan.archivedAt = next ? new Date().toISOString() : "";
+  if (!next) plan.reactivatedAt = new Date().toISOString();
+  if (next) plan.status = "archived";
+  else if (plan.status === "archived") plan.status = "active";
+  plan.updatedAt = new Date().toISOString();
+  persist("actionPlans");
+  showDeosToast(next ? "Plan archivé." : "Plan réactivé.", "success");
+  renderActionPlans();
+  return true;
+}
+
+function deleteActionPlan(id) {
+  const idx = indexById("actionPlans", id); if (idx < 0) return;
+  if (!confirm("Supprimer ce plan d'action ? Les dossiers, projets, actions et décisions resteront dans DEOS.")) return;
+  const name = state.actionPlans[idx].name;
+  state.actionPlans.splice(idx,1); persist("actionPlans"); addActivity("🗑️ Plan d'action supprimé", name); renderActionPlans();
 }
 
 const perfMonths = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
@@ -21579,8 +22123,11 @@ function restoreProjectsFromSyncShadowIfNeeded(options = {}) {
 }
 
 function persistProjectsState(options = {}) {
+  // D20 : le shadow est la dernière BASE DISTANTE synchronisée, et NON une copie
+  // des modifications locales en attente. Le modifier avant le push provoquait
+  // une réconciliation pouvant annuler les changements d'un projet.
   persist("projects");
-  if (options.updateShadow !== false && projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
+  if (options.updateShadow === true && projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
 }
 function projectFingerprint(project = {}) { return JSON.stringify(canonicalProjectBusinessData(project)); }
 
@@ -21633,30 +22180,30 @@ function resolveProjectNonDestructive(localProject = {}, remoteProject = {}, bas
     const lEqualsBase = baseCanonical ? projectCanonicalValuesEqual(l, b) : false;
     const rEqualsBase = baseCanonical ? projectCanonicalValuesEqual(r, b) : false;
 
-    // Une valeur locale vide ou manifestement appauvrie ne doit jamais effacer une valeur distante riche.
-    if ((lEmpty || projectValueLooksDegraded(l, r)) && !rEmpty) {
-      merged[key] = remoteNormalized[key];
-      fromRemoteFields.push(key);
-      continue;
-    }
-    // Si le distant est vide et le local renseigné, on conserve le local.
-    if (!lEmpty && rEmpty) {
-      fromLocalFields.push(key);
-      continue;
-    }
-
+    // D23 : la base commune permet de reconnaître un retrait volontaire.
+    // Sans base, conserver le comportement prudent de récupération des valeurs riches.
     if (baseCanonical) {
-      // Seul le distant a évolué depuis le dernier état connu : on récupère le distant.
       if (lEqualsBase && !rEqualsBase) {
         merged[key] = remoteNormalized[key];
         fromRemoteFields.push(key);
         continue;
       }
-      // Seul le local a évolué et il ne s'est pas appauvri : on conserve le local.
       if (rEqualsBase && !lEqualsBase) {
         fromLocalFields.push(key);
         continue;
       }
+      // Les deux appareils ont modifié le même champ, même si l'un l'a vidé.
+      conflictFields.push(key);
+      continue;
+    }
+    if ((lEmpty || projectValueLooksDegraded(l, r)) && !rEmpty) {
+      merged[key] = remoteNormalized[key];
+      fromRemoteFields.push(key);
+      continue;
+    }
+    if (!lEmpty && rEmpty) {
+      fromLocalFields.push(key);
+      continue;
     }
 
     // Deux valeurs métier réellement renseignées et différentes = vrai conflit.
@@ -21836,12 +22383,12 @@ async function syncProjectsHybridNow(options = {}) {
     let remoteRows = await withProjectsRemoteTimeout(deosRemoteAdapter.listProjects(), "Lecture des Projets distants");
     const preflight = buildProjectsRemotePreview(state.projects, remoteRows);
     if (preflight.duplicateCandidates.length) {
-      throw new Error(`DUPLICATES_MANAGERS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
+      throw new Error(`DUPLICATES_PROJECTS_DETECTED — ${preflight.duplicateCandidates.length} groupe(s) de doublons exacts détecté(s). Utilisez d’abord « Réparer les doublons exacts ». `);
     }
     let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
     let localChanged = false;
     if (preflight.conflicts.length) {
-      throw new Error(`CONFLICTS_MANAGERS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
+      throw new Error(`CONFLICTS_PROJECTS_DETECTED — ${preflight.conflicts.length} vrai(s) conflit(s) métier détecté(s). Utilisez « Voir les conflits » avant toute écriture.`);
     }
 
     // V5.24B — fusion non destructive des Projets déjà présents des deux côtés AVANT
@@ -21854,7 +22401,7 @@ async function syncProjectsHybridNow(options = {}) {
       const resolution = resolveProjectNonDestructive(local, row.project, shadowMap.get(clientId) || null);
       if (resolution.conflictFields.length) {
         setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: resolution.conflictFields });
-        throw new Error(`CONFLICT_MANAGER_${clientId} — ${resolution.conflictFields.join(", ")}`);
+        throw new Error(`CONFLICT_PROJECT_${clientId} — ${resolution.conflictFields.join(", ")}`);
       }
       let effectiveRow = row;
       if (resolution.localChanged) {
@@ -21942,10 +22489,14 @@ async function syncProjectsHybridNow(options = {}) {
       setProjectSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: projectFingerprint(byId("projects", clientId) || row.project), lastSyncError: "", conflictRemote: null, conflictFields: [] });
     }
     if (localChanged) persistProjectsState();
-    else if (projectsSyncIsEnabled()) saveProjectsSyncShadow(state.projects);
+    // Shadow mis à jour uniquement APRÈS la synchronisation distante réussie.
+    // Ne pas avancer la base s'il reste des conflits non résolus.
+    if (projectsSyncIsEnabled() && !ensureArray(state.projects).some(p => getProjectSyncMeta(p.id).syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT)) {
+      saveProjectsSyncShadow(state.projects);
+    }
     const persistedProjects = saved("projects", []);
     if (persistedProjects.length !== state.projects.length) {
-      throw new Error(`PERSISTENCE_MANAGERS_INCOMPLETE — ${state.projects.length} Projet(s) en mémoire mais ${persistedProjects.length} relu(s) dans le stockage local.`);
+      throw new Error(`PERSISTENCE_PROJECTS_INCOMPLETE — ${state.projects.length} Projet(s) en mémoire mais ${persistedProjects.length} relu(s) dans le stockage local.`);
     }
     const analysis = buildProjectsRemotePreview(state.projects, await withProjectsRemoteTimeout(deosRemoteAdapter.listProjects(), "Analyse finale des Projets"));
     refreshProjectsSyncRuntimeState({ syncing: false, remoteCount: analysis.remoteCount, lastValidRemoteCount: analysis.remoteCount, lastAnalysis: analysis, lastAnalysisAt: analysis.generatedAt, lastSyncAt: new Date().toLocaleString("fr-FR"), lastError: "", state: analysis.conflicts.length ? DEOS_LINKS_SYNC_STATUS.CONFLICT : DEOS_LINKS_SYNC_STATUS.SYNCED });
@@ -23160,7 +23711,7 @@ function restoreManagersFromSyncShadowIfNeeded(options = {}) {
 
 function persistManagersState(options = {}) {
   persist("managers");
-  if (options.updateShadow !== false && managersSyncIsEnabled()) saveManagersSyncShadow(state.managers);
+  if (options.updateShadow === true && managersSyncIsEnabled()) saveManagersSyncShadow(state.managers);
 }
 function managerFingerprint(manager = {}) { return JSON.stringify(canonicalManagerBusinessData(manager)); }
 
@@ -23274,30 +23825,30 @@ function resolveManagerNonDestructive(localManager = {}, remoteManager = {}, bas
     const lEqualsBase = baseCanonical ? managerCanonicalValuesEqual(l, b) : false;
     const rEqualsBase = baseCanonical ? managerCanonicalValuesEqual(r, b) : false;
 
-    // Une valeur locale vide ou manifestement appauvrie ne doit jamais effacer une valeur distante riche.
-    if ((lEmpty || managerValueLooksDegraded(l, r)) && !rEmpty) {
-      merged[key] = remoteNormalized[key];
-      fromRemoteFields.push(key);
-      continue;
-    }
-    // Si le distant est vide et le local renseigné, on conserve le local.
-    if (!lEmpty && rEmpty) {
-      fromLocalFields.push(key);
-      continue;
-    }
-
+    // D23 : la base commune permet de reconnaître un retrait volontaire.
+    // Sans base, conserver le comportement prudent de récupération des valeurs riches.
     if (baseCanonical) {
-      // Seul le distant a évolué depuis le dernier état connu : on récupère le distant.
       if (lEqualsBase && !rEqualsBase) {
         merged[key] = remoteNormalized[key];
         fromRemoteFields.push(key);
         continue;
       }
-      // Seul le local a évolué et il ne s'est pas appauvri : on conserve le local.
       if (rEqualsBase && !lEqualsBase) {
         fromLocalFields.push(key);
         continue;
       }
+      // Les deux appareils ont modifié le même champ, même si l'un l'a vidé.
+      conflictFields.push(key);
+      continue;
+    }
+    if ((lEmpty || managerValueLooksDegraded(l, r)) && !rEmpty) {
+      merged[key] = remoteNormalized[key];
+      fromRemoteFields.push(key);
+      continue;
+    }
+    if (!lEmpty && rEmpty) {
+      fromLocalFields.push(key);
+      continue;
     }
 
     // Deux valeurs métier réellement renseignées et différentes = vrai conflit.
@@ -23864,7 +24415,7 @@ async function syncManagersHybridNow(options = {}) {
       setManagerSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: managerFingerprint(byId("managers", clientId) || row.manager), lastSyncError: "", conflictRemote: null, conflictFields: [] });
     }
     if (localChanged) persistManagersState();
-    else if (managersSyncIsEnabled()) saveManagersSyncShadow(state.managers);
+    if (managersSyncIsEnabled() && !ensureArray(state.managers).some(m => getManagerSyncMeta(m.id).syncStatus === DEOS_LINKS_SYNC_STATUS.CONFLICT)) saveManagersSyncShadow(state.managers);
     const persistedManagers = saved("managers", []);
     if (persistedManagers.length !== state.managers.length) {
       throw new Error(`PERSISTENCE_MANAGERS_INCOMPLETE — ${state.managers.length} Manager(s) en mémoire mais ${persistedManagers.length} relu(s) dans le stockage local.`);
@@ -29339,3 +29890,82 @@ window.addEventListener("load", () => {
   setTimeout(ensureQuickNoteRailVisible, 0);
   setTimeout(ensureQuickNoteRailVisible, 250);
 });
+
+// D24 — La messagerie référence les Actions/Décisions existantes.
+var mailPilotShowClosed = false;
+function mailPilotCategoryLabel(category) {
+  return ({decide:'À décider',delegate:'À déléguer',waiting:'En attente'})[category] || '';
+}
+function mailPilotSafeUrl(value) {
+  try { const url = new URL(String(value || '').trim());
+    return url.protocol === 'https:' && url.hostname === 'mail.google.com' && !url.username && !url.password ? url.href : '';
+  } catch (_) { return ''; }
+}
+function mailPilotRows() {
+  return ['actions','decisions'].flatMap(type => ensureArray(state[type]).filter(item => item.mailPilot && mailPilotCategoryLabel(item.mailPilot.category)).map(item => ({type,item})))
+    .sort((a,b) => String(a.item.title || '').localeCompare(String(b.item.title || ''),'fr') || String(a.item.id).localeCompare(String(b.item.id)));
+}
+function mailPilotClosed(row) { return row.type === 'actions' ? Boolean(row.item.done) : ['decided','applying','applied'].includes(row.item.status); }
+function mailPilotNotice(message) { if (typeof showDeosToast === 'function') showDeosToast(message,'warning'); else alert(message); }
+function renderMailPilot() {
+  const rows = mailPilotRows();
+  const targets = ['actions','decisions'].flatMap(type => ensureArray(state[type]).filter(item => !isEntityArchived(item)).map(item => `<option value="${esc(type+':'+item.id)}">${type === 'actions' ? 'Action' : 'Décision'} · ${esc(item.title || item.id)}</option>`)).join('');
+  const columns = ['decide','delegate','waiting'].map(category => {
+    const items = rows.map((row,index)=>({...row,index})).filter(row=>row.item.mailPilot.category===category && !isEntityArchived(row.item) && (mailPilotShowClosed || !mailPilotClosed(row)));
+    return `<section class="card"><h2>${mailPilotCategoryLabel(category)} <span class="badge">${items.length}</span></h2>${items.map(row=>{
+      const item=row.item, due=row.type==='actions'?item.due:item.reviewDate;
+      const url=mailPilotSafeUrl(item.mailPilot.url);
+      return `<article class="item"><strong>${esc(item.title)}</strong><span class="muted">${esc(item.owner || 'Responsable à préciser')}</span><span class="meta">${due ? 'Échéance : '+esc(due) : 'Sans échéance'} · ${mailPilotClosed(row)?'Terminé':category==='waiting'?'En attente':category==='decide'?'À décider':'À déléguer'}</span><div class="row-actions">${url?`<a class="secondary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Ouvrir Gmail</a>`:''}<button class="secondary" onclick="openMailPilotEntity(${row.index})">Ouvrir DEOS</button><button class="secondary" onclick="editMailPilotRow(${row.index})">Modifier le suivi</button><button class="secondary" onclick="toggleMailPilotRow(${row.index})">${mailPilotClosed(row)?'Réouvrir':'Terminer'}</button></div></article>`;
+    }).join('') || '<p class="muted">Aucun sujet à traiter.</p>'}</section>`;
+  }).join('');
+  appHtml(`<div class="card hero"><h2>Messagerie / Pilotage</h2><p class="muted">Le mail sert de référence. Les actions, décisions et relances sont suivies dans DEOS.</p><p class="muted">Ajout par lien Gmail ; aucune récupération automatique des messages. Aucun mail n'est déplacé ou supprimé.</p><label><input type="checkbox" ${mailPilotShowClosed?'checked':''} onchange="mailPilotShowClosed=this.checked;renderMailPilot()"> Afficher aussi les sujets terminés</label></div><details id="mailPilotForm" class="card deos-create-details"><summary>Ajouter ou rattacher un mail</summary><div class="deos-create-details-body"><label>Élément DEOS<select id="mpTarget" onchange="loadMailPilotTarget()"><option value="">Créer un nouvel élément</option>${targets}</select></label><label>Catégorie<select id="mpCategory"><option value="decide">À décider</option><option value="delegate">À déléguer</option><option value="waiting">En attente</option></select></label><label>Objet / résultat attendu<input id="mpTitle" maxlength="300"></label><label>Responsable<input id="mpOwner" maxlength="200" placeholder="Nom du responsable"></label><label>Échéance ou date de relance<input id="mpDue" type="date"></label><label>Lien du message Gmail<input id="mpUrl" type="url" placeholder="https://mail.google.com/…"></label><p class="muted">À décider crée une décision à prendre. Les deux autres catégories créent une action. Tu peux aussi choisir un élément existant pour éviter un doublon.</p><button class="action" onclick="saveMailPilotForm()">Enregistrer le suivi</button></div></details><div class="grid three">${columns}</div>`);
+}
+function mailPilotTarget(value) {
+  const match=String(value || '').match(/^(actions|decisions):(.+)$/);
+  return match ? {type:match[1],item:byId(match[1],match[2])} : null;
+}
+function loadMailPilotTarget() {
+  const target=mailPilotTarget(document.getElementById('mpTarget').value);
+  if (!target?.item) return;
+  const item=target.item;
+  document.getElementById('mpTitle').value=item.title || '';
+  document.getElementById('mpOwner').value=item.owner || '';
+  document.getElementById('mpDue').value=(target.type==='actions'?item.due:item.reviewDate) || '';
+  document.getElementById('mpCategory').value=item.mailPilot?.category || (target.type==='decisions'?'decide':'delegate');
+  document.getElementById('mpUrl').value=item.mailPilot?.url || mailPilotSafeUrl(item.link) || '';
+}
+function saveMailPilotForm() {
+  const value=id=>document.getElementById(id).value.trim();
+  const title=value('mpTitle'),owner=value('mpOwner'),category=value('mpCategory'),url=mailPilotSafeUrl(value('mpUrl')),due=value('mpDue');
+  if (!title || !url || !mailPilotCategoryLabel(category)) return mailPilotNotice('Renseigne un objet et un lien Gmail HTTPS valide.');
+  const type=category==='decide'?'decisions':'actions';
+  const selected=value('mpTarget');
+  const target=mailPilotTarget(selected);
+  if (selected && (!target?.item || target.type!==type)) return mailPilotNotice('Choisis une décision pour « À décider », ou une action pour les autres catégories.');
+  const existing=mailPilotRows().find(row=>mailPilotSafeUrl(row.item.mailPilot.url)===url && row.item.id!==target?.item?.id);
+  if (existing) return mailPilotNotice('Ce lien Gmail est déjà suivi. Modifie le sujet existant.');
+  const item=target?.item || normalizeEntity(type,{id:newId(type==='actions'?'action':'decision'),title,status:'review',date:today()});
+  item.title=title;item.owner=owner;
+  if(type==='actions') {item.due=due; if(!target) item.done=false;} else item.reviewDate=due;
+  item.mailPilot={...(item.mailPilot || {}),category,url};
+  if (!target) state[type].unshift(item);
+  persist(type);
+  addActivity('📬 Pilotage mail',title,mailPilotCategoryLabel(category),item.id);
+  renderMailPilot();
+}
+function editMailPilotRow(index) {
+  const row=mailPilotRows()[index];if(!row)return;
+  document.getElementById('mailPilotForm').open=true;
+  document.getElementById('mpTarget').value=row.type+':'+row.item.id;
+  loadMailPilotTarget();document.getElementById('mpTitle').focus();
+}
+function openMailPilotEntity(index) {
+  const row=mailPilotRows()[index];if(!row)return;
+  setView(row.type);if(row.type==='actions')openAction(row.item.id);else openDecision(row.item.id);
+}
+function toggleMailPilotRow(index) {
+  const row=mailPilotRows()[index];if(!row)return;
+  if(row.type==='actions') row.item.done=!row.item.done;
+  else row.item.status=mailPilotClosed(row)?'review':'decided';
+  persist(row.type);renderMailPilot();
+}
