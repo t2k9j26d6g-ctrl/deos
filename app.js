@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30-SYNC-D25P-TEST";
+const DEOS_VERSION = "V5.30-SYNC-D24-MAIL-PILOT-PROD";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -883,36 +883,25 @@ const defaults = {
   agenda: []
 };
 
-// D25A : accès local prioritaire et lectures initiales bornées.
-async function fetchStartupJson(url, fallback, timeoutMs = 6000) {
-  const controller = new AbortController();
-  let timer;
-  try {
-    return await Promise.race([
-      fetch(url, { signal: controller.signal }).then(async response => response.ok ? await response.json() : fallback),
-      new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("STARTUP_DATA_TIMEOUT")); }, timeoutMs); })
-    ]);
-  } catch (_) {
-    console.warn("[DEOS STARTUP] Source initiale indisponible ; utilisation du repli local.");
-    return fallback;
-  } finally { clearTimeout(timer); }
-}
 async function loadJson(name) {
-  return fetchStartupJson(`data/${name}.json?v=${Date.now()}`, defaults[name] || []);
-}
-async function loadIdentityDefaults() {
-  return normalizeIdentity(await fetchStartupJson(`data/settings.json?v=${Date.now()}`, identityDefaults));
-}
-function setDeosStartupStatus(message, failed = false) {
-  let panel = document.getElementById("deosStartupStatus");
-  if (!message) { if (panel) panel.remove(); return; }
-  if (!panel) {
-    panel = document.createElement("div"); panel.id = "deosStartupStatus";
-    panel.className = "card"; panel.setAttribute("role", "status");
-    document.getElementById("app").before(panel);
+  try {
+    const r = await fetch(`data/${name}.json?v=${Date.now()}`);
+    if (!r.ok) return defaults[name] || [];
+    return await r.json();
+  } catch {
+    return defaults[name] || [];
   }
-  panel.textContent = message;
-  panel.style.border = failed ? "1px solid #b45309" : "1px solid #93c5fd";
+}
+
+async function loadIdentityDefaults() {
+  try {
+    const r = await fetch(`data/settings.json?v=${Date.now()}`);
+    if (!r.ok) return identityDefaults;
+    const data = await r.json();
+    return normalizeIdentity(data);
+  } catch {
+    return identityDefaults;
+  }
 }
 
 function saved(name, fallback) {
@@ -2291,22 +2280,15 @@ function addActivity(type, title, detail = "", entityId = "") {
 }
 
 async function init() {
-  setDeosStartupStatus("Chargement des données de cet appareil…");
-  const initialDataPromise = Promise.all(entities.map(name =>
-    deosDataService.exists(name) ? Promise.resolve(null) : loadJson(name)));
-  identity = savedIdentity(deosDataService.exists("identity") ? identityDefaults : await loadIdentityDefaults());
+  identity = savedIdentity(await loadIdentityDefaults());
   persistIdentity();
   applyIdentity();
   actionTitleMigrationMode = true;
   actionTitleMigrationStats = { corrected: 0, examples: [] };
   deosInitialEntityLoad = true;
   try {
-    // Les sources manquantes sont lues en parallèle ; une collection locale vide
-    // est une donnée valide, jamais remplacée par les exemples de démarrage.
-    const initialData = await initialDataPromise;
-    for (let index = 0; index < entities.length; index++) {
-      const name = entities[index];
-      state[name] = saved(name, initialData[index] || []);
+    for (const name of entities) {
+      state[name] = saved(name, await loadJson(name));
       persist(name);
     }
   } finally {
@@ -2325,6 +2307,7 @@ async function init() {
     });
   }
   state.settings = ensureSettings(settingsRepository.load({}));
+  await initializeRemoteServices({ silent: true });
   initializeLinksHybridSync({ skipAutoSync: false });
   initializeActionsHybridSync({ skipAutoSync: false });
   initializeProjectsHybridSync({ skipAutoSync: false });
@@ -2373,23 +2356,6 @@ async function init() {
     setView("settings");
   } else {
     setView("cockpit");
-  }
-  // Le cockpit et la navigation sont disponibles AVANT l'attente de connexion.
-  setDeosStartupStatus("Données locales chargées. Connexion distante en cours ; la synchronisation n'est pas encore confirmée.");
-  try {
-    await initializeRemoteServices({ silent: true });
-    initializeLinksHybridSync({ skipAutoSync: false });
-    initializeActionsHybridSync({ skipAutoSync: false });
-    initializeProjectsHybridSync({ skipAutoSync: false });
-    initializeFoldersHybridSync({ skipAutoSync: false });
-    initializeManagersHybridSync({ skipAutoSync: false });
-    initializeDecisionDocumentHybridSync({ skipAutoSync: false });
-    setDeosStartupStatus(deosRemoteRuntime.lastError
-      ? "Connexion distante : " + deosRemoteRuntime.lastError + " Consultez Paramètres ; les données locales restent accessibles."
-      : "", Boolean(deosRemoteRuntime.lastError));
-  } catch (error) {
-    console.error("[DEOS STARTUP REMOTE]", error);
-    setDeosStartupStatus("Connexion distante non confirmée. Les données locales restent accessibles ; consultez Paramètres.", true);
   }
 }
 
@@ -4295,9 +4261,9 @@ function actionEditModalBody(action) {
         <option value="orange" ${action.level === "orange" || !action.level ? "selected" : ""}>Important</option>
         <option value="red" ${action.level === "red" ? "selected" : ""}>Critique</option>
       </select>
-      <label class="action-date-field" for="eaStartDate"><span>Date de début</span><input id="eaStartDate" type="date" value="${esc(action.startDate || "")}"></label>
-      <label class="action-date-field" for="eaDue"><span>Date d’échéance</span><input id="eaDue" type="date" value="${esc(action.due || "")}"></label>
-      <label class="action-date-field" for="eaCompletedAt"><span>Date de réalisation</span><input id="eaCompletedAt" type="date" value="${esc(action.completedAt || "")}"></label>
+      <input id="eaStartDate" type="date" value="${esc(action.startDate || "")}" placeholder="Date de début">
+      <input id="eaDue" type="date" value="${esc(action.due || "")}" placeholder="Échéance">
+      <input id="eaCompletedAt" type="date" value="${esc(action.completedAt || "")}" placeholder="Date de réalisation">
       <label class="check-row"><input id="eaDone" type="checkbox" ${action.done ? "checked" : ""}> <span>Action réalisée</span></label>
       ${hasProgressField ? `<input id="eaProgress" type="number" min="0" max="100" value="${Number(progressValue || 0)}" placeholder="Avancement">` : ""}
     </div>
@@ -4434,29 +4400,10 @@ function saveActionEdit(id) {
   return true;
 }
 
-// D25P — journal durable des suppressions volontaires, séparé des absences de cache.
-function actionDeletionLedger() {
-  const value = deosDataService.load("sync_deleted_actions", {});
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-function markActionDeletion(id) {
-  const key = String(id || "").trim();
-  if (!key) return;
-  const ledger = actionDeletionLedger();
-  ledger[key] = ledger[key] || { deletedAt: new Date().toISOString(), acknowledged: false };
-  deosDataService.save("sync_deleted_actions", ledger);
-}
-function acknowledgeActionDeletion(id) {
-  const ledger = actionDeletionLedger();
-  if (!ledger[id]) return;
-  ledger[id] = { ...ledger[id], acknowledged: true };
-  deosDataService.save("sync_deleted_actions", ledger);
-}
 function confirmActionDelete(id) {
   const i = indexById("actions", id);
   if (i < 0) return false;
   const title = state.actions[i].title;
-  markActionDeletion(id); // MUST precede local removal, even when offline.
   state.actions.splice(i, 1);
   persist("actions");
   addActivity("🗑️ Action supprimée", title);
@@ -10766,86 +10713,12 @@ function saveActionPlanSchedule(planId, count) {
 
 function setActionPlanViewMode(mode) { actionPlanViewMode = mode === "table" ? "table" : "timeline"; if (actionPlanDetailId) openActionPlan(actionPlanDetailId); }
 
-// D25B — Impression isolée, sans écriture dans les données DEOS.
-function openActionPlanPrintOptions() {
-  const plan = byId("actionPlans", actionPlanDetailId);
-  if (!plan) return;
-  const existing = document.getElementById("ap-print-options");
-  if (existing) { existing.remove(); return; }
-  const box = document.createElement("div");
-  box.id = "ap-print-options";
-  box.className = "card";
-  box.style.cssText = "position:fixed;z-index:99999;top:12%;left:50%;transform:translateX(-50%);width:min(520px,94vw);box-shadow:0 15px 70px #0005;background:white;padding:24px;max-height:80vh;overflow:auto";
-  box.innerHTML = `<h2>Imprimer le plan d'action</h2><p class="muted">Les filtres du chronogramme sont conservés. Aucun changement n'est enregistré.</p>
-  <label>Niveau de détail</label><select id="ap-print-level" style="width:100%"><option value="folders">Dossiers uniquement</option><option value="projects">Dossiers et projets</option><option value="actions" selected>Dossiers, projets et actions</option><option value="all">Vue complète (avec décisions)</option></select>
-  <label>Présentation</label><select id="ap-print-view" style="width:100%"><option value="timeline">Chronogramme graphique</option><option value="table">Tableau de suivi</option></select>
-  <label>Format papier</label><select id="ap-print-paper" style="width:100%"><option value="A3">A3 paysage</option><option value="A4">A4 paysage</option></select>
-  <div class="row-actions" style="margin-top:20px"><button class="action" onclick="printActionPlanD25B()">Ouvrir l'impression / PDF</button><button class="secondary" onclick="document.getElementById('ap-print-options').remove()">Annuler</button></div>`;
-  document.body.appendChild(box);
-}
-function actionPlanPrintRows(plan, level) {
-  const order = {folders:0,projects:1,actions:2,decisions:3};
-  const limit = {folders:0,projects:1,actions:2,all:3}[level] ?? 2;
-  const all = actionPlanFilteredRows(ensureArray(plan.items).map(actionPlanResolveItem).filter(Boolean))
-    .filter(row => (order[row.entityType] ?? 99) <= limit);
-  const folders = all.filter(row => row.entityType === 'folders');
-  const projects = all.filter(row => row.entityType === 'projects');
-  const children = all.filter(row => row.entityType === 'actions' || row.entityType === 'decisions');
-  const cmp = (a,b) => String(a.label||'').localeCompare(String(b.label||''),'fr');
-  const result = [], seen = new Set();
-  const add = (row,depth,group) => { const key = `${row.entityType}:${row.entityId}`; if (seen.has(key)) return; seen.add(key); result.push({...row,printDepth:depth,printGroup:group||''}); };
-  const linked = (entity,field,id) => normalizeLinkedIdArray(ensureArray(entity?.[field])).some(x => sameId(x,id));
-  const projectFolders = project => normalizeLinkedIdArray(ensureArray(project.entity?.linkedFolders)).map(String);
-  const projectChildren = project => children.filter(row => linked(row.entity,'linkedProjects',project.entityId));
-  const emitProject = (project,depth,group) => { add(project,depth,group); projectChildren(project).sort(cmp).forEach(child=>add(child,depth+1,group)); };
-  folders.sort(cmp).forEach(folder => {
-    add(folder,0,folder.label);
-    const relatedProjects=projects.filter(project=>projectFolders(project).some(id=>sameId(id,folder.entityId)));
-    relatedProjects.sort(cmp).forEach(project=>emitProject(project,1,folder.label));
-    children.filter(child=>linked(child.entity,'linkedFolders',folder.entityId))
-      .sort(cmp).forEach(child=>add(child,1,folder.label));
-  });
-  projects.sort(cmp).forEach(project=>emitProject(project,0,''));
-  children.sort(cmp).forEach(child=>add(child,0,''));
-  return result;
-}
-function actionPlanPrintDocument(plan, rows, opts) {
-  const safe = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const valid = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v||''));
-  const times = rows.flatMap(r=>[r.startDate,r.dueDate,r.completedDate]).concat([plan.startDate,plan.endDate]).filter(valid).map(v=>Date.parse(v+'T12:00:00'));
-  const min = times.length ? Math.min(...times) : Date.now(), max = times.length ? Math.max(...times) : min+86400000;
-  const span = Math.max(86400000,max-min);
-  const percent = v => Math.max(0,Math.min(100,100*(Date.parse(v+'T12:00:00')-min)/span));
-  const rowsHtml = rows.map(r=>{
-    const status = actionPlanRowStatus(r), statusText = actionPlanRowStatusLabel(status);
-    const colors = {done:'#19a45b',late:'#d92929',planned:'#64748b',active:'#2563eb'};
-    const start = valid(r.startDate)?r.startDate:(valid(r.dueDate)?r.dueDate:'');
-    const end = valid(r.dueDate)?r.dueDate:start;
-    const bar = start ? `<div class="track"><span style="left:${percent(start)}%;width:${Math.max(1,percent(end)-percent(start))}%;background:${colors[status]}"></span></div>` : '—';
-    return `<tr><td class="label lvl-${safe(r.entityType)} depth-${Number(r.printDepth||0)}"><b>${safe(r.label)}</b><small>${safe(r.typeLabel)}</small></td><td>${safe(r.owner||'À définir')}</td><td>${safe(statusText)}</td><td>${safe(r.startDate||'—')}</td><td>${safe(r.dueDate||'—')}</td>${opts.view==='timeline'?`<td class="timeline">${bar}</td>`:`<td>${safe(r.completedDate||'—')}</td>`}</tr>`;
-  }).join('');
-  const title = safe(plan.name||"Plan d'action");
-  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${title} — impression</title><style>
-  @page{size:${opts.paper} landscape;margin:12mm}body{font:11px Arial,sans-serif;color:#172238}h1{font-size:20px;margin:0 0 8px}p{margin:4px 0 12px;color:#526178}table{width:100%;border-collapse:collapse;table-layout:fixed}th{background:#edf2f7;text-align:left}td,th{border:1px solid #d8e0e9;padding:8px 6px;vertical-align:middle;overflow-wrap:anywhere}tr{break-inside:avoid}td.label{width:30%}small{display:block;color:#64748b;margin-top:4px}.lvl-folders{border-left:5px solid #243b60}.lvl-projects{border-left:5px solid #3b82f6}.lvl-actions{border-left:5px solid #9ca3af}.lvl-decisions{border-left:5px solid #a855f7}.depth-1{padding-left:20px}.depth-2{padding-left:36px}.depth-3{padding-left:50px}.lvl-folders{background:#eaf0f8;font-weight:700}.lvl-projects{background:#f5f8fc}.timeline{width:33%}.track{height:14px;background:repeating-linear-gradient(90deg,#f1f5f9 0,#f1f5f9 24%,#dce5ef 25%);position:relative;border-radius:4px}.track span{position:absolute;top:2px;height:10px;border-radius:4px}.toolbar{margin:0 0 12px;padding:8px;background:#edf2f7}button{padding:8px 14px;cursor:pointer}@media print{.toolbar{display:none}}
-  </style></head><body><div class="toolbar"><button onclick="window.print()">Imprimer / Enregistrer en PDF</button> <span>Choisir le format ${safe(opts.paper)} paysage dans les paramètres d'impression si nécessaire.</span></div><h1>Plan d'action — ${title}</h1><p>Saint-Gilles · Édité le ${safe(new Date().toLocaleString('fr-FR'))} · ${rows.length} élément(s) · ${safe(opts.levelLabel)} · ${safe(opts.view==='timeline'?'Chronogramme':'Tableau')}</p><table><thead><tr><th>Élément</th><th>Responsable</th><th>Statut</th><th>Début</th><th>Échéance</th><th>${opts.view==='timeline'?'Période':'Réalisé le'}</th></tr></thead><tbody>${rowsHtml||'<tr><td colspan="6">Aucun élément correspondant aux filtres et au niveau sélectionné.</td></tr>'}</tbody></table><p>Statuts : prévu (gris), en cours (bleu), en retard (rouge), réalisé (vert).</p></body></html>`;
-}
-function printActionPlanD25B() {
-  const plan = byId('actionPlans',actionPlanDetailId); if (!plan) return;
-  const levelSelect=document.getElementById('ap-print-level');
-  const opts={level:levelSelect.value,levelLabel:levelSelect.selectedOptions[0].textContent,view:document.getElementById('ap-print-view').value,paper:document.getElementById('ap-print-paper').value};
-  const rows=actionPlanPrintRows(plan,opts.level);
-  const win=window.open('','_blank');
-  if (!win) { alert('Autorisez les fenêtres contextuelles pour imprimer ce plan.');return; }
-  win.document.open();win.document.write(actionPlanPrintDocument(plan,rows,opts));win.document.close();
-  document.getElementById('ap-print-options')?.remove();
-}
-
 function openActionPlan(id) {
   const plan = byId("actionPlans", id); if (!plan) return renderActionPlans();
   actionPlanDetailId = id;
   const allRows = ensureArray(plan.items).map(actionPlanResolveItem).filter(Boolean);
   const rows = actionPlanFilteredRows(allRows);
-  appHtml(`<div class="card hero"><div class="row"><div><button class="secondary" onclick="renderActionPlans()">← Plans d'action</button><h2>${esc(plan.name)}</h2><p>${esc(plan.objective || "Objectif à préciser")}</p><span class="meta">Pilote : ${esc(plan.owner || "À définir")} · ${esc(plan.startDate || "Début à définir")} → ${esc(plan.endDate || "Fin à définir")}</span></div><div>${actionPlanStatusBadge(plan.status)}</div></div><div class="row-actions"><button class="secondary" onclick="editActionPlan('${esc(plan.id)}')">Modifier la sélection</button><button class="action" onclick="openActionPlanPrintOptions()">Imprimer / PDF</button><button class="secondary ${actionPlanViewMode === "timeline" ? "active-filter" : ""}" onclick="setActionPlanViewMode('timeline')">Chronogramme</button><button class="secondary ${actionPlanViewMode === "table" ? "active-filter" : ""}" onclick="setActionPlanViewMode('table')">Responsables & dates</button><button class="secondary" onclick="toggleActionPlanArchive('${esc(plan.id)}')">${isEntityArchived(plan) || plan.status === "archived" ? "Réactiver le plan" : "Archiver le plan"}</button><button class="danger" onclick="deleteActionPlan('${esc(plan.id)}')">Supprimer le plan</button></div></div>
+  appHtml(`<div class="card hero"><div class="row"><div><button class="secondary" onclick="renderActionPlans()">← Plans d'action</button><h2>${esc(plan.name)}</h2><p>${esc(plan.objective || "Objectif à préciser")}</p><span class="meta">Pilote : ${esc(plan.owner || "À définir")} · ${esc(plan.startDate || "Début à définir")} → ${esc(plan.endDate || "Fin à définir")}</span></div><div>${actionPlanStatusBadge(plan.status)}</div></div><div class="row-actions"><button class="secondary" onclick="editActionPlan('${esc(plan.id)}')">Modifier la sélection</button><button class="secondary ${actionPlanViewMode === "timeline" ? "active-filter" : ""}" onclick="setActionPlanViewMode('timeline')">Chronogramme</button><button class="secondary ${actionPlanViewMode === "table" ? "active-filter" : ""}" onclick="setActionPlanViewMode('table')">Responsables & dates</button><button class="secondary" onclick="toggleActionPlanArchive('${esc(plan.id)}')">${isEntityArchived(plan) || plan.status === "archived" ? "Réactiver le plan" : "Archiver le plan"}</button><button class="danger" onclick="deleteActionPlan('${esc(plan.id)}')">Supprimer le plan</button></div></div>
   <div class="card"><div class="row"><div><h2>${actionPlanViewMode === "timeline" ? "Chronogramme" : "Pilotage des échéances"}</h2><p class="muted">${rows.length} affiché(s) sur ${allRows.length} élément(s)</p></div></div>${actionPlanFilterBarHtml(allRows)}${actionPlanViewMode === "timeline" ? actionPlanTimelineHtml(plan, rows) : actionPlanTableHtml(plan, rows)}</div>`);
 }
 
@@ -21815,9 +21688,6 @@ async function analyzeActionsHybridState() {
   return analysis;
 }
 async function activateActionsHybridSync() {
-  if (!actionsSyncCanInspectRemote()) {
-    throw new Error("Connexion cloud absente : connectez-vous au workspace DEOS dans Paramètres avant d'activer la synchronisation Actions.");
-  }
   setActionsSyncSettings({ enabled: true, activatedAt: new Date().toISOString(), lastMode: "activated" });
   refreshActionsSyncRuntimeState({ state: navigator.onLine === false ? DEOS_LINKS_SYNC_STATUS.OFFLINE : DEOS_LINKS_SYNC_STATUS.SYNC_READY, lastError: "" });
   return deosActionsSyncRuntime;
@@ -21844,39 +21714,12 @@ async function syncActionsHybridNow(options = {}) {
     let remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
     let localChanged = false;
 
-    // D25P: ONLY explicit, durable user deletions can remove cloud records.
-    // Process before remote imports to prevent deleted actions reappearing.
-    const deletionLedger = actionDeletionLedger();
-    for (const [clientId, deletion] of Object.entries(deletionLedger)) {
-      const row = remoteRows.find(item => String(item.clientId) === clientId);
-      if (!row || row.deletedAt) { acknowledgeActionDeletion(clientId); continue; }
-      const meta = getActionSyncMeta(clientId);
-      if (!meta.remoteVersion || !meta.lastLocalFingerprint) {
-        setActionSyncMeta(clientId, { syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "SUPPRESSION_SANS_PREUVE_DE_SYNCHRONISATION" });
-        throw new Error(`Suppression de ${clientId} suspendue : historique de synchronisation insuffisant.`);
+    // Les suppressions locales déjà connues deviennent des soft-deletes distants.
+    for (const [clientId, meta] of Object.entries(deosActionsSyncRuntime.metaByClientId || {})) {
+      if (!byId("actions", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId) && meta.syncStatus !== DEOS_LINKS_SYNC_STATUS.CONFLICT) {
+        const deleted = await withActionsRemoteTimeout(deosRemoteAdapter.softDeleteAction(clientId, Number(remoteActiveMap.get(clientId).version || meta.remoteVersion)), `Suppression logique de l'Action ${clientId}`);
+        setActionSyncMeta(clientId, { remoteVersion: Number(deleted.version || 0), remoteUpdatedAt: deleted.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "" });
       }
-      if (Number(row.version) !== Number(meta.remoteVersion)) {
-        setActionSyncMeta(clientId, { syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "SUPPRESSION_VERSION_DISTANTE_MODIFIEE" });
-        throw new Error(`Suppression de ${clientId} suspendue : modification distante concurrente.`);
-      }
-      const deleted = await withActionsRemoteTimeout(deosRemoteAdapter.softDeleteAction(clientId, Number(row.version)), `Suppression synchronisée ${clientId}`);
-      if (!deleted.deletedAt) throw new Error(`Suppression ${clientId} non confirmée par le serveur.`);
-      acknowledgeActionDeletion(clientId);
-      setActionSyncMeta(clientId, { remoteVersion: Number(deleted.version || row.version), remoteUpdatedAt: deleted.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastSyncError: "", conflictRemote: null, conflictFields: [] });
-    }
-    if (Object.keys(deletionLedger).length) {
-      remoteRows = await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Contrôle des suppressions distantes");
-      remoteActiveMap = new Map(remoteRows.filter(row => !row.deletedAt).map(row => [String(row.clientId), row]));
-    }
-
-    // D25N : protection multi-appareils. Une absence locale ne prouve PAS une suppression
-    // intentionnelle : elle peut résulter d'un cache obsolète ou d'une restauration.
-    // Les suppressions distantes implicites sont interdites jusqu'à la mise en place
-    // de tombstones explicites, datées et vérifiées entre appareils.
-    const remoteOnlyKnown = Object.entries(deosActionsSyncRuntime.metaByClientId || {})
-      .filter(([clientId, meta]) => !byId("actions", clientId) && meta.remoteVersion > 0 && remoteActiveMap.has(clientId));
-    if (remoteOnlyKnown.length) {
-      console.info(`[DEOS D25N] ${remoteOnlyKnown.length} Action(s) absente(s) localement : conservation dans le cloud.`);
     }
 
     remoteRows = await withActionsRemoteTimeout(deosRemoteAdapter.listActions(), "Actualisation des Actions distantes");
@@ -21886,7 +21729,7 @@ async function syncActionsHybridNow(options = {}) {
     for (const action of ensureArray(state.actions)) {
       ensureActionSyncClientId(action);
       const clientId = actionSyncClientId(action);
-      if (!clientId || remoteActiveMap.has(clientId) || actionDeletionLedger()[clientId]) continue;
+      if (!clientId || remoteActiveMap.has(clientId)) continue;
       const created = await withActionsRemoteTimeout(deosRemoteAdapter.createAction({ ...action, id: clientId, clientId }), `Création de l'Action ${action.title || clientId}`);
       setActionSyncMeta(clientId, { remoteId: created.remoteId, remoteVersion: Number(created.version || 0), remoteUpdatedAt: created.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: actionFingerprint(action), conflictRemote: null, conflictFields: [] });
     }
@@ -21898,24 +21741,11 @@ async function syncActionsHybridNow(options = {}) {
       const local = byId("actions", clientId);
       const meta = getActionSyncMeta(clientId);
       if (row.deletedAt) {
-        // D25P: a known previously-synced action deleted on another device
-        // can be removed locally; an unknown deletion remains a conflict.
-        if (local && meta.remoteVersion > 0 && meta.lastLocalFingerprint &&
-            actionFingerprint(local) === meta.lastLocalFingerprint) {
-          markActionDeletion(clientId);
-          acknowledgeActionDeletion(clientId);
-          const idx = indexById("actions", clientId);
-          if (idx >= 0) { state.actions.splice(idx, 1); localChanged = true; }
-          setActionSyncMeta(clientId, { remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastSyncError: "", conflictRemote: null, conflictFields: [] });
-          continue;
-        }
-        if (local) {
-          setActionSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "SUPPRESSION_DISTANTE_A_VERIFIER", conflictRemote: row, conflictFields: ["suppression distante"] });
-        }
+        if (local && meta.remoteVersion > 0) { state.actions = state.actions.filter(item => !sameId(item.id, clientId)); localChanged = true; }
+        setActionSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: "" });
         continue;
       }
       if (!local) {
-        if (actionDeletionLedger()[clientId]) continue;
         state.actions.push(normalizeEntity("actions", { ...row.action, id: clientId, clientId }));
         localChanged = true;
         setActionSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", lastSyncedAt: new Date().toISOString(), syncStatus: DEOS_LINKS_SYNC_STATUS.SYNCED, lastLocalFingerprint: actionFingerprint(row.action), conflictRemote: null, conflictFields: [] });
@@ -25804,7 +25634,6 @@ function remoteStartupModeKey() {
   const config = resolvedRemoteConfig();
   if (!config.enabled) return "local";
   if (deosRemoteRuntime.temporaryLocal) return "test_local_temporary";
-  if (deosRemoteRuntime.connectionStatus === "pending") return "test_connecting";
   if (deosRemoteRuntime.connectionStatus === "authenticated" && deosRemoteRuntime.workspace && !deosRemoteRuntime.requiresWorkspaceSelection) return "test_connected";
   return "test_signed_out";
 }
@@ -25812,7 +25641,6 @@ function remoteStartupModeKey() {
 function remoteStartupModeLabel(mode = remoteStartupModeKey()) {
   return ({
     local: "MODE LOCAL",
-    test_connecting: "CONNEXION EN COURS",
     test_signed_out: "MODE TEST — NON CONNECTÉ",
     test_connected: "MODE TEST — CONNECTÉ",
     test_local_temporary: "TEST — LOCAL TEMPORAIRE"
@@ -27990,107 +27818,8 @@ renderSettings = function renderSettingsWithRemote(message = "") {
   mountRemoteSettingsCard();
   mountMultiDeviceSyncSettingsCard();
   enhanceSettingsAccordions();
-  mountDuplicateDiagnosticCard();
 };
 
-// D25D: audit strictement en lecture seule. Aucun appel de sauvegarde ni suppression.
-function duplicateAuditNormalize(value) {
-  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-function duplicateAuditData() {
-  const types = [{key:"folders",label:"Dossiers",field:"name"},{key:"projects",label:"Projets",field:"name"},{key:"actions",label:"Actions",field:"title"},{key:"decisions",label:"Décisions",field:"title"}];
-  return types.map(type => {
-    const groups = new Map();
-    ensureArray(state[type.key]).forEach(item => {
-      const title = String(item[type.field] || (type.key === "decisions" ? item.decision : "") || "");
-      const key = duplicateAuditNormalize(title);
-      if (!key) return;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push({id:String(item.id || ""),title,folders:ensureArray(item.linkedFolders),projects:ensureArray(item.linkedProjects),archived:!!item.archived});
-    });
-    return {type:type.label,count:ensureArray(state[type.key]).length,groups:[...groups.values()].filter(group=>group.length>1)};
-  });
-}
-function mountDuplicateDiagnosticCard() {
-  const host = document.querySelector("#app") || document.querySelector("main");
-  if (!host || document.getElementById("deos-d25d-duplicates")) return;
-  const data = duplicateAuditData();
-  const count = data.reduce((n,section)=>n+section.groups.reduce((m,group)=>m+group.length-1,0),0);
-  const card = document.createElement("div"); card.className="card"; card.id="deos-d25d-duplicates";
-  card.innerHTML = `<h3>Doublons — D25F (audit local et distant)</h3><p class="muted">${count} occurrence(s) supplémentaires possibles sur les titres identiques. Un titre identique ne prouve pas un doublon métier. Aucun élément n'est fusionné ni supprimé.</p>` + data.map(section => `<details><summary><strong>${esc(section.type)}</strong> — ${section.count} éléments, ${section.groups.length} groupe(s) suspect(s)</summary>${section.groups.map(group => `<div class="item"><strong>${esc(group[0].title)} (${group.length})</strong>${group.map(row=>`<div class="meta">ID : ${esc(row.id)} · Dossiers : ${esc(row.folders.join(", ") || "aucun")} · Projets : ${esc(row.projects.join(", ") || "aucun")} · Archivé : ${row.archived ? "oui" : "non"}</div>`).join("")}</div>`).join("") || `<p class="muted">Aucun titre répété.</p>`}</details>`).join("") + `<p class="muted">Audit local des données actuellement chargées. Vérifier également les liens inverses avant toute fusion.</p><button class="secondary" type="button" onclick="downloadDuplicateAuditD25D()">Exporter le diagnostic JSON</button><button class="secondary" type="button" onclick="downloadDuplicateMergePlanD25E()">Exporter le plan de fusion vérifié</button><button class="secondary" type="button" onclick="downloadDuplicateRemotePreflightD25F()">Contrôler les doublons dans le cloud</button><p class="muted">La fusion distante est volontairement bloquée tant que les suppressions synchronisées et leur vérification ne sont pas garanties. Aucun changement de données par cet outil.</p>`;
-  host.appendChild(card);
-}
-function downloadDuplicateAuditD25D() {
-  const payload={schema:"deos.duplicateAudit.v1",generatedAt:new Date().toISOString(),readOnly:true,sections:duplicateAuditData()};
-  const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}));
-  const a=document.createElement("a");a.href=url;a.download="DEOS_diagnostic_doublons.json";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
-}
-
-// D25E — Plan déterministe, en lecture seule, fondé sur les IDs effectivement audités.
-// Les noms seuls ne suffisent jamais à autoriser une fusion.
-const D25E_MERGE_GROUPS = [
-  {entity:"projects",ids:["prj-v5-002","proj-mthm1ayi-ke8wp","proj-mrhef6i8-8k76s"]},
-  {entity:"projects",ids:["prj-v5-003","proj-mthm1ayi-w3g8x","proj-mrhef6i8-ouslr"]},
-  {entity:"projects",ids:["prj-v5-004","proj-mthm1ayi-q0bbi","proj-mrhef6i8-ya3go"]},
-  {entity:"projects",ids:["prj-v5-005","proj-mthm1ayi-68lvy"]},
-  {entity:"decisions",ids:["dec-v5-001","deci-mthm1b4a-o5f0i"]},
-  {entity:"decisions",ids:["dec-v5-002","deci-mtu9cas6-ih77w"]}
-];
-function buildDuplicateMergePlanD25E() {
-  const groups = D25E_MERGE_GROUPS.map(spec => {
-    const records = spec.ids.map(id => ensureArray(state[spec.entity]).find(item => String(item.id) === id));
-    const names = records.map(item => item ? duplicateAuditNormalize(item.name || item.title || item.decision) : "");
-    const valid = records.every(Boolean) && names[0] && names.every(name => name === names[0]);
-    return {entity:spec.entity,keep:spec.ids[0],merge:spec.ids.slice(1),title:records[0]?.name || records[0]?.title || "",valid:Boolean(valid),reason:valid?"Identifiants présents et titres cohérents":"Identifiant absent ou titre divergent : fusion interdite"};
-  });
-  return {schema:"deos.duplicateMergePlan.v1",generatedAt:new Date().toISOString(),readOnly:true,appVersion:DEOS_VERSION,valid:groups.every(group=>group.valid),plannedRemovals:groups.filter(g=>g.valid).reduce((n,g)=>n+g.merge.length,0),groups,warning:"Plan de contrôle uniquement. Aucun effacement local ou distant. Une fusion effective exige des tombstones distantes et une validation des rattachements."};
-}
-function downloadDuplicateMergePlanD25E() {
-  const plan = buildDuplicateMergePlanD25E();
-  const url = URL.createObjectURL(new Blob([JSON.stringify(plan,null,2)],{type:"application/json"}));
-  const a=document.createElement("a"); a.href=url; a.download="DEOS_D25E_plan_fusion.json";
-  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
-  alert(plan.valid ? `Plan vérifié : ${plan.plannedRemovals} enregistrements candidats. Aucune suppression effectuée.` : "Plan incomplet ou divergent : fusion bloquée. Consulter le JSON exporté.");
-}
-
-// D25F : audit cloud authentifié sans mutation. Aucun effacement, aucun déclenchement de synchronisation.
-async function buildDuplicateRemotePreflightD25F() {
-  const local = buildDuplicateMergePlanD25E();
-  if (!local.valid) throw new Error("Les identifiants locaux ou les titres divergent : audit cloud interrompu.");
-  if (!multiDeviceConnected()) throw new Error("Connexion authentifiée au workspace nécessaire pour lire le cloud.");
-  if (typeof deosRemoteAdapter.listProjects !== "function" || typeof deosRemoteAdapter.listDecisions !== "function") throw new Error("API cloud Projets/Décisions indisponible.");
-  const [projects, decisions] = await Promise.all([
-    withProjectsRemoteTimeout(deosRemoteAdapter.listProjects(), "D25F audit cloud Projets"),
-    deosRemoteAdapter.listDecisions()
-  ]);
-  const snapshots = {projects,decisions};
-  const groups = local.groups.map(group => {
-    const ids = [group.keep,...group.merge];
-    const remote = ids.map(id => {
-      const matches = ensureArray(snapshots[group.entity]).filter(row => String(row.clientId || "") === id);
-      return {id, count:matches.length, present:matches.length>0, deleted:matches.length===1 ? Boolean(matches[0].deletedAt) : null,
-        version:matches.length===1 ? Number(matches[0].version || 0) : null,
-        title:matches.length===1 ? String((matches[0][group.entity === "projects" ? "project" : "decision"] || {}).name || (matches[0][group.entity === "projects" ? "project" : "decision"] || {}).title || "") : ""};
-    });
-    const blockers = [];
-    if (remote.some(row=>row.count!==1)) blockers.push("Enregistrement cloud absent ou multiple : contrôle manuel requis");
-    if (remote[0]?.deleted) blockers.push("Enregistrement canonique déjà supprimé dans le cloud");
-    if (remote.some(row=>row.present && !row.deleted && duplicateAuditNormalize(row.title)!==duplicateAuditNormalize(group.title))) blockers.push("Titre cloud divergent");
-    return {...group,remote,blockers,readyForManualReview:blockers.length===0};
-  });
-  return {schema:"deos.duplicateRemotePreflight.v1",generatedAt:new Date().toISOString(),appVersion:DEOS_VERSION,readOnly:true,
-    readyForManualReview:groups.every(g=>g.readyForManualReview),groups,
-    warning:"Contrôle des identifiants et titres uniquement. Ne prouve pas l'équivalence du contenu. Aucune fusion cloud automatique n'est autorisée sans protection contre les appareils obsolètes."};
-}
-async function downloadDuplicateRemotePreflightD25F() {
-  try {
-    const result = await buildDuplicateRemotePreflightD25F();
-    const url=URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:"application/json"}));
-    const a=document.createElement("a");a.href=url;a.download="DEOS_D25F_audit_cloud_sans_modification.json";
-    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
-    alert(result.readyForManualReview ? "Audit cloud terminé : identifiants cohérents. Fusion non exécutée ; comparer les contenus et sécuriser les appareils avant toute suppression." : "Audit cloud terminé : anomalies détectées. Consulter le rapport exporté. Aucune donnée modifiée.");
-  } catch(error) { alert("Audit cloud impossible : " + (error?.message || String(error)) + ". Aucune donnée modifiée."); }
-}
 function readSettingsForm() {
   return normalizeIdentity({
     ...identity,
@@ -28981,10 +28710,7 @@ function updateGoogleSyncUi() {
   return { lastSync, nextSync, eventCount };
 }
 
-init().catch(error => {
-  console.error("[DEOS STARTUP]", error);
-  setDeosStartupStatus("Démarrage interrompu : " + (error?.message || "erreur inattendue") + ". Conservez les données de ce navigateur.", true);
-});
+init();
 
 
 
@@ -30192,7 +29918,7 @@ function renderMailPilot() {
       return `<article class="item"><strong>${esc(item.title)}</strong><span class="muted">${esc(item.owner || 'Responsable à préciser')}</span><span class="meta">${due ? 'Échéance : '+esc(due) : 'Sans échéance'} · ${mailPilotClosed(row)?'Terminé':category==='waiting'?'En attente':category==='decide'?'À décider':'À déléguer'}</span><div class="row-actions">${url?`<a class="secondary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Ouvrir Gmail</a>`:''}<button class="secondary" onclick="openMailPilotEntity(${row.index})">Ouvrir DEOS</button><button class="secondary" onclick="editMailPilotRow(${row.index})">Modifier le suivi</button><button class="secondary" onclick="toggleMailPilotRow(${row.index})">${mailPilotClosed(row)?'Réouvrir':'Terminer'}</button></div></article>`;
     }).join('') || '<p class="muted">Aucun sujet à traiter.</p>'}</section>`;
   }).join('');
-  appHtml(`<div class="card hero"><h2>Messagerie / Pilotage</h2><p class="muted">Le mail sert de référence. Les actions, décisions et relances sont suivies dans DEOS.</p><p class="muted">Ajout par lien Gmail ; aucune récupération automatique des messages. Aucun mail n'est déplacé ou supprimé.</p><label><input type="checkbox" ${mailPilotShowClosed?'checked':''} onchange="mailPilotShowClosed=this.checked;renderMailPilot()"> Afficher aussi les sujets terminés</label></div>${mailBriefPanelHtml()}<details id="mailPilotForm" class="card deos-create-details"><summary>Ajouter ou rattacher un mail</summary><div class="deos-create-details-body"><label>Élément DEOS<select id="mpTarget" onchange="loadMailPilotTarget()"><option value="">Créer un nouvel élément</option>${targets}</select></label><label>Catégorie<select id="mpCategory"><option value="decide">À décider</option><option value="delegate">À déléguer</option><option value="waiting">En attente</option></select></label><label>Objet / résultat attendu<input id="mpTitle" maxlength="300"></label><label>Responsable<input id="mpOwner" maxlength="200" placeholder="Nom du responsable"></label><label>Échéance ou date de relance<input id="mpDue" type="date"></label><label>Lien du message Gmail<input id="mpUrl" type="url" placeholder="https://mail.google.com/…"></label><p class="muted">À décider crée une décision à prendre. Les deux autres catégories créent une action. Tu peux aussi choisir un élément existant pour éviter un doublon.</p><button class="action" onclick="saveMailPilotForm()">Enregistrer le suivi</button></div></details><div class="grid three">${columns}</div>`);
+  appHtml(`<div class="card hero"><h2>Messagerie / Pilotage</h2><p class="muted">Le mail sert de référence. Les actions, décisions et relances sont suivies dans DEOS.</p><p class="muted">Ajout par lien Gmail ; aucune récupération automatique des messages. Aucun mail n'est déplacé ou supprimé.</p><label><input type="checkbox" ${mailPilotShowClosed?'checked':''} onchange="mailPilotShowClosed=this.checked;renderMailPilot()"> Afficher aussi les sujets terminés</label></div><details id="mailPilotForm" class="card deos-create-details"><summary>Ajouter ou rattacher un mail</summary><div class="deos-create-details-body"><label>Élément DEOS<select id="mpTarget" onchange="loadMailPilotTarget()"><option value="">Créer un nouvel élément</option>${targets}</select></label><label>Catégorie<select id="mpCategory"><option value="decide">À décider</option><option value="delegate">À déléguer</option><option value="waiting">En attente</option></select></label><label>Objet / résultat attendu<input id="mpTitle" maxlength="300"></label><label>Responsable<input id="mpOwner" maxlength="200" placeholder="Nom du responsable"></label><label>Échéance ou date de relance<input id="mpDue" type="date"></label><label>Lien du message Gmail<input id="mpUrl" type="url" placeholder="https://mail.google.com/…"></label><p class="muted">À décider crée une décision à prendre. Les deux autres catégories créent une action. Tu peux aussi choisir un élément existant pour éviter un doublon.</p><button class="action" onclick="saveMailPilotForm()">Enregistrer le suivi</button></div></details><div class="grid three">${columns}</div>`);
 }
 function mailPilotTarget(value) {
   const match=String(value || '').match(/^(actions|decisions):(.+)$/);
@@ -30242,68 +29968,4 @@ function toggleMailPilotRow(index) {
   if(row.type==='actions') row.item.done=!row.item.done;
   else row.item.status=mailPilotClosed(row)?'review':'decided';
   persist(row.type);renderMailPilot();
-}
-
-// D25 — Brief daté importable, transporté par Documents.
-var mailBriefSelectedId = '';
-var mailBriefPending = null;
-function normalizeMailBrief(raw) {
-  if (!raw || raw.schema !== 'deos.mailBrief.v1' || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date || '') || !Array.isArray(raw.items) || raw.items.length>40) throw new Error('Format de brief DEOS invalide (40 sujets maximum).');
-  if(new Date(raw.date+'T12:00:00Z').toISOString().slice(0,10)!==raw.date) throw new Error('Date du brief invalide.');
-  const text=(value,max)=>String(value || '').trim().slice(0,max);
-  const stamp=new Date(raw.generatedAt);if(!Number.isFinite(stamp.getTime()))throw new Error('Date de préparation invalide.');
-  const ids=new Set();
-  const items=raw.items.map(item=>{
-    if(!item || !/^[a-zA-Z0-9_-]{1,100}$/.test(item.id || '') || ids.has(item.id))throw new Error('Identifiant de sujet absent ou dupliqué.');
-    ids.add(item.id);
-    const url=mailPilotSafeUrl(item.url);
-    if(!url || !text(item.title,300) || !['decide','delegate','waiting','info'].includes(item.category))throw new Error('Sujet incomplet ou lien Gmail invalide.');
-    const due=text(item.due,10);
-    if(due && (!/^\d{4}-\d{2}-\d{2}$/.test(due) || new Date(due+'T12:00:00Z').toISOString().slice(0,10)!==due))throw new Error('Échéance invalide.');
-    return {id:item.id,title:text(item.title,300),summary:text(item.summary,3000),proposal:text(item.proposal,2000),owner:text(item.owner,200),due,category:item.category,url};
-  });
-  return {schema:'deos.mailBrief.v1',date:raw.date,generatedAt:stamp.toISOString(),scope:text(raw.scope,2000),summary:text(raw.summary,3000),items};
-}
-function mailBriefDocuments() {
-  return ensureArray(state.documents).filter(doc=>doc.mailBrief?.schema==='deos.mailBrief.v1' && !isEntityArchived(doc))
-    .slice().sort((a,b)=>String(b.mailBrief.date).localeCompare(String(a.mailBrief.date)) || String(b.mailBrief.generatedAt).localeCompare(String(a.mailBrief.generatedAt)));
-}
-function mailBriefCurrent() {
-  const docs=mailBriefDocuments();return docs.find(doc=>doc.id===mailBriefSelectedId) || docs[0] || null;
-}
-function mailBriefPanelHtml() {
-  const docs=mailBriefDocuments(),doc=mailBriefCurrent(),brief=doc?.mailBrief;
-  const pending=mailBriefPending;
-  return `<section class="card"><h2>Brief mails</h2><p class="muted">Synthèse préparée à partir des mails consultés, puis importée ici. Aucun rafraîchissement automatique de Gmail.</p><label>Importer un brief JSON<input type="file" accept=".json,application/json" onchange="previewMailBriefFile(event)"></label>${pending?`<div class="item"><strong>Import proposé : ${esc(pending.date)} · ${pending.items.length} sujets</strong><p>${esc(pending.summary)}</p><button class="action" onclick="confirmMailBriefImport()">Confirmer l'import du brief</button><button class="secondary" onclick="mailBriefPending=null;renderMailPilot()">Annuler</button></div>`:''}${docs.length?`<label>Historique<select onchange="mailBriefSelectedId=this.value;renderMailPilot()">${docs.map(d=>`<option value="${esc(d.id)}" ${d.id===doc.id?'selected':''}>${esc(d.mailBrief.date)}</option>`).join('')}</select></label>`:''}${brief?`<h3>Brief du ${esc(brief.date)} ${brief.date!==localIsoDate()?'<span class="badge">Brief antérieur ou à venir</span>':''}</h3><p>${esc(brief.summary)}</p><p class="muted">Préparé le ${esc(brief.generatedAt)} · ${esc(brief.scope)}</p>${brief.items.map((item,index)=>{
-  const linked=mailPilotRows().find(row=>mailPilotSafeUrl(row.item.mailPilot.url)===mailPilotSafeUrl(item.url));
-  return `<article class="item"><strong>${esc(item.title)}</strong><span class="meta">${item.category==='info'?'Pour information':mailPilotCategoryLabel(item.category)}</span><p>${esc(item.summary)}</p>${item.proposal?`<p><strong>Suite proposée :</strong> ${esc(item.proposal)}</p>`:''}${item.owner||item.due?`<span class="muted">${item.owner?'Responsable proposé : '+esc(item.owner):''}${item.due?' · Échéance proposée : '+esc(item.due):''}</span>`:''}<div class="row-actions"><a class="secondary" href="${esc(mailPilotSafeUrl(item.url))}" target="_blank" rel="noopener noreferrer">Ouvrir Gmail</a>${linked?`<button class="secondary" onclick="prepareMailBriefTracking(${index})">Voir le suivi existant</button>`:item.category!=='info'?`<button class="secondary" onclick="prepareMailBriefTracking(${index})">Préparer le suivi DEOS</button>`:''}</div></article>`;
-  }).join('')}`:'<p class="muted">Aucun brief importé. Tes suivis manuels restent disponibles ci-dessous.</p>'}</section>`;
-}
-async function previewMailBriefFile(event) {
-  const file=event.target.files?.[0];if(!file)return;
-  try {
-    if(file.size>1024*1024)throw new Error('Le brief dépasse 1 Mo.');
-    const parsed=normalizeMailBrief(JSON.parse(await file.text()));
-    mailBriefPending=parsed;renderMailPilot();
-  } catch(error){mailBriefPending=null;mailPilotNotice(error.message || 'Lecture du brief impossible.');}
-}
-function confirmMailBriefImport() {
-  if(!mailBriefPending)return;
-  let brief;try{brief=normalizeMailBrief(mailBriefPending)}catch(error){return mailPilotNotice(error.message)}
-  const id='mailbrief-'+brief.date;
-  const current=byId('documents',id);
-  if(current && current.mailBrief?.schema!=='deos.mailBrief.v1')return mailPilotNotice('Un autre document utilise cet identifiant. Aucun changement effectué.');
-  if(current && current.mailBrief.generatedAt>=brief.generatedAt)return mailPilotNotice('Un brief identique ou plus récent existe déjà pour cette date.');
-  const item=normalizeEntity('documents',{...(current || {}),id,title:'Brief mails — '+brief.date,type:'Brief mails',date:brief.date,summary:brief.summary,content:brief.items.map(i=>i.title+'\n'+i.summary+'\n'+i.proposal+'\n'+i.url).join('\n\n'),mailBrief:brief});
-  if(current)state.documents[state.documents.indexOf(current)]=item;else state.documents.unshift(item);
-  persist('documents');mailBriefSelectedId=id;mailBriefPending=null;renderMailPilot();
-}
-function prepareMailBriefTracking(index) {
-  const item=mailBriefCurrent()?.mailBrief.items[index];if(!item)return;
-  const linked=mailPilotRows().findIndex(row=>mailPilotSafeUrl(row.item.mailPilot.url)===mailPilotSafeUrl(item.url));
-  if(linked>=0)return openMailPilotEntity(linked);
-  if(item.category==='info')return;
-  document.getElementById('mailPilotForm').open=true;
-  for(const [id,value] of Object.entries({mpTarget:'',mpTitle:item.title,mpCategory:item.category,mpOwner:item.owner,mpDue:item.due,mpUrl:item.url}))document.getElementById(id).value=value || '';
-  document.getElementById('mpTitle').focus();
 }
