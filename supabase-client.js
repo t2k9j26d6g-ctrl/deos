@@ -256,16 +256,15 @@
           autoRefreshToken: true,
           detectSessionInUrl: true,
           flowType: "pkce",
-          storageKey: this.options.storageKey || "sb-deos-test-auth"
+          storageKey: this.options.storageKey || ((global.location && String(global.location.pathname || "").includes("deos-test-v527b")) ? "sb-deos-test-auth" : "sb-deos-prod-auth")
         },
         global: {
           headers: {
-            "X-Client-Info": "deos-v5.21c-test"
+            "X-Client-Info": "deos-v5.30e"
           }
         }
       });
 
-      await this.client.auth.getSession();
       const sessionResult = await this.client.auth.getSession();
       if (sessionResult.error) {
         this.connectionStatus = "error";
@@ -274,9 +273,20 @@
         await this.applySession(sessionResult.data ? sessionResult.data.session : null, "INITIAL_SESSION");
       }
 
-      const subscription = this.client.auth.onAuthStateChange(async (event, session) => {
-        await this.applySession(session || null, event || "AUTH_STATE_CHANGE");
-        this.emit(event || "AUTH_STATE_CHANGE");
+      // Supabase execute onAuthStateChange sous un verrou interne. Le callback doit
+      // rendre la main immediatement : toute lecture de profil/workspace est differee.
+      const subscription = this.client.auth.onAuthStateChange((event, session) => {
+        const eventName = event || "AUTH_STATE_CHANGE";
+        setTimeout(async () => {
+          try {
+            await this.applySession(session || null, eventName);
+          } catch (error) {
+            this.connectionStatus = "error";
+            this.lastError = createRemoteError(error?.code || "AUTH_STATE_APPLY_FAILED", error?.message || "Mise a jour de session impossible.");
+          } finally {
+            this.emit(eventName);
+          }
+        }, 0);
       });
       this.supabaseSubscription = subscription && subscription.data ? subscription.data.subscription : null;
       this.initialized = true;
@@ -308,23 +318,45 @@
       }
 
       try {
-        const userResult = await this.client.auth.getUser();
-        if (userResult.error) {
-          this.connectionStatus = "session_expired";
-          this.lastError = createRemoteError("AUTH_USER_READ_FAILED", userResult.error.message || "Verification utilisateur impossible.");
-          this.user = null;
-          return this.getStateSnapshot();
-        }
-        this.user = userResult.data && userResult.data.user ? { id: userResult.data.user.id, email: userResult.data.user.email || "" } : this.user;
-        await this.refreshContext();
-        this.connectionStatus = "authenticated";
-      } catch (error) {
-        this.connectionStatus = "error";
-        this.lastError = createRemoteError(error.code || "AUTH_APPLY_FAILED", error.message || "Initialisation auth impossible.");
-      }
-      return this.getStateSnapshot();
-    }
+  // session.user est deja fourni par Supabase apres getSession/signInWithPassword.
+  // L'authentification ne doit pas attendre le chargement du profil/workspace.
+  if (!this.user) {
+    this.connectionStatus = "session_expired";
+    this.lastError = createRemoteError(
+      "AUTH_USER_MISSING",
+      "Session presente mais utilisateur absent."
+    );
+    return this.getStateSnapshot();
+  }
 
+  // La session Supabase est valide : DEOS est connecté immédiatement.
+  this.connectionStatus = "authenticated";
+
+  // Le contexte distant est chargé ensuite sans bloquer l'authentification.
+  Promise.resolve()
+    .then(() => this.refreshContext())
+    .then(() => {
+      this.lastError = null;
+      this.emit("CONTEXT_REFRESHED");
+    })
+    .catch(error => {
+      // Une erreur de contexte ne doit pas invalider une session Auth valide.
+      this.lastError = createRemoteError(
+        error.code || "REMOTE_CONTEXT_REFRESH_FAILED",
+        error.message || "Chargement du contexte distant impossible."
+      );
+      this.emit("CONTEXT_REFRESH_FAILED");
+    });
+
+} catch (error) {
+  this.connectionStatus = "error";
+  this.lastError = createRemoteError(
+    error.code || "AUTH_APPLY_FAILED",
+    error.message || "Initialisation auth impossible."
+  );
+}
+  return this.getStateSnapshot();
+}
     async refreshContext() {
       if (!this.client || !this.user) {
         this.profile = null;
@@ -335,14 +367,15 @@
         return this.getStateSnapshot();
       }
 
-      const profileResponse = await this.client.from("profiles").select("id, display_name, created_at, updated_at").eq("id", this.user.id).maybeSingle();
+      const [profileResponse, membershipResponse] = await Promise.all([
+        this.client.from("profiles").select("id, display_name, created_at, updated_at").eq("id", this.user.id).maybeSingle(),
+        this.client.from("workspace_members").select("workspace_id, role, created_at").eq("user_id", this.user.id).order("created_at", { ascending: true })
+      ]);
       if (profileResponse.error && profileResponse.error.code !== "PGRST116") {
         this.lastError = createRemoteError("PROFILE_READ_FAILED", profileResponse.error.message || "Lecture du profil impossible.");
       } else {
         this.profile = profileResponse.data || null;
       }
-
-      const membershipResponse = await this.client.from("workspace_members").select("workspace_id, role, created_at").eq("user_id", this.user.id).order("created_at", { ascending: true });
       if (membershipResponse.error) {
         this.lastError = createRemoteError("WORKSPACE_MEMBERS_READ_FAILED", membershipResponse.error.message || "Lecture des workspaces impossible.");
         this.currentWorkspace = null;
@@ -362,11 +395,13 @@
         return this.getStateSnapshot();
       }
 
-      const workspaceResponse = await this.client.from("workspaces").select("id, name, created_by, created_at").in("id", workspaceIds).order("created_at", { ascending: true });
+      const [workspaceResponse, siteResponse] = await Promise.all([
+        this.client.from("workspaces").select("id, name, created_by, created_at").in("id", workspaceIds).order("created_at", { ascending: true }),
+        this.client.from("sites").select("id, workspace_id, name, code, created_at").in("workspace_id", workspaceIds).order("created_at", { ascending: true })
+      ]);
       if (workspaceResponse.error) {
         this.lastError = createRemoteError("WORKSPACE_READ_FAILED", workspaceResponse.error.message || "Lecture des workspaces impossible.");
       }
-      const siteResponse = await this.client.from("sites").select("id, workspace_id, name, code, created_at").in("workspace_id", workspaceIds).order("created_at", { ascending: true });
       if (siteResponse.error) {
         this.lastError = createRemoteError("SITE_READ_FAILED", siteResponse.error.message || "Lecture des sites impossible.");
       }
