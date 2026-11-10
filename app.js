@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30-D27.2-PROD";
+const DEOS_VERSION = window.DeosTest ? "V5.30-D27.3-TEST" : "V5.30-D27.3-PROD";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -424,7 +424,7 @@ function createRepository(dataService, config) {
   };
 }
 
-const localStorageAdapter = new BrowserStorageAdapter(localStorage, "localStorage");
+const localStorageAdapter = new BrowserStorageAdapter(window.DeosTest?.storage || localStorage, "localStorage");
 const sessionStorageAdapter = new BrowserStorageAdapter(sessionStorage, "sessionStorage");
 const deosDataService = new DeosDataService(localStorageAdapter, DEOS_STORAGE_KEYS, { prefix: DEOS_STORAGE_PREFIX });
 const deosSessionService = new DeosDataService(sessionStorageAdapter, DEOS_STORAGE_KEYS, { prefix: DEOS_STORAGE_PREFIX });
@@ -898,6 +898,7 @@ async function fetchStartupJson(url, fallback, timeoutMs = 6000) {
   } finally { clearTimeout(timer); }
 }
 async function loadJson(name) {
+  if (window.DeosTest) return [];
   return fetchStartupJson(`data/${name}.json?v=${Date.now()}`, defaults[name] || []);
 }
 async function loadIdentityDefaults() {
@@ -1070,13 +1071,13 @@ let deosJournalSyncTimer = null;
 
 function journalSyncDeviceId() {
   try {
-    let id = String(localStorage.getItem(DEOS_JOURNAL_SYNC_DEVICE_KEY) || "").trim();
+    let id = String((window.DeosTest?.storage || localStorage).getItem(DEOS_JOURNAL_SYNC_DEVICE_KEY) || "").trim();
     if (!id) {
       const seed = (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       id = seed.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || `device-${Date.now()}`;
-      localStorage.setItem(DEOS_JOURNAL_SYNC_DEVICE_KEY, id);
+      (window.DeosTest?.storage || localStorage).setItem(DEOS_JOURNAL_SYNC_DEVICE_KEY, id);
     }
     return id;
   } catch (_) {
@@ -1090,7 +1091,7 @@ function journalSyncOwnDocumentId() {
 
 function loadJournalDeletedTombstones() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(DEOS_JOURNAL_SYNC_DELETED_KEY) || "[]");
+    const parsed = JSON.parse((window.DeosTest?.storage || localStorage).getItem(DEOS_JOURNAL_SYNC_DELETED_KEY) || "[]");
     if (!Array.isArray(parsed)) return [];
     const latest = new Map();
     parsed.forEach(entry => {
@@ -1118,7 +1119,7 @@ function saveJournalDeletedTombstones(entries) {
       const previous = latest.get(id);
       if (!previous || stamp > Date.parse(previous.deletedAt || 0)) latest.set(id, { id, deletedAt });
     });
-    localStorage.setItem(DEOS_JOURNAL_SYNC_DELETED_KEY, JSON.stringify([...latest.values()]));
+    (window.DeosTest?.storage || localStorage).setItem(DEOS_JOURNAL_SYNC_DELETED_KEY, JSON.stringify([...latest.values()]));
   } catch (_) {}
 }
 
@@ -1307,6 +1308,7 @@ function scheduleJournalSyncWrite() {
 }
 
 function persist(name) {
+  window.DeosSafeguard?.capture(name,state[name],"enregistrement");
   const repository = getEntityRepository(name);
   if (repository) {
     repository.save(state[name]);
@@ -1405,6 +1407,7 @@ function hideVisibleTechnicalIds(html) {
 }
 
 function appHtml(html) {
+  window.DeosSafeguard?.draftCapture(actionEditDialog.actionId);
   const graphReturnBanner = graphReturnContext && currentView !== "graph"
     ? `<div class="card graph-return-banner"><div><strong>Vue graphique</strong><p class="muted">Contexte conservé (filtres, zoom, sélection).</p></div><div class="row-actions"><button class="secondary" onclick="returnToGraph()">Retour à la vue graphique</button></div></div>`
     : "";
@@ -2290,7 +2293,75 @@ function addActivity(type, title, detail = "", entityId = "") {
   persist("activity");
 }
 
+async function upgradeIsolatedDirection(){
+ const test=window.DeosTest;if(!test?.ready()||test.storage.getItem('deos_direction_local_d273'))return;
+ const source=Object.fromEntries(entities.map(n=>[n,JSON.parse(test.storage.getItem(DEOS_STORAGE_KEYS[n])||'[]')]));
+ let legacy=[];try{legacy=JSON.parse(localStorage.getItem('deos_test_engagements_direction_v1')||'[]');}catch{}
+ const result=window.DeosDirectionPlan.prepare(source,window.DeosCodirAssignments,legacy);
+ test.storage.setItem('deos_direction_local_before_d273',JSON.stringify({savedAt:new Date().toISOString(),source,legacy}));
+ for(const n of entities)if(result.data[n]){state[n]=normalizeCollection(n,result.data[n]);test.storage.setItem(DEOS_STORAGE_KEYS[n],JSON.stringify(state[n]));}
+ await test.flush();test.storage.setItem('deos_direction_local_d273','1');await test.flush();
+}
+let codirTestCopyPromise = null;
+function reportCodirTestError(error) {
+  console.error("[DEOS TEST CODIR]", error);
+  setDeosStartupStatus("Copie TEST non préparée : " + (error?.message || "lecture source impossible") + ". Les données source sont conservées.", true);
+}
+async function prepareCodirTestCopy(options = {}) {
+  const test = window.DeosTest;
+  if (!test) return;
+  await test.loaded;
+  if (test.ready()) { await upgradeIsolatedDirection(); document.getElementById("app").inert = false; return; }
+  if (codirTestCopyPromise) return codirTestCopyPromise;
+  codirTestCopyPromise = (async () => {
+    document.getElementById("app").inert = true;
+    const source = Object.fromEntries(entities.map(name => [name, test.originalJson(DEOS_STORAGE_KEYS[name], [])]));
+    let migrated = null;
+    // First recover the complete existing cache. Network failure must never hide existing data.
+    if (source.folders.length && source.projects.length) {
+      try { migrated = window.DeosCodir.transform(source, window.DeosCodirAssignments); }
+      catch (error) { console.warn("[DEOS TEST cached source]",error); if(options.localOnly)return; }
+    }
+    if (!migrated) {
+      if (options.localOnly || !deosRemoteAuthService?.isAuthenticated?.() || !deosRemoteAdapter || !deosRemoteRuntime.workspace) return;
+      setDeosStartupStatus("Lecture des données existantes pour préparer TEST…");
+      const imports = [["folders","listFolders","folder"],["projects","listProjects","project"],["actions","listActions","action"],["managers","listManagers","manager"],["decisions","listDecisions","decision"],["documents","listDocuments","document"],["links","listLinks","link"]];
+      const results = await Promise.allSettled(imports.map(async ([entity,method,payload]) => {
+        const rows = await withRemoteTimeout(deosRemoteAdapter[method](), 15000, "TEST_SOURCE_TIMEOUT", "Lecture source trop longue : " + entity);
+        const active = rows.filter(row => !row.deletedAt);
+        if (active.length >= 1000) throw Error("Lecture source possiblement tronquée : " + entity);
+        return [entity, active.map(row => ({...row[payload], id: row.clientId || row[payload]?.id}))];
+      }));
+      const errors=[];
+      results.forEach((result,index)=>{
+        const entity=imports[index][0];
+        if(result.status==="fulfilled")source[entity]=result.value[1];
+        else if(test.originalJson(DEOS_STORAGE_KEYS[entity],null)===null)errors.push(entity+" : "+(result.reason?.message||"lecture impossible"));
+      });
+      if(errors.length)throw Error(errors.join(" ; "));
+      // Existing bridge logic will reconcile multi-device Journal/Priorities after import.
+      for (const doc of source.documents) {
+        if (isPrioritySyncTransportDocument(doc)) { const payload = prioritySyncPayloadFromDocument(doc); if (payload) source.priorities = payload.priorities; }
+      }
+      migrated = window.DeosCodir.transform(source, window.DeosCodirAssignments);
+    }
+    const previous = Object.fromEntries(entities.map(name => [name,state[name]]));
+    try {
+      for (const name of entities) state[name] = migrated.data[name] || [];
+      for (const name of entities) migrated.data[name] = normalizeCollection(name, state[name]);
+      await test.commit(source,migrated,DEOS_STORAGE_KEYS);
+      for (const name of entities) state[name] = migrated.data[name];
+      await upgradeIsolatedDirection();
+    } catch (error) { for (const name of entities) state[name] = previous[name]; throw error; }
+    document.getElementById("app").inert = false;
+    setDeosStartupStatus("");
+    if (!options.localOnly) setView(currentView || "folders");
+  })();
+  try { return await codirTestCopyPromise; } finally { codirTestCopyPromise = null; }
+}
+
 async function init() {
+  if(window.DeosTest && !window.DeosTest.ready())document.getElementById("app").inert=true;
   setDeosStartupStatus("Chargement des données de cet appareil…");
   const initialDataPromise = Promise.all(entities.map(name =>
     deosDataService.exists(name) ? Promise.resolve(null) : loadJson(name)));
@@ -2312,6 +2383,7 @@ async function init() {
   } finally {
     deosInitialEntityLoad = false;
   }
+  if(window.DeosTest)await prepareCodirTestCopy({localOnly:true});
   // Si cet appareil possède déjà le document de transport (par exemple après
   // une synchro précédente), les Priorités locales sont restaurées avant le
   // démarrage des pilotes distants.
@@ -2365,26 +2437,27 @@ async function init() {
     deosDataService.remove("restore_success");
   }
   document.getElementById("today").textContent = cockpitDateLabel(new Date());
-  document.querySelectorAll(".nav").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
+  document.querySelectorAll(".nav[data-view]").forEach(btn => btn.onclick = () => setView(btn.dataset.view));
   document.addEventListener("change", onAgendaFormSelectionChange);
   document.getElementById("searchInput").oninput = e => runSearch(e.target.value);
   applyRemoteEnvironmentBadge();
   if (restoreSuccessMessage) {
     setView("settings");
   } else {
-    setView("cockpit");
+    setView(new URLSearchParams(location.search).get("view")==="directionCommitments"?"directionCommitments":"cockpit");
   }
   // Le cockpit et la navigation sont disponibles AVANT l'attente de connexion.
   setDeosStartupStatus("Données locales chargées. Connexion distante en cours ; la synchronisation n'est pas encore confirmée.");
   try {
     await initializeRemoteServices({ silent: true });
+    if(window.DeosTest)await prepareCodirTestCopy();
     initializeLinksHybridSync({ skipAutoSync: false });
     initializeActionsHybridSync({ skipAutoSync: false });
     initializeProjectsHybridSync({ skipAutoSync: false });
     initializeFoldersHybridSync({ skipAutoSync: false });
     initializeManagersHybridSync({ skipAutoSync: false });
     initializeDecisionDocumentHybridSync({ skipAutoSync: false });
-    setDeosStartupStatus(deosRemoteRuntime.lastError
+    setDeosStartupStatus(window.DeosTest?.ready()?"":deosRemoteRuntime.lastError
       ? "Connexion distante : " + deosRemoteRuntime.lastError + " Consultez Paramètres ; les données locales restent accessibles."
       : "", Boolean(deosRemoteRuntime.lastError));
   } catch (error) {
@@ -4417,11 +4490,13 @@ function renderActionDeleteModal() {
 }
 
 function renderActionModalOverlays() {
+  window.DeosSafeguard?.draftCapture(actionEditDialog.actionId);
   const root = document.getElementById("app");
   if (!root) return;
   root.querySelectorAll(".action-edit-modal, .action-delete-modal").forEach(node => node.remove());
   if (actionEditDialog.open) root.insertAdjacentHTML("beforeend", renderActionEditModal());
   if (actionDeleteDialog.open) root.insertAdjacentHTML("beforeend", renderActionDeleteModal());
+  window.DeosSafeguard?.draftRestore(actionEditDialog.actionId);
   fitActionTextareas(root);
 }
 
@@ -4435,6 +4510,7 @@ function openActionEditModal(id) {
 
 function closeActionEditModal() {
   if (!actionEditDialog.open) return;
+  window.DeosSafeguard?.draftCapture(actionEditDialog.actionId);
   actionEditDialog = { open: false, actionId: "", error: "" };
   renderActionModalOverlays();
 }
@@ -4457,6 +4533,7 @@ function saveActionEdit(id) {
   const i = indexById("actions", id);
   if (i < 0) return false;
   const current = state.actions[i];
+  window.DeosSafeguard?.capture("actions",state.actions,"avant modification");
   const title = document.getElementById("eaTitle")?.value.trim() || "";
   if (!title) {
     actionEditDialog.error = "Le titre de l'action est obligatoire.";
@@ -4503,6 +4580,8 @@ function saveActionEdit(id) {
     a5SummaryDialog.model = buildActionA5Summary(id);
   }
   closeActionEditModal();
+  window.DeosSafeguard?.draftClear(id);
+  Promise.resolve(window.DeosTest?.flush()).then(()=>showDeosToast(window.DeosTest?'Enregistré dans TEST sur cet appareil.':'Enregistré sur cet appareil. Synchronisation cloud à confirmer.','success',4000)).catch(reportCodirTestError);
   if (sameId(actionDetailId, id)) {
     openAction(id);
   } else {
@@ -8213,6 +8292,15 @@ function deleteAction(id) {
   openActionDeleteModal(id);
 }
 
+function actionReadableFields(action){
+ const fields=[['Description',action.description],['Objectif',action.objective],['Résultat attendu',action.expectedResults],['Blocages ou risques',action.risks||action.blockers],['Prochaines étapes',action.nextStep],['Notes',action.notes||action.note]];
+ const seen=new Set();return fields.filter(([,v])=>v&&!seen.has(v)&&seen.add(v)).map(([label,value])=>`<section class="card"><h2>${label}</h2><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(value)}</p></section>`).join('');
+}
+function actionSaveStatus(action){
+ if(window.DeosTest)return 'Enregistré dans la copie TEST locale';
+ const meta=getActionSyncMeta(action.id);
+ return meta.syncStatus===DEOS_LINKS_SYNC_STATUS.SYNCED && meta.lastLocalFingerprint===actionFingerprint(action)?'Synchronisation cloud confirmée':'Enregistré sur cet appareil · synchronisation cloud à confirmer';
+}
 function openAction(id) {
   const a = byId("actions", id);
   if (!a) return renderActions();
@@ -8223,7 +8311,7 @@ function openAction(id) {
   const linkedFolders = state.folders.filter(f => ensureArray(a.linkedFolders).includes(f.id));
   const linkedDocuments = state.documents.filter(d => ensureArray(d.linkedActions).includes(a.id));
   document.getElementById("viewTitle").textContent = a.title;
-  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderActions()">Retour Actions</button><h2>${esc(a.title)}</h2><p>${esc(a.link || "")}</p><span class="muted">${a.done ? "Terminée" : "En cours"}</span><div class="row-actions"><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="secondary" onclick="toggleEntityArchive('actions','${a.id}')">${isEntityArchived(a) ? "Réactiver" : "Archiver"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div><div class="grid two"><div class="card"><h2>Dossiers liés</h2>${linkedFolders.map(f => `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.category || "")}</span></div>`).join("") || `<div class="empty">Aucun dossier lié.</div>`}</div><div class="card"><h2>Projets liés</h2>${linkedProjects.map(p => `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.next || "")}</span></div>`).join("") || `<div class="empty">Aucun projet lié.</div>`}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card"><h2>Documents liés</h2>${linkedDocuments.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${actionAgendaList(a)}</div></div>`);
+  appHtml(`<div class="card hero manager-hero"><button class="secondary" onclick="renderActions()">Retour Actions</button><h2>${esc(a.title)}</h2><p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(a.link || "")}</p><p class="muted">${esc(actionSaveStatus(a))}</p><span class="muted">${a.done ? "Terminée" : "En cours"}</span><div class="row-actions"><button class="secondary" onclick="editAction('${a.id}')">Modifier</button><button class="secondary" onclick="toggleAction('${a.id}')">${a.done ? "Réouvrir" : "Terminer"}</button><button class="secondary" onclick="toggleEntityArchive('actions','${a.id}')">${isEntityArchived(a) ? "Réactiver" : "Archiver"}</button><button class="danger" onclick="deleteAction('${a.id}')">Supprimer</button></div></div>${actionReadableFields(a)}<div class="grid two"><div class="card"><h2>Dossiers liés</h2>${linkedFolders.map(f => `<div class="item clickable" onclick="openFolder('${f.id}')"><strong>${esc(f.name)}</strong><span class="muted">${esc(f.category || "")}</span></div>`).join("") || `<div class="empty">Aucun dossier lié.</div>`}</div><div class="card"><h2>Projets liés</h2>${linkedProjects.map(p => `<div class="item clickable" onclick="openProject('${p.id}')"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.next || "")}</span></div>`).join("") || `<div class="empty">Aucun projet lié.</div>`}</div><div class="card"><h2>Décisions liées</h2>${linkedDecisions.map(d => `<div class="item clickable" onclick="openDecision('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(decisionStatusLabel(d.status))}</span></div>`).join("") || `<div class="empty">Aucune décision liée.</div>`}</div><div class="card"><h2>Documents liés</h2>${linkedDocuments.map(d => `<div class="item clickable" onclick="editDocument('${d.id}')"><strong>${esc(d.title)}</strong><span class="muted">${esc(d.type || "")}</span></div>`).join("") || `<div class="empty">Aucun document lié.</div>`}</div><div class="card full-span"><h2>Rendez-vous liés</h2>${actionAgendaList(a)}</div></div>`);
 }
 
 function openActionModal(id) {
@@ -21906,6 +21994,7 @@ function deactivateActionsHybridSync() {
   return deosActionsSyncRuntime;
 }
 async function syncActionsHybridNow(options = {}) {
+  if(actionEditDialog.open)return deosActionsSyncRuntime;
   if (deosActionsSyncRuntime.syncing) return deosActionsSyncRuntime;
   if (!actionsSyncIsEnabled()) { refreshActionsSyncRuntimeState({ state: DEOS_LINKS_SYNC_STATUS.LOCAL_ONLY, lastError: "" }); return deosActionsSyncRuntime; }
   if (!actionsSyncCanUseRemote()) {
@@ -22000,6 +22089,9 @@ async function syncActionsHybridNow(options = {}) {
         continue;
       }
       const localFp = actionFingerprint(local), remoteFp = actionFingerprint(row.action);
+      if(meta.syncStatus===DEOS_LINKS_SYNC_STATUS.CONFLICT && localFp!==remoteFp){
+        setActionSyncMeta(clientId,{conflictRemote:row,lastSyncError:"CONFLICT — arbitrage requis"});continue;
+      }
       if (!meta.lastLocalFingerprint) {
         if (localFp !== remoteFp) {
           setActionSyncMeta(clientId, { remoteId: row.remoteId, remoteVersion: Number(row.version || 0), remoteUpdatedAt: row.updatedAt || "", syncStatus: DEOS_LINKS_SYNC_STATUS.CONFLICT, lastSyncError: "CONFLICT", conflictRemote: row, conflictFields: actionConflictFields(local, row.action) });
@@ -25581,6 +25673,7 @@ function multiDeviceEntityRuntime(entity) {
 }
 
 async function syncAllMultiDeviceNow(options = {}) {
+  if(actionEditDialog.open)return deosMultiDeviceSyncRuntime;
   const silent = Boolean(options.silent);
   if (deosMultiDeviceSyncRuntime.syncing) return deosMultiDeviceSyncRuntime;
   if (!multiDeviceConnected()) {
@@ -25667,6 +25760,7 @@ function bindMultiDeviceSyncListeners() {
 }
 
 function initializeMultiDeviceSyncForAuthenticatedSession(options = {}) {
+  if(window.DeosTest){prepareCodirTestCopy().catch(reportCodirTestError);return;}
   if (window.DeosDirectionRelease && !deosDirectionReleaseReady) { runDirectionReleaseUpgrade(); return; }
   bindMultiDeviceSyncListeners();
   if (!multiDeviceConnected()) return;
@@ -25689,6 +25783,7 @@ function multiDeviceSyncSummary() {
 }
 
 function renderMultiDeviceSyncSettingsCardHtml() {
+  if(window.DeosTest)return `<div class="card"><h2>Copie TEST indépendante</h2><p>Les fonctions sont au même niveau que PROD. Cette copie TEST ne se synchronise pas entre PC et iPad. Les modifications restent locales.</p></div>`;
   const connected = multiDeviceConnected();
   const summary = multiDeviceSyncSummary();
   const labelMap = { links:"Liens", actions:"Actions", projects:"Projets", folders:"Dossiers", managers:"Managers", decisions:"Décisions", documents:"Documents" };
@@ -26200,7 +26295,7 @@ async function remoteFastHydrateContext(session) {
       );
       if (membershipResponse?.error) diagnostics.push(`workspace_members: ${membershipResponse.error.message || membershipResponse.error.code || "erreur"}`);
       const memberships = Array.isArray(membershipResponse?.data) ? membershipResponse.data : [];
-      const preferredWorkspaceId = String(localStorage.getItem(preferenceKey) || "").trim();
+      const preferredWorkspaceId = String((window.DeosTest?.storage || localStorage).getItem(preferenceKey) || "").trim();
       const selectedMembership = memberships.find(item => String(item.workspace_id) === preferredWorkspaceId) || memberships[0] || null;
       if (selectedMembership) {
         workspaceId = String(selectedMembership.workspace_id || "").trim();
@@ -26331,7 +26426,7 @@ async function remoteFastHydrateContext(session) {
     siteName: site?.name || "",
     role
   }];
-  try { localStorage.setItem(preferenceKey, String(workspace.id)); } catch (_) {}
+  try { (window.DeosTest?.storage || localStorage).setItem(preferenceKey, String(workspace.id)); } catch (_) {}
 
   const snapshot = deosRemoteAuthService.getStateSnapshot?.() || {};
   return {
@@ -26604,7 +26699,7 @@ function applyRemoteEnvironmentBadge() {
   const mode = remoteModeKey();
   node.hidden = false;
   node.className = `environment-chip ${remoteModeClass(mode)}`;
-  node.textContent = remoteStartupModeLabel();
+  node.textContent = window.DeosTest ? "TEST · copie locale isolée" : remoteStartupModeLabel();
 }
 
 function updateRemoteRuntime(summary = {}) {
@@ -27963,7 +28058,7 @@ const DEOS_SETTINGS_ACCORDION_STATE_KEY = "deos_settings_accordion_state_v526a";
 
 function settingsAccordionReadState() {
   try {
-    const raw = localStorage.getItem(DEOS_SETTINGS_ACCORDION_STATE_KEY);
+    const raw = (window.DeosTest?.storage || localStorage).getItem(DEOS_SETTINGS_ACCORDION_STATE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch (_) {
@@ -27973,7 +28068,7 @@ function settingsAccordionReadState() {
 
 function settingsAccordionWriteState(stateMap) {
   try {
-    localStorage.setItem(DEOS_SETTINGS_ACCORDION_STATE_KEY, JSON.stringify(stateMap || {}));
+    (window.DeosTest?.storage || localStorage).setItem(DEOS_SETTINGS_ACCORDION_STATE_KEY, JSON.stringify(stateMap || {}));
   } catch (_) {}
 }
 
@@ -29065,7 +29160,7 @@ function updateGoogleSyncUi() {
 let deosDirectionReleaseReady=false;
 let deosDirectionReleasePreflight=false;
 let deosDirectionReleasePromise=null;
-function directionCanSync(){return !window.DeosDirectionRelease||deosDirectionReleaseReady||deosDirectionReleasePreflight;}
+function directionCanSync(){if(window.DeosTest)return false;return !window.DeosDirectionRelease||deosDirectionReleaseReady||deosDirectionReleasePreflight;}
 function createDirectionReleaseTransport(){
  const config=resolvedRemoteConfig(),auth=deosRemoteAuthService;
  const session=auth?.session;
@@ -29100,6 +29195,7 @@ async function runDirectionReleaseUpgrade(){
    const transport=createDirectionReleaseTransport();
    const markerRow=(await transport.list('documents')).find(r=>r.item.id===window.DeosDirectionRelease.MARKER);
    const markerStatus=markerRow?JSON.parse(markerRow.item.content).status:'';
+
    if(!['running','paused'].includes(markerStatus)){
     deosDirectionReleasePreflight=true;
     const sync=await syncAllMultiDeviceNow({silent:true,source:'d27-preflight'});
@@ -29108,7 +29204,7 @@ async function runDirectionReleaseUpgrade(){
    }
    let legacy=[];try{legacy=JSON.parse(localStorage.getItem('deos_test_engagements_direction_v1')||'[]');}catch{}
    let owner=sessionStorage.getItem('deos_direction_release_device');if(!owner){owner=crypto.randomUUID();sessionStorage.setItem('deos_direction_release_device',owner);}
-   const result=await window.DeosDirectionRelease.run(transport,JSON.parse(JSON.stringify(state)),legacy,owner,message=>setDeosStartupStatus(message));
+   const result=markerStatus==='completed'?{data:JSON.parse(JSON.stringify(state))}:await window.DeosDirectionRelease.run(transport,JSON.parse(JSON.stringify(state)),legacy,owner,message=>setDeosStartupStatus(message));
    if(window.DeosTestRecovery){
     const keys={...Object.fromEntries(entities.map(name=>[name,DEOS_STORAGE_KEYS[name]])),externalEventEnrichments:DEOS_STORAGE_KEYS.external_event_enrichments};
     recovery=await window.DeosTestRecovery.run(transport,result.data,keys,snapshot=>{
@@ -29122,7 +29218,7 @@ async function runDirectionReleaseUpgrade(){
    // Populate all collections before persisting: Journal/To-Do stage their cloud transport in Documents.
    for(const name of entities)if(result.data[name])persist(name);
    if(recovery?.data.externalEventEnrichments){state.externalEventEnrichments=recovery.data.externalEventEnrichments;externalEventEnrichmentsRepository.save(state.externalEventEnrichments);}
-   for(const name of ['folders','projects','actions','managers','decisions','documents']){
+   if(markerStatus!=='completed'||recovery)for(const name of ['folders','projects','actions','managers','decisions','documents']){
     const singular=name;deosDataService.remove('sync_queue_'+singular);deosDataService.remove('sync_meta_'+singular);deosDataService.remove('sync_shadow_'+singular);
    }
    enableAllMultiDevicePilots();
@@ -29142,7 +29238,7 @@ async function runDirectionReleaseUpgrade(){
 function renderDirectionCommitments(){
  const rows=window.DeosDirectionPlan.objectives.map(o=>({objective:o,action:state.actions.find(a=>(a.directionCommitments||[]).some(c=>c.id==='soumia-20261104-'+String(o.n).padStart(2,'0')))}));
  const done=rows.filter(r=>r.action?.done).length;
- appHtml(`<section class="card"><h2>Engagements Direction</h2><p>Entretien avec Soumia du 4 novembre 2026 · ${done} / ${rows.length} objectifs réalisés</p><p>Ce suivi reprend directement les actions et projets DEOS. Les modifications sont synchronisées avec les autres appareils.</p></section>${rows.map(({objective:o,action:a})=>`<section class="card"><h3>${o.n}. ${esc(o.title)}</h3>${a?`<p>${a.done?'✓ Terminé':a.status==='blocked'?'Bloqué':'À mener'} · Pilote : ${esc(a.owner||'À définir')} · Échéance : ${esc(a.due||'À définir')}</p><p>${esc(a.description||o.detail)}</p><p>Interlocuteurs : ${esc(o.contacts)}</p><div class="row-actions"><button class="action" onclick="openAction('${a.id}')">Ouvrir l’action</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button>${(a.linkedProjects||[]).map(id=>state.projects.find(p=>p.id===id)).filter(Boolean).map(p=>`<button class="secondary" onclick="openProject('${p.id}')">${esc(p.name)}</button>`).join('')}</div>`:'<p>Intégration en cours : connectez votre espace DEOS pour reprendre les actions synchronisées.</p>'}</section>`).join('')}`);
+ appHtml(`<section class="card"><h2>Engagements Direction</h2><p>Entretien avec Soumia du 4 novembre 2026 · ${done} / ${rows.length} objectifs réalisés</p><p>Ce suivi reprend directement les actions et projets DEOS. ${window.DeosTest?'Copie TEST locale : les modifications restent sur cet appareil.':'Les modifications sont synchronisées avec les autres appareils.'}</p></section>${rows.map(({objective:o,action:a})=>`<section class="card"><h3>${o.n}. ${esc(o.title)}</h3>${a?`<p>${a.done?'✓ Terminé':a.status==='blocked'?'Bloqué':'À mener'} · Pilote : ${esc(a.owner||'À définir')} · Échéance : ${esc(a.due||'À définir')}</p><p>${esc(a.description||o.detail)}</p><p>Interlocuteurs : ${esc(o.contacts)}</p><div class="row-actions"><button class="action" onclick="openAction('${a.id}')">Ouvrir l’action</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button>${(a.linkedProjects||[]).map(id=>state.projects.find(p=>p.id===id)).filter(Boolean).map(p=>`<button class="secondary" onclick="openProject('${p.id}')">${esc(p.name)}</button>`).join('')}</div>`:'<p>Intégration en cours : connectez votre espace DEOS pour reprendre les actions synchronisées.</p>'}</section>`).join('')}`);
 }
 
 init().catch(error => {

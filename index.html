@@ -1,11 +1,11 @@
 <!doctype html>
-<!-- DEOS VERSION : V5.30-D27.2-PROD | FICHIER : index.html -->
+<!-- DEOS VERSION : V5.30-D27.3-PROD | FICHIER : index.html -->
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DEOS V5.30-D27.2-PROD</title>
-  <link rel="stylesheet" href="style.css?v=530D27.2-PROD" />
+  <title>DEOS V5.30-D27.3-PROD</title>
+  <link rel="stylesheet" href="style.css?v=530D27.3-PROD" />
 
   <style>
     /* V5.24D — iPad/Safari : conserver la correction du débordement horizontal de la barre latérale. */
@@ -100,6 +100,7 @@
       <button class="nav" data-view="journal">📝 Journal opérationnel</button>
       <button class="nav" data-view="documents">📄 Documents</button>
       <button class="nav" data-view="links">🔗 Liens</button>
+      <button class="nav" onclick="DeosSafeguard.open()">🔎 Contrôle des saisies</button>
       <button class="nav nav-settings" data-view="settings">⚙️ Paramètres</button>
       <button class="nav" data-view="activity">🕘 Agenda / Réunions</button>
     </div>
@@ -128,7 +129,8 @@
   <script src="tools/direction-plan.js?v=27"></script>
   <script src="tools/direction-release.js?v=27"></script>
   <script src="tools/test-recovery.js?v=27.1"></script>
-  <script src="app.js?v=530D27.2-PROD"></script>
+  <script src="tools/safeguard.js?v=27.3"></script>
+  <script src="app.js?v=530D27.3-PROD"></script>
 </body>
 </html>
 

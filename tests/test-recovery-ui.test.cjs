@@ -19,6 +19,7 @@ window.__recoveryTest={state:()=>state,ready:()=>deosDirectionReleaseReady,confi
  assert(w.__recoveryTest.state().documents.some(d=>d.sourceType==='DEOS_JOURNAL_SYNC'&&JSON.stringify(d.content).includes('journal-from-test')),'Recovered Journal must remain in staged Documents transport');
  assert(w.__recoveryTest.ready());assert(!w.document.getElementById('app').inert);
  const checkpoint=await new Promise(resolve=>{const r=w.indexedDB.open('deos-codir-test');r.onsuccess=()=>{const db=r.result,q=db.transaction('snapshots').objectStore('snapshots').get('deos-test-recovered-workspace');q.onsuccess=()=>{db.close();resolve(q.result)}}});assert(checkpoint?.hash);
+ w.__recoveryTest.state().actions[0].notes='Modification locale non confirmée';w.localStorage.setItem('deos_sync_meta_actions',JSON.stringify({a:{remoteVersion:99,lastLocalFingerprint:'preuve à conserver'}}));w.__recoveryTest.configure(w.mockApi);await w.runDirectionReleaseUpgrade();assert.equal(w.__recoveryTest.state().actions[0].notes,'Modification locale non confirmée');assert(w.localStorage.getItem('deos_sync_meta_actions').includes('preuve à conserver'));
  console.log('PASS: application complète, reprise des saisies TEST et du Journal, transport Documents conservé et point de reprise validé après synchronisation.');w.close();
 }
 main().catch(e=>{console.error(e);process.exitCode=1;liveWindow?.close();});
