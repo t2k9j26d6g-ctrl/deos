@@ -23,3 +23,11 @@ Sauvegarde avant écriture, versions serveur obligatoires, reprise après coupur
 Limite : un autre navigateur/profil ou appareil ne peut pas lire la copie locale du navigateur où TEST a été utilisé. L’utilisateur doit charger PROD une fois dans ce navigateur pour lancer la récupération automatique.
 
 La reprise automatique est ponctuelle : après un transfert validé pour ce workspace, les essais et nouvelles saisies ultérieurs dans TEST restent isolés. Le point de reprise et la copie TEST sont conservés.
+
+## D27.2 — Actions lisibles et rendez-vous
+
+Les champs longs de l’éditeur Action grandissent avec leur contenu, y compris après redimensionnement. Titre et contexte utilisent désormais des champs multilignes. La synthèse Action conserve descriptions, objectif, contexte, résultat attendu, risques, prochaines étapes et notes sans limite de caractères, ainsi que tous les rendez-vous liés. Les paragraphes et retours à la ligne sont conservés. Le document A5 se pagine au lieu de forcer le contenu dans une page ; les règles de largeur et marges de l’impression isolée sont adaptées pour éviter toute coupe latérale.
+
+Un bouton Lier un rendez-vous ouvre le sélecteur dans la fiche Action. Les rendez-vous DEOS et Google déjà chargés peuvent être recherchés et cochés. L’enregistrement conserve les références et leurs informations dans l’Action synchronisée, ainsi que les associations réciproques DEOS. Le retrait supprime les deux sens du lien. La confidentialité existante reste protégée dans la synthèse. Aucun rendez-vous Google ni invitation n’est créé ou modifié.
+
+Validation : tests complets d’édition, sauvegarde, synthèse, sélection et retrait des liens DEOS/Google, recherche, confidentialité et références sur appareil dépourvu du cache d’agenda. Contrôle d’un PDF A5 de huit pages : 117 paragraphes et toutes les fins de section présents, contrôle des coordonnées de tous les mots et inspection visuelle des premières/dernières pages. Les données enregistrées ne sont pas tronquées par cette mise à jour.

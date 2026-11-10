@@ -2,7 +2,7 @@
   "name": "deos-prod",
   "private": true,
   "scripts": {
-    "test": "node tests/direction.test.cjs && node tests/test-recovery.test.cjs && node tests/direction-ui.test.cjs && node tests/test-recovery-ui.test.cjs"
+    "test": "node tests/direction.test.cjs && node tests/test-recovery.test.cjs && node tests/direction-ui.test.cjs && node tests/test-recovery-ui.test.cjs && node tests/action-usability.test.cjs"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.8",
