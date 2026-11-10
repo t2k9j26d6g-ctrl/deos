@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30-D27-PROD";
+const DEOS_VERSION = "V5.30-D27.1-PROD";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -29005,10 +29005,11 @@ function createDirectionReleaseTransport(){
  const normalize=row=>({version:Number(row.version),item:{...row.data,id:row.client_id||row.data?.id}});
  const payload=item=>Object.fromEntries(Object.entries(item).filter(([k])=>!['id','clientId'].includes(k)&&!k.startsWith('__')&&!k.startsWith('_sync')));
  return {
+  workspaceId,
   async list(entity){const result=[];let offset=0;while(true){const page=await request('deos_'+entity+'?select=*&workspace_id=eq.'+encodeURIComponent(workspaceId)+'&deleted_at=is.null&order=client_id.asc&limit=1000&offset='+offset);if(!Array.isArray(page))throw Error('Lecture incomplète : '+entity);result.push(...page.map(normalize));if(page.length<1000)break;offset+=page.length;}return result;},
   async create(entity,item){const rows=await request('deos_'+entity,'POST',{workspace_id:workspaceId,owner_id:ownerId,client_id:item.id,data:payload(item)},{Prefer:'return=representation'});return normalize(rows[0]);},
   async update(entity,id,item,version){const rows=await request('rpc/deos_update_'+bases[entity],'POST',{p_client_id:id,p_expected_version:version,p_data:payload(item)});const row=Array.isArray(rows)?rows[0]:rows;if(!row)throw Error('Version distante non confirmée : '+id);return normalize(row);},
-  async backup(value){await new Promise((resolve,reject)=>{const r=indexedDB.open('deos-production-release-backups',1);r.onupgradeneeded=()=>r.result.createObjectStore('backups');r.onerror=()=>reject(r.error);r.onsuccess=()=>{const db=r.result,tx=db.transaction('backups','readwrite');tx.objectStore('backups').put(value,workspaceId+'-d27');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>{db.close();reject(tx.error)};};});}
+  async backup(value,suffix='d27'){await new Promise((resolve,reject)=>{const r=indexedDB.open('deos-production-release-backups',1);r.onupgradeneeded=()=>r.result.createObjectStore('backups');r.onerror=()=>reject(r.error);r.onsuccess=()=>{const db=r.result,tx=db.transaction('backups','readwrite');tx.objectStore('backups').put(value,workspaceId+'-'+suffix);tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>{db.close();reject(tx.error)};};});}
  };
 }
 async function runDirectionReleaseUpgrade(){
@@ -29016,7 +29017,7 @@ async function runDirectionReleaseUpgrade(){
  if(deosDirectionReleasePromise)return deosDirectionReleasePromise;
  if(!deosRemoteAuthService?.isAuthenticated?.()||!deosRemoteRuntime.workspace)return;
  deosDirectionReleasePromise=(async()=>{
-  const app=document.getElementById('app');app.inert=true;
+  const app=document.getElementById('app');app.inert=true;let recovery=null;
   try{
    // Reconcile existing edits using the established engines before changing any relationships.
    const transport=createDirectionReleaseTransport();
@@ -29031,16 +29032,32 @@ async function runDirectionReleaseUpgrade(){
    let legacy=[];try{legacy=JSON.parse(localStorage.getItem('deos_test_engagements_direction_v1')||'[]');}catch{}
    let owner=sessionStorage.getItem('deos_direction_release_device');if(!owner){owner=crypto.randomUUID();sessionStorage.setItem('deos_direction_release_device',owner);}
    const result=await window.DeosDirectionRelease.run(transport,JSON.parse(JSON.stringify(state)),legacy,owner,message=>setDeosStartupStatus(message));
+   if(window.DeosTestRecovery){
+    const keys={...Object.fromEntries(entities.map(name=>[name,DEOS_STORAGE_KEYS[name]])),externalEventEnrichments:DEOS_STORAGE_KEYS.external_event_enrichments};
+    recovery=await window.DeosTestRecovery.run(transport,result.data,keys,snapshot=>{
+     for(const name of entities)if(Array.isArray(snapshot[name]))snapshot[name]=normalizeCollection(name,snapshot[name]);return snapshot;
+    },message=>setDeosStartupStatus(message));
+    if(recovery)result.data=recovery.data;
+   }
    // Persist only after cloud verification. Clear obsolete shadows/queues before re-enabling sync.
    deosDirectionReleaseReady=true;
-   for(const name of entities){if(result.data[name]){state[name]=normalizeCollection(name,result.data[name]);persist(name);}}
+   for(const name of entities)if(result.data[name])state[name]=normalizeCollection(name,result.data[name]);
+   // Populate all collections before persisting: Journal/To-Do stage their cloud transport in Documents.
+   for(const name of entities)if(result.data[name])persist(name);
+   if(recovery?.data.externalEventEnrichments){state.externalEventEnrichments=recovery.data.externalEventEnrichments;externalEventEnrichmentsRepository.save(state.externalEventEnrichments);}
    for(const name of ['folders','projects','actions','managers','decisions','documents']){
     const singular=name;deosDataService.remove('sync_queue_'+singular);deosDataService.remove('sync_meta_'+singular);deosDataService.remove('sync_shadow_'+singular);
    }
    enableAllMultiDevicePilots();
+   if(recovery){
+    const sync=await syncAllMultiDeviceNow({silent:true,source:'test-recovery'});
+    if(sync.lastError)throw Error('Saisies TEST conservées ; synchronisation à terminer : '+sync.lastError);
+    await recovery.checkpoint();
+    showDeosToast(recovery.report.conflicts?'Saisies TEST reprises. Des variantes sont conservées dans Documents pour arbitrage.':'Saisies TEST récupérées dans PROD.','success',5000);
+   }
    setDeosStartupStatus('');setView(currentView||'cockpit');
    scheduleMultiDeviceAutoSync('d27-completed');
-  }catch(error){deosDirectionReleasePreflight=false;console.error('[DEOS D27]',error);setDeosStartupStatus('Préparation PROD interrompue : '+error.message+' La sauvegarde est conservée ; la mise à jour reprendra au prochain chargement.',true);}
+  }catch(error){recovery?.close();deosDirectionReleasePreflight=false;console.error('[DEOS D27]',error);setDeosStartupStatus('Préparation PROD interrompue : '+error.message+' La sauvegarde est conservée ; la mise à jour reprendra au prochain chargement.',true);}
   finally{app.inert=false;}
  })();
  try{return await deosDirectionReleasePromise;}finally{deosDirectionReleasePromise=null;}

@@ -13,3 +13,13 @@ Les six dossiers permanents sont renommés ; les sept dossiers thématiques devi
 Validation : tests du plan, des relations réciproques, de la réexécution, de la conservation des champs modifiés par l’utilisateur, de la reprise réseau, du verrou multi-appareils et des conflits de version. Tests DOM de l’application complète et validation complémentaire sur copie privée de la sauvegarde de travail.
 
 La publication du code ne prouve pas l’exécution sur les données réelles : la migration se lance depuis la session DEOS connectée de l’utilisateur et affiche sa progression.
+
+## D27.1 — Reprise des saisies TEST
+
+La production lit, dans le même profil de navigateur et sur la même origine GitHub Pages, la copie IndexedDB TEST et sa sauvegarde initiale. Elle compare la version de départ transformée CODIR, les saisies TEST courantes et les données PROD courantes. Seuls les ajouts/modifications TEST sont repris. Les liens ajoutés depuis en PROD sont conservés. Un conflit sur un même champ conserve la version PROD et dépose la variante TEST dans un document d’arbitrage. Les suppressions TEST ne suppriment aucun objet PROD. Les documents système Journal/Priorités sont exclus du transfert brut ; les notes et To-Do récupérées passent par les mécanismes de synchronisation existants. Le prototype Engagements Direction est également repris vers les actions natives.
+
+Sauvegarde avant écriture, versions serveur obligatoires, reprise après coupure et point de reprise par workspace/hash évitent écrasements et réimports. Le point de reprise n’est validé qu’après la synchronisation des notes et priorités. Les clés source TEST et leur sauvegarde ne sont ni supprimées ni modifiées. Aucun fichier utilisateur n’est envoyé dans GitHub.
+
+Limite : un autre navigateur/profil ou appareil ne peut pas lire la copie locale du navigateur où TEST a été utilisé. L’utilisateur doit charger PROD une fois dans ce navigateur pour lancer la récupération automatique.
+
+La reprise automatique est ponctuelle : après un transfert validé pour ce workspace, les essais et nouvelles saisies ultérieurs dans TEST restent isolés. Le point de reprise et la copie TEST sont conservés.
