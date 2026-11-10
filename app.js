@@ -1,4 +1,4 @@
-const DEOS_VERSION = "V5.30-SYNC-D25P-TEST";
+const DEOS_VERSION = "V5.30-D27-PROD";
 // Notes N2 TEST — boîte d’entrée opérationnelle : Notes à traiter dans le Cockpit.
 
 // -- V5.23C : feedback visuel commun pour les actions asynchrones ----------------
@@ -2397,9 +2397,9 @@ function setView(view) {
   currentView = view;
   if (view !== "graph" && !graphNavigationLock) graphReturnContext = null;
   document.querySelectorAll(".nav").forEach(btn => btn.classList.toggle("active", btn.dataset.view === view));
-  const titles = { mailPilot: "Messagerie / Pilotage", cockpit: "Cockpit décisionnel", graph: "Vue graphique", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actionPlans: "Plans d'action", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
+  const titles = { directionCommitments: "Engagements Direction", mailPilot: "Messagerie / Pilotage", cockpit: "Cockpit décisionnel", graph: "Vue graphique", folders: "Dossiers", performance: "Performance", priorities: "Priorités V5", actionPlans: "Plans d'action", actions: "Actions", managers: "Managers V5", projects: "Projets V5", decisions: "Décisions V5", journal: "Journal", documents: "Documents", links: "Liens utiles", activity: "Agenda / Réunions", settings: "Paramètres" };
   document.getElementById("viewTitle").textContent = titles[view] || identity.appName;
-  const views = { mailPilot: renderMailPilot, cockpit: renderCockpit, graph: renderGraph, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actionPlans: renderActionPlans, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
+  const views = { directionCommitments: renderDirectionCommitments, mailPilot: renderMailPilot, cockpit: renderCockpit, graph: renderGraph, folders: renderFolders, performance: renderPerformance, priorities: renderPriorities, actionPlans: renderActionPlans, actions: renderActions, managers: renderManagers, projects: renderProjects, decisions: renderDecisions, journal: renderJournal, documents: renderDocuments, links: renderLinks, activity: renderActivity, settings: renderSettings };
   if (views[view]) views[view]();
 }
 
@@ -20904,6 +20904,7 @@ function linksSyncCanUseRemote() {
 }
 
 function linksSyncCanInspectRemote() {
+  if (!directionCanSync()) return false;
   return Boolean(
     navigator.onLine !== false
     && !deosRemoteRuntime.temporaryLocal
@@ -25458,6 +25459,7 @@ let deosMultiDeviceSyncRuntime = {
 };
 
 function multiDeviceConnected() {
+  if (!directionCanSync()) return false;
   return Boolean(
     navigator.onLine !== false
     && !deosRemoteRuntime.temporaryLocal
@@ -25588,6 +25590,7 @@ function bindMultiDeviceSyncListeners() {
 }
 
 function initializeMultiDeviceSyncForAuthenticatedSession(options = {}) {
+  if (window.DeosDirectionRelease && !deosDirectionReleaseReady) { runDirectionReleaseUpgrade(); return; }
   bindMultiDeviceSyncListeners();
   if (!multiDeviceConnected()) return;
   enableAllMultiDevicePilots();
@@ -25899,6 +25902,7 @@ function bindRemoteUserContextNetworkListeners() {
 }
 
 function remoteCanInspectLinks() {
+  if (!directionCanSync()) return false;
   return Boolean(
     navigator.onLine !== false
     && !deosRemoteRuntime.temporaryLocal
@@ -28979,6 +28983,72 @@ function updateGoogleSyncUi() {
   const nextSync = googleNextSyncAt ? new Date(googleNextSyncAt).toLocaleString("fr-FR") : (freq === "manual" ? "Manuelle" : "Non planifiée");
   const eventCount = state.externalCalendarEvents.filter(e => e._calendarId === settings.googleCalendarId).length;
   return { lastSync, nextSync, eventCount };
+}
+
+let deosDirectionReleaseReady=false;
+let deosDirectionReleasePreflight=false;
+let deosDirectionReleasePromise=null;
+function directionCanSync(){return !window.DeosDirectionRelease||deosDirectionReleaseReady||deosDirectionReleasePreflight;}
+function createDirectionReleaseTransport(){
+ const config=resolvedRemoteConfig(),auth=deosRemoteAuthService;
+ const session=auth?.session;
+ if(!session?.access_token||!session?.user?.id||!deosRemoteRuntime.workspace?.id)throw Error('Session connectée et espace DEOS requis.');
+ const workspaceId=deosRemoteRuntime.workspace.id,ownerId=session.user.id;
+ const bases={folders:'folder',projects:'project',actions:'action',managers:'manager',decisions:'decision',documents:'document',links:'link'};
+ async function request(path,method='GET',body,headers={}){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+  try{
+   const response=await fetch(config.supabaseUrl.replace(/\/$/,'')+'/rest/v1/'+path,{method,headers:{apikey:config.supabasePublishableKey,Authorization:'Bearer '+session.access_token,'Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal});
+   const value=await response.json();if(!response.ok){const e=Error(value.message||'Écriture/lecture distante refusée ('+response.status+').');e.code=response.status===409?'CONFLICT':value.code;throw e;}return value;
+  }finally{clearTimeout(timer);}
+ }
+ const normalize=row=>({version:Number(row.version),item:{...row.data,id:row.client_id||row.data?.id}});
+ const payload=item=>Object.fromEntries(Object.entries(item).filter(([k])=>!['id','clientId'].includes(k)&&!k.startsWith('__')&&!k.startsWith('_sync')));
+ return {
+  async list(entity){const result=[];let offset=0;while(true){const page=await request('deos_'+entity+'?select=*&workspace_id=eq.'+encodeURIComponent(workspaceId)+'&deleted_at=is.null&order=client_id.asc&limit=1000&offset='+offset);if(!Array.isArray(page))throw Error('Lecture incomplète : '+entity);result.push(...page.map(normalize));if(page.length<1000)break;offset+=page.length;}return result;},
+  async create(entity,item){const rows=await request('deos_'+entity,'POST',{workspace_id:workspaceId,owner_id:ownerId,client_id:item.id,data:payload(item)},{Prefer:'return=representation'});return normalize(rows[0]);},
+  async update(entity,id,item,version){const rows=await request('rpc/deos_update_'+bases[entity],'POST',{p_client_id:id,p_expected_version:version,p_data:payload(item)});const row=Array.isArray(rows)?rows[0]:rows;if(!row)throw Error('Version distante non confirmée : '+id);return normalize(row);},
+  async backup(value){await new Promise((resolve,reject)=>{const r=indexedDB.open('deos-production-release-backups',1);r.onupgradeneeded=()=>r.result.createObjectStore('backups');r.onerror=()=>reject(r.error);r.onsuccess=()=>{const db=r.result,tx=db.transaction('backups','readwrite');tx.objectStore('backups').put(value,workspaceId+'-d27');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>{db.close();reject(tx.error)};};});}
+ };
+}
+async function runDirectionReleaseUpgrade(){
+ if(deosDirectionReleaseReady||!window.DeosDirectionRelease)return;
+ if(deosDirectionReleasePromise)return deosDirectionReleasePromise;
+ if(!deosRemoteAuthService?.isAuthenticated?.()||!deosRemoteRuntime.workspace)return;
+ deosDirectionReleasePromise=(async()=>{
+  const app=document.getElementById('app');app.inert=true;
+  try{
+   // Reconcile existing edits using the established engines before changing any relationships.
+   const transport=createDirectionReleaseTransport();
+   const markerRow=(await transport.list('documents')).find(r=>r.item.id===window.DeosDirectionRelease.MARKER);
+   const markerStatus=markerRow?JSON.parse(markerRow.item.content).status:'';
+   if(!['running','paused'].includes(markerStatus)){
+    deosDirectionReleasePreflight=true;
+    const sync=await syncAllMultiDeviceNow({silent:true,source:'d27-preflight'});
+    deosDirectionReleasePreflight=false;
+    if(sync.lastError)throw Error('Synchronisation préalable : '+sync.lastError);
+   }
+   let legacy=[];try{legacy=JSON.parse(localStorage.getItem('deos_test_engagements_direction_v1')||'[]');}catch{}
+   let owner=sessionStorage.getItem('deos_direction_release_device');if(!owner){owner=crypto.randomUUID();sessionStorage.setItem('deos_direction_release_device',owner);}
+   const result=await window.DeosDirectionRelease.run(transport,JSON.parse(JSON.stringify(state)),legacy,owner,message=>setDeosStartupStatus(message));
+   // Persist only after cloud verification. Clear obsolete shadows/queues before re-enabling sync.
+   deosDirectionReleaseReady=true;
+   for(const name of entities){if(result.data[name]){state[name]=normalizeCollection(name,result.data[name]);persist(name);}}
+   for(const name of ['folders','projects','actions','managers','decisions','documents']){
+    const singular=name;deosDataService.remove('sync_queue_'+singular);deosDataService.remove('sync_meta_'+singular);deosDataService.remove('sync_shadow_'+singular);
+   }
+   enableAllMultiDevicePilots();
+   setDeosStartupStatus('');setView(currentView||'cockpit');
+   scheduleMultiDeviceAutoSync('d27-completed');
+  }catch(error){deosDirectionReleasePreflight=false;console.error('[DEOS D27]',error);setDeosStartupStatus('Préparation PROD interrompue : '+error.message+' La sauvegarde est conservée ; la mise à jour reprendra au prochain chargement.',true);}
+  finally{app.inert=false;}
+ })();
+ try{return await deosDirectionReleasePromise;}finally{deosDirectionReleasePromise=null;}
+}
+function renderDirectionCommitments(){
+ const rows=window.DeosDirectionPlan.objectives.map(o=>({objective:o,action:state.actions.find(a=>(a.directionCommitments||[]).some(c=>c.id==='soumia-20261104-'+String(o.n).padStart(2,'0')))}));
+ const done=rows.filter(r=>r.action?.done).length;
+ appHtml(`<section class="card"><h2>Engagements Direction</h2><p>Entretien avec Soumia du 4 novembre 2026 · ${done} / ${rows.length} objectifs réalisés</p><p>Ce suivi reprend directement les actions et projets DEOS. Les modifications sont synchronisées avec les autres appareils.</p></section>${rows.map(({objective:o,action:a})=>`<section class="card"><h3>${o.n}. ${esc(o.title)}</h3>${a?`<p>${a.done?'✓ Terminé':a.status==='blocked'?'Bloqué':'À mener'} · Pilote : ${esc(a.owner||'À définir')} · Échéance : ${esc(a.due||'À définir')}</p><p>${esc(a.description||o.detail)}</p><p>Interlocuteurs : ${esc(o.contacts)}</p><div class="row-actions"><button class="action" onclick="openAction('${a.id}')">Ouvrir l’action</button><button class="secondary" onclick="editAction('${a.id}')">Modifier</button>${(a.linkedProjects||[]).map(id=>state.projects.find(p=>p.id===id)).filter(Boolean).map(p=>`<button class="secondary" onclick="openProject('${p.id}')">${esc(p.name)}</button>`).join('')}</div>`:'<p>Intégration en cours : connectez votre espace DEOS pour reprendre les actions synchronisées.</p>'}</section>`).join('')}`);
 }
 
 init().catch(error => {
